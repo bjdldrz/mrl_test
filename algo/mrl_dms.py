@@ -120,6 +120,7 @@ class MRLDMSTrainer:
                 satellite_config=sat_cfg,
                 max_action_dim=config.mission.max_action_dim,
                 reward_config=config.reward,
+                vtw_time_step_s=config.train.vtw_time_step_s,
             )
             self.envs.append(env)
 
@@ -165,6 +166,7 @@ class MRLDMSTrainer:
             satellite_configs=sat_cfgs,
             max_action_dim=config.mission.max_action_dim,
             reward_config=config.reward,
+            vtw_time_step_s=config.train.vtw_time_step_s,
         )
 
         # MAPPO 模型: 共享 Actor + 集中式 Critic
@@ -286,18 +288,24 @@ class MRLDMSTrainer:
         param_diffs = []
         total_reward = 0.0
         total_dynamic_rate = 0.0
+        meta_h_norms = []   # 每个任务的 LSTM 调制范数（带梯度，用于 meta-loss）
+        meta_rewards = []   # 每个任务的评估奖励（标量，用作 REINFORCE signal）
 
         for task_idx, (routine, dynamic_schedule) in enumerate(tasks):
-            # (a) 恢复 base 参数
+            # (a) 预热 VTW 缓存（任务坐标确定后 VTW 即确定，只计算一次）
+            self._precompute_task_vtw(routine, dynamic_schedule)
+
+            # (b) 恢复 base 参数
             base_model.load_state_dict(copy.deepcopy(base_state))
 
-            # (b) LSTM 编码 + 参数调制
+            # (c) LSTM 编码 + 参数调制
             fb_t = torch.FloatTensor(self._prev_feedback).unsqueeze(0).to(self.device)
             h_t = self.meta_learner(fb_t)
             actor_mods, critic_mods = self.meta_learner.get_modulations(h_t)
             self.meta_learner.apply_modulations(
                 base_model, actor_mods, critic_mods
             )
+            meta_h_norms.append(h_t.norm())
 
             # 记录调制后的初始参数
             init_state = copy.deepcopy(base_model.state_dict())
@@ -334,6 +342,7 @@ class MRLDMSTrainer:
 
             total_reward += eval_reward
             total_dynamic_rate += eval_metrics.get('dynamic_completion_rate', 0.0)
+            meta_rewards.append(eval_reward)
 
         # ===== FOMAML base 参数更新 =====
         base_model.load_state_dict(base_state)
@@ -346,11 +355,13 @@ class MRLDMSTrainer:
                 param.data.add_(meta_lr * avg_diff)
 
         # ===== LSTM / 调制头参数更新 =====
+        # 用 REINFORCE 风格的元损失：L = -mean(R_i * ||h_i||)
+        # h_i 保留梯度（通过 meta_h_norms 累积），R_i 作为 reward signal
         self.meta_optimizer.zero_grad()
-        self.meta_learner.reset_hidden(batch_size=1, device=self.device)
-        fb_t = torch.FloatTensor(self._prev_feedback).unsqueeze(0).to(self.device)
-        h_t = self.meta_learner(fb_t)
-        lstm_loss = -total_reward / (n_tasks * 1000.0) * h_t.norm()
+        rewards_t = torch.tensor(meta_rewards, dtype=torch.float32, device=self.device)
+        rewards_normalized = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
+        h_norms = torch.stack(meta_h_norms)  # [n_tasks]
+        lstm_loss = -(rewards_normalized * h_norms).mean()
         lstm_loss.backward()
         nn.utils.clip_grad_norm_(self.meta_learner.parameters(), 1.0)
         self.meta_optimizer.step()
@@ -381,10 +392,11 @@ class MRLDMSTrainer:
     def _inner_loop_single(self, routine_missions, dynamic_schedule) -> tuple:
         """单星 PPO 内循环 (原始逻辑)"""
         env = self.envs[0]
-        obs, info = env.reset(options={
+        reset_options = {
             "routine_missions": copy.deepcopy(routine_missions),
             "dynamic_schedule": copy.deepcopy(dynamic_schedule),
-        })
+        }
+        obs, info = env.reset(options=reset_options)
 
         buffer = RolloutBuffer()
         total_reward = 0.0
@@ -399,7 +411,8 @@ class MRLDMSTrainer:
         for k in inner_pbar:
             buffer.clear()
             obs, info, ep_reward = self._inner_ppo.collect_rollout(
-                env, buffer, self.cfg.meta.rollout_steps, obs, info
+                env, buffer, self.cfg.meta.rollout_steps, obs, info,
+                reset_options=reset_options,
             )
             total_reward += ep_reward
 
@@ -539,6 +552,43 @@ class MRLDMSTrainer:
 
         metrics = multi_env.get_metrics()
         return total_reward, metrics
+
+    # -------------------------------------------------------------------
+    # VTW 预计算
+    # -------------------------------------------------------------------
+    def _precompute_task_vtw(
+        self,
+        routine_missions: list,
+        dynamic_schedule: list,
+    ) -> None:
+        """
+        预热本次任务的 OrbitPropagator VTW 缓存。
+
+        任务坐标确定后 VTW 即确定。提前调用 compute_vtw 填充每颗卫星
+        propagator._vtw_cache，使后续所有 env.reset() 和动态任务插入中
+        的 _compute_vtw_for_missions 全部命中缓存（近似 O(1)）。
+        """
+        all_missions = list(routine_missions)
+        for _, dyn_batch in dynamic_schedule:
+            all_missions.extend(dyn_batch)
+
+        # 读取 env 上已设置好的 horizon_s 和 vtw_time_step_s
+        ref_env = self.envs[0]
+        horizon_s = ref_env.horizon_s
+        step_s = ref_env.vtw_time_step_s
+
+        # 单星模式：预热各卫星 propagator
+        for env in self.envs:
+            for m in all_missions:
+                env.propagator.compute_vtw(m.lat, m.lon, horizon_s, time_step_s=step_s)
+
+        # 多星模式：预热 _multi_env 各子环境的 propagator
+        if self.multi_agent and self._multi_env is not None:
+            for sub_env in self._multi_env.envs.values():
+                for m in all_missions:
+                    sub_env.propagator.compute_vtw(
+                        m.lat, m.lon, horizon_s, time_step_s=step_s
+                    )
 
     # -------------------------------------------------------------------
     # 任务采样

@@ -119,7 +119,7 @@ class PPOTrainer:
                 next_done = 0.0
             else:
                 next_value = values[t + 1]
-                next_done = float(dones[t + 1])
+                next_done = float(dones[t])
 
             delta = rewards[t] + self.gamma * next_value * (1 - next_done) - values[t]
             advantages[t] = last_gae = (
@@ -248,16 +248,23 @@ class PPOTrainer:
         n_steps: int,
         obs: Optional[np.ndarray] = None,
         info: Optional[Dict] = None,
+        reset_options: Optional[Dict] = None,
     ) -> Tuple[np.ndarray, Dict, float]:
         """
         从环境中采集 n_steps 步经验。
+
+        参数
+        ----
+        reset_options : dict or None
+            episode 结束后重置时传入的 options（含 routine_missions / dynamic_schedule）。
+            若为 None 则不传 options（适用于非任务调度类环境）。
 
         返回
         ----
         last_obs, last_info, episode_reward
         """
         if obs is None:
-            obs, info = env.reset()
+            obs, info = env.reset(options=reset_options)
 
         episode_reward = 0.0
 
@@ -286,7 +293,7 @@ class PPOTrainer:
             info = next_info
 
             if done:
-                obs, info = env.reset()
+                obs, info = env.reset(options=reset_options)
 
         # 最后一步的价值估计 (用于 GAE)
         with torch.no_grad():

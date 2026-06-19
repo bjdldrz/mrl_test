@@ -41,6 +41,7 @@ class MultiSatelliteEnv:
         max_action_dim: int = 600,
         horizon_s: float = 86400.0,
         reward_config=None,
+        vtw_time_step_s: float = 120.0,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -56,6 +57,7 @@ class MultiSatelliteEnv:
                 max_action_dim=max_action_dim,
                 horizon_s=horizon_s,
                 reward_config=reward_config,
+                vtw_time_step_s=vtw_time_step_s,
             )
 
         # 维度信息 (所有卫星共享相同的 obs/action 维度)

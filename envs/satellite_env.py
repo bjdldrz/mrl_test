@@ -50,6 +50,7 @@ class SatelliteSchedulingEnv(gym.Env):
         horizon_s: float = 86400.0,
         reward_config=None,
         precomputed_vtw: Optional[Dict] = None,
+        vtw_time_step_s: float = 120.0,
     ):
         """
         参数
@@ -79,6 +80,7 @@ class SatelliteSchedulingEnv(gym.Env):
 
         # 预计算的 VTW (可选, 提高训练速度)
         self.precomputed_vtw = precomputed_vtw or {}
+        self.vtw_time_step_s = vtw_time_step_s
 
         # ----- 状态空间 (论文 Eq.11-12) -----
         # 每个任务的状态向量: [obs_status, w_start, w_end, t_obs_start, t_obs_end, priority, is_dynamic]
@@ -126,6 +128,7 @@ class SatelliteSchedulingEnv(gym.Env):
         super().reset(seed=seed)
         self.current_time_s = 0.0
         self.schedule_log = []
+        self.mission_vtw = {}
         self._last_off_nadir_deg = 0.0
 
         options = options or {}
@@ -458,7 +461,7 @@ class SatelliteSchedulingEnv(gym.Env):
                 vtws = self.propagator.compute_vtw(
                     m.lat, m.lon,
                     self.horizon_s,
-                    time_step_s=120.0,  # 训练时用较粗步长加速
+                    time_step_s=self.vtw_time_step_s,
                 )
                 self.mission_vtw[m.id] = vtws
 

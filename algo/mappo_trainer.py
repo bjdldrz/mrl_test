@@ -227,7 +227,7 @@ class MAPPOTrainer:
                 next_done = 0.0
             else:
                 next_value = values[t + 1]
-                next_done = float(dones[t + 1])
+                next_done = float(dones[t])
 
             delta = rewards[t] + self.gamma * next_value * (1 - next_done) - values[t]
             advantages[t] = last_gae = (

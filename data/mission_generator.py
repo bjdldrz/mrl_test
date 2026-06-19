@@ -330,8 +330,6 @@ class MissionGenerator:
             动态任务插入计划: [(到达时刻, [Mission, ...]), ...]
             按时间排序, 到达时刻等间距分布在规划周期内
         """
-        self._mission_id_counter = 0  # 重置 ID
-
         # 生成常规任务
         routine = self.generate_routine_missions(
             n_missions=n_routine,

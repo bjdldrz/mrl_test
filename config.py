@@ -144,6 +144,7 @@ class TrainConfig:
     save_interval: int = 5000
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
+    vtw_time_step_s: float = 120.0           # VTW 采样步长: 越大越快, 精度略降
 
 
 # -----------------------------------------------------------------------

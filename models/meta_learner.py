@@ -200,12 +200,8 @@ class MetaLearner(nn.Module):
         if self._hidden is None:
             self.reset_hidden(feedback.size(0), feedback.device)
 
-        # 截断跨任务的计算图, 只保留隐状态的值
-        h_in = self._hidden.detach()
-        c_in = self._cell.detach()
-
         lstm_out, (self._hidden, self._cell) = self.lstm(
-            z, (h_in, c_in)
+            z, (self._hidden, self._cell)
         )
 
         h_t = self._hidden.squeeze(0)  # [batch, lstm_hidden_dim]
