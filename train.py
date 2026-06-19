@@ -29,7 +29,6 @@ from algo.ppo import PPOTrainer, RolloutBuffer
 from models.actor_critic import ActorCritic
 from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator, load_acled_shapefile
-from utils.metrics import MetricsTracker
 
 import numpy as np
 import torch
@@ -42,17 +41,19 @@ logging.basicConfig(
 logger = logging.getLogger("train")
 
 
-def train_mrl_dms(config: Config, acled_df=None):
+def train_mrl_dms(config: Config, acled_df=None, exp_name: str = None):
     """MRL-DMS 元训练"""
     trainer = MRLDMSTrainer(config)
     trainer.setup_data(acled_df)
-    trainer.train()
+    trainer.train(exp_name=exp_name)
     return trainer
 
 
-def train_ppo_baseline(config: Config, acled_df=None):
+def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
     """PPO baseline 训练 (用于对比实验)"""
     from tqdm import tqdm
+    import csv
+    import json
 
     mission_gen = MissionGenerator(acled_df=acled_df, seed=config.train.seed)
 
@@ -97,6 +98,15 @@ def train_ppo_baseline(config: Config, acled_df=None):
     rollout_steps = config.meta.rollout_steps
     n_updates = total_steps // rollout_steps
 
+    # ---- 日志目录 ----
+    run_name = exp_name or f"ppo_{int(time.time())}"
+    log_dir = os.path.join(config.train.log_dir, run_name)
+    os.makedirs(log_dir, exist_ok=True)
+    train_log_path = os.path.join(log_dir, "train_log.csv")
+
+    fieldnames = ["update", "global_step", "rollout_reward", "policy_loss", "value_loss", "entropy"]
+    best_reward = -float('inf')
+
     routine, dynamic = mission_gen.generate_episode_missions(
         n_routine=200, n_dynamic_per_insertion=50,
     )
@@ -105,36 +115,72 @@ def train_ppo_baseline(config: Config, acled_df=None):
         "dynamic_schedule": dynamic,
     })
 
+    log_csv_f = open(train_log_path, "w", newline="")
+    writer = csv.DictWriter(log_csv_f, fieldnames=fieldnames)
+    writer.writeheader()
+
     pbar = tqdm(range(n_updates), desc="PPO Train", unit="update", dynamic_ncols=True)
-    for update in pbar:
-        buffer = RolloutBuffer()
-        obs, info, ep_reward = ppo.collect_rollout(
-            env, buffer, rollout_steps, obs, info
-        )
-
-        with torch.no_grad():
-            obs_t = torch.FloatTensor(obs).unsqueeze(0).to(torch.device(device))
-            last_value = actor_critic.get_value(obs_t).cpu().item()
-
-        update_info = ppo.update(buffer, last_value)
-        pbar.set_postfix(
-            R=f"{ep_reward:.1f}",
-            ploss=f"{update_info['policy_loss']:.3f}",
-            ent=f"{update_info['entropy']:.2f}",
-        )
-
-        # 定期重置环境 (新的任务场景)
-        if update % 10 == 0 and update > 0:
-            routine, dynamic = mission_gen.generate_episode_missions(
-                n_routine=np.random.choice(config.mission.routine_pool_sizes),
-                n_dynamic_per_insertion=np.random.choice(config.mission.dynamic_pool_sizes),
+    try:
+        for update in pbar:
+            buffer = RolloutBuffer()
+            obs, info, ep_reward = ppo.collect_rollout(
+                env, buffer, rollout_steps, obs, info
             )
-            obs, info = env.reset(options={
-                "routine_missions": routine,
-                "dynamic_schedule": dynamic,
-            })
 
-    logger.info("PPO baseline 训练完成")
+            with torch.no_grad():
+                obs_t = torch.FloatTensor(obs).unsqueeze(0).to(torch.device(device))
+                last_value = actor_critic.get_value(obs_t).cpu().item()
+
+            update_info = ppo.update(buffer, last_value)
+            pbar.set_postfix(
+                R=f"{ep_reward:.1f}",
+                ploss=f"{update_info['policy_loss']:.3f}",
+                ent=f"{update_info['entropy']:.2f}",
+            )
+
+            row = {
+                "update": update,
+                "global_step": update * rollout_steps,
+                "rollout_reward": round(ep_reward, 4),
+                "policy_loss": round(update_info['policy_loss'], 6),
+                "value_loss": round(update_info['value_loss'], 6),
+                "entropy": round(update_info['entropy'], 6),
+            }
+            writer.writerow(row)
+            log_csv_f.flush()
+
+            if ep_reward > best_reward:
+                best_reward = ep_reward
+                ckpt_dir = config.train.checkpoint_dir
+                os.makedirs(ckpt_dir, exist_ok=True)
+                torch.save(actor_critic.state_dict(),
+                           os.path.join(ckpt_dir, "ppo_best.pt"))
+
+            # 定期重置环境 (新的任务场景)
+            if update % 10 == 0 and update > 0:
+                routine, dynamic = mission_gen.generate_episode_missions(
+                    n_routine=np.random.choice(config.mission.routine_pool_sizes),
+                    n_dynamic_per_insertion=np.random.choice(config.mission.dynamic_pool_sizes),
+                )
+                obs, info = env.reset(options={
+                    "routine_missions": routine,
+                    "dynamic_schedule": dynamic,
+                })
+    finally:
+        log_csv_f.close()
+        pbar.close()
+
+    # 写摘要
+    summary = {
+        "exp_name": run_name,
+        "total_updates": n_updates,
+        "best_reward": best_reward,
+        "train_log": train_log_path,
+    }
+    with open(os.path.join(log_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    logger.info(f"PPO baseline 训练完成, 日志: {log_dir}")
     return actor_critic
 
 
@@ -148,6 +194,8 @@ def main():
     parser.add_argument("--fast", action="store_true",
                         help="快速测试模式 (减少训练步数)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--exp_name", type=str, default=None,
+                        help="实验名称, 用于命名日志目录 runs/<exp_name>/")
     args = parser.parse_args()
 
     # 加载配置
@@ -182,9 +230,9 @@ def main():
 
     # 训练
     if args.method == "mrl_dms":
-        train_mrl_dms(config, acled_df)
+        train_mrl_dms(config, acled_df, exp_name=args.exp_name)
     elif args.method == "ppo":
-        train_ppo_baseline(config, acled_df)
+        train_ppo_baseline(config, acled_df, exp_name=args.exp_name)
     else:
         logger.info(f"Baseline {args.method} 可通过修改 PPO 训练器实现")
         # A2C / DQN 的实现可参照 PPO baseline 结构扩展

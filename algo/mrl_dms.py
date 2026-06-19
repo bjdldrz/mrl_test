@@ -21,6 +21,8 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import copy
+import csv
+import json
 import time
 import logging
 from typing import Dict, List, Optional
@@ -209,12 +211,12 @@ class MRLDMSTrainer:
     # ===================================================================
     # 元训练主循环 (论文 Algorithm 1)
     # ===================================================================
-    def train(self, total_meta_iterations: int = None):
+    def train(self, total_meta_iterations: int = None, exp_name: str = None):
         """
         元训练主循环。
 
         对应论文 Algorithm 1, Fig. 4-5。
-        带 tqdm 进度条实时显示训练指标。
+        带 tqdm 进度条实时显示训练指标，并将指标写入 CSV / JSON 文件。
         """
         if self.mission_gen is None:
             self.setup_data()
@@ -223,7 +225,29 @@ class MRLDMSTrainer:
             self.cfg.train.total_training_steps // self.cfg.meta.rollout_steps
         )
 
+        # ---- 日志目录 ----
+        run_name = exp_name or f"mrl_dms_{int(time.time())}"
+        log_dir = Path(self.cfg.train.log_dir) / run_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_dir = log_dir  # 供 save_checkpoint 使用
+
+        train_log_path = log_dir / "train_log.csv"
+        eval_log_path = log_dir / "eval_log.csv"
+
+        train_fieldnames = ["iter", "global_step", "meta_loss", "avg_reward", "avg_dynamic_rate"]
+        eval_fieldnames = ["iter", "total_reward", "observation_success_rate",
+                           "dynamic_completion_rate", "routine_completion_rate",
+                           "dynamic_reward", "routine_reward", "n_scheduled"]
+
+        train_csv_f = open(train_log_path, "w", newline="")
+        eval_csv_f = open(eval_log_path, "w", newline="")
+        train_writer = csv.DictWriter(train_csv_f, fieldnames=train_fieldnames)
+        eval_writer = csv.DictWriter(eval_csv_f, fieldnames=eval_fieldnames)
+        train_writer.writeheader()
+        eval_writer.writeheader()
+
         logger.info(f"开始元训练, 共 {total_iters} 个元迭代, 设备: {self.device}")
+        logger.info(f"日志目录: {log_dir}")
 
         pbar = tqdm(
             range(total_iters),
@@ -232,37 +256,71 @@ class MRLDMSTrainer:
             dynamic_ncols=True,
         )
 
-        for meta_iter in pbar:
-            self.meta_iteration = meta_iter
-            meta_loss, meta_info = self._meta_update()
+        try:
+            for meta_iter in pbar:
+                self.meta_iteration = meta_iter
+                meta_loss, meta_info = self._meta_update()
 
-            # 进度条实时指标
-            pbar.set_postfix(
-                loss=f"{meta_loss:.4f}",
-                R=f"{meta_info['avg_reward']:.1f}",
-                dyn=f"{meta_info['avg_dynamic_rate']:.1%}",
-                step=self.global_step,
-            )
-
-            # 评估
-            if meta_iter % self.cfg.train.eval_interval == 0 and meta_iter > 0:
-                eval_metrics = self.evaluate()
-                tqdm.write(
-                    f"  [Eval iter={meta_iter}] "
-                    f"reward={eval_metrics['total_reward']:.1f} "
-                    f"obs_rate={eval_metrics['observation_success_rate']:.1%} "
-                    f"dyn_rate={eval_metrics['dynamic_completion_rate']:.1%}"
+                # 进度条实时指标
+                pbar.set_postfix(
+                    loss=f"{meta_loss:.4f}",
+                    R=f"{meta_info['avg_reward']:.1f}",
+                    dyn=f"{meta_info['avg_dynamic_rate']:.1%}",
+                    step=self.global_step,
                 )
-                if eval_metrics['total_reward'] > self.best_reward:
-                    self.best_reward = eval_metrics['total_reward']
-                    self.save_checkpoint("best")
 
-            # 定期保存
-            if meta_iter % self.cfg.train.save_interval == 0 and meta_iter > 0:
-                self.save_checkpoint(f"iter_{meta_iter}")
+                # 写训练行
+                train_writer.writerow({
+                    "iter": meta_iter,
+                    "global_step": self.global_step,
+                    "meta_loss": round(meta_loss, 6),
+                    "avg_reward": round(meta_info['avg_reward'], 4),
+                    "avg_dynamic_rate": round(meta_info['avg_dynamic_rate'], 4),
+                })
+                train_csv_f.flush()
 
-        pbar.close()
-        logger.info("训练完成")
+                # 评估
+                if meta_iter % self.cfg.train.eval_interval == 0 and meta_iter > 0:
+                    eval_metrics = self.evaluate()
+                    tqdm.write(
+                        f"  [Eval iter={meta_iter}] "
+                        f"reward={eval_metrics['total_reward']:.1f} "
+                        f"obs_rate={eval_metrics['observation_success_rate']:.1%} "
+                        f"dyn_rate={eval_metrics['dynamic_completion_rate']:.1%}"
+                    )
+
+                    eval_writer.writerow({"iter": meta_iter, **{
+                        k: round(eval_metrics.get(k, 0.0), 4) for k in eval_fieldnames[1:]
+                    }})
+                    eval_csv_f.flush()
+
+                    if eval_metrics['total_reward'] > self.best_reward:
+                        self.best_reward = eval_metrics['total_reward']
+                        self.save_checkpoint("best")
+
+                # 定期保存
+                if meta_iter % self.cfg.train.save_interval == 0 and meta_iter > 0:
+                    self.save_checkpoint(f"iter_{meta_iter}")
+
+        finally:
+            train_csv_f.close()
+            eval_csv_f.close()
+            pbar.close()
+
+        # ---- 训练结束：写 JSON 摘要 ----
+        summary = {
+            "exp_name": run_name,
+            "total_iters": total_iters,
+            "global_step": self.global_step,
+            "best_reward": self.best_reward,
+            "train_log": str(train_log_path),
+            "eval_log": str(eval_log_path),
+        }
+        summary_path = log_dir / "summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+        logger.info(f"训练完成, 摘要已保存至: {summary_path}")
 
     # -------------------------------------------------------------------
     # 单次元更新 (Algorithm 1 的一次外循环迭代)
@@ -646,14 +704,18 @@ class MRLDMSTrainer:
         save_dir.mkdir(parents=True, exist_ok=True)
         path = save_dir / f"mrl_dms_{tag}.pt"
 
-        torch.save({
+        ckpt = {
             'actor_critic': self.actor_critic.state_dict(),
             'meta_learner': self.meta_learner.state_dict(),
             'meta_optimizer': self.meta_optimizer.state_dict(),
             'global_step': self.global_step,
             'meta_iteration': self.meta_iteration,
             'best_reward': self.best_reward,
-        }, path)
+        }
+        if hasattr(self, '_log_dir'):
+            ckpt['log_dir'] = str(self._log_dir)
+
+        torch.save(ckpt, path)
         logger.info(f"检查点已保存: {path}")
 
     def load_checkpoint(self, path: str):
