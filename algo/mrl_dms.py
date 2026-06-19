@@ -153,7 +153,7 @@ class MRLDMSTrainer:
 
     def _init_multi_agent(self, config, obs_dim, action_dim):
         """初始化多智能体组件"""
-        from env.multi_satellite_env import MultiSatelliteEnv
+        from envs.multi_satellite_env import MultiSatelliteEnv
         from models.mappo import MAPPOActorCritic
         from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
 
