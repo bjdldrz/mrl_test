@@ -110,3 +110,4 @@ python evaluate.py --checkpoint checkpoints/mrl_dms_best.pt --experiment all
 - ACLED 动态任务: https://github.com/YYYauW/DynamicMission
 - 卫星 TLE: https://celestrak.org/
 - 论文 Zenodo: https://doi.org/10.5281/zenodo.17724850
+# mrl_test
