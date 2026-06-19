@@ -27,7 +27,7 @@ from config import Config, get_default_config
 from algo.mrl_dms import MRLDMSTrainer
 from algo.ppo import PPOTrainer, RolloutBuffer
 from models.actor_critic import ActorCritic
-from env.satellite_env import SatelliteSchedulingEnv
+from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.metrics import MetricsTracker
 

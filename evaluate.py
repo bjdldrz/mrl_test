@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import get_default_config
 from algo.mrl_dms import MRLDMSTrainer
-from env.satellite_env import SatelliteSchedulingEnv
+from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.metrics import compare_algorithms
 

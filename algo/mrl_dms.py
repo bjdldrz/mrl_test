@@ -30,7 +30,7 @@ from tqdm import tqdm
 from models.actor_critic import ActorCritic
 from models.meta_learner import MetaLearner
 from algo.ppo import PPOTrainer, RolloutBuffer
-from env.satellite_env import SatelliteSchedulingEnv
+from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator
 
 logger = logging.getLogger(__name__)
