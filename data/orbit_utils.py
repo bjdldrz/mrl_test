@@ -108,6 +108,10 @@ class OrbitPropagator:
         if HAS_SGP4:
             self._init_sgp4()
 
+        # VTW 缓存: (lat_rounded, lon_rounded, horizon_s_int, step_int) → List[VTW]
+        # 同一任务在内循环和评估中被 reset 两次，缓存后第二次直接返回
+        self._vtw_cache: dict = {}
+
     def _init_sgp4(self):
         """从轨道根数构造 SGP4 卫星对象"""
         satrec = Satrec()
@@ -248,6 +252,12 @@ class OrbitPropagator:
         """
         target_ecef = self._geodetic_to_ecef(target_lat, target_lon)
 
+        # 命中缓存则直接返回（同任务在内循环和评估中重复调用）
+        cache_key = (round(target_lat, 4), round(target_lon, 4),
+                     int(horizon_seconds), int(time_step_s))
+        if cache_key in self._vtw_cache:
+            return self._vtw_cache[cache_key]
+
         windows = []
         in_window = False
         win_start = 0.0
@@ -295,6 +305,7 @@ class OrbitPropagator:
                 off_nadir_deg=off_nadirs[mid_idx] if off_nadirs else 0.0,
             ))
 
+        self._vtw_cache[cache_key] = windows
         return windows
 
     def _check_visibility(

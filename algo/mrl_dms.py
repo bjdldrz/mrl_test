@@ -168,7 +168,8 @@ class MRLDMSTrainer:
         )
 
         # MAPPO 模型: 共享 Actor + 集中式 Critic
-        global_state_dim = obs_dim * n_sat
+        # global_state_dim = local_obs_dim（mean pooling，维度不随卫星数增长）
+        global_state_dim = obs_dim
         self._mappo_model = MAPPOActorCritic(
             local_obs_dim=obs_dim,
             action_dim=action_dim,
@@ -482,8 +483,11 @@ class MRLDMSTrainer:
 
         total_reward = 0.0
         done = False
+        max_steps = int(env.horizon_s / 10.0) + 100  # 防御性上限
 
-        while not done:
+        for _ in range(max_steps):
+            if done:
+                break
             action_mask = info.get("action_mask", np.ones(env.action_space.n))
             with torch.no_grad():
                 obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)

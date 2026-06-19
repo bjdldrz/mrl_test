@@ -458,7 +458,7 @@ class SatelliteSchedulingEnv(gym.Env):
                 vtws = self.propagator.compute_vtw(
                     m.lat, m.lon,
                     self.horizon_s,
-                    time_step_s=30.0,  # 训练时用较粗步长加速
+                    time_step_s=120.0,  # 训练时用较粗步长加速
                 )
                 self.mission_vtw[m.id] = vtws
 

@@ -62,7 +62,8 @@ class MultiSatelliteEnv:
         sample_env = list(self.envs.values())[0]
         self.local_obs_dim = sample_env.observation_space.shape[0]
         self.action_dim = sample_env.action_space.n
-        self.global_state_dim = self.local_obs_dim * self.n_agents
+        # mean pooling：全局状态 = 所有卫星局部观测的均值，维度与单卫星观测相同
+        self.global_state_dim = self.local_obs_dim
 
         # 共享任务池 (在 reset 时初始化)
         self._shared_missions: List[Optional[Mission]] = []
@@ -184,15 +185,14 @@ class MultiSatelliteEnv:
         """
         构建全局状态向量 (给集中式 Critic)。
 
-        全局状态 = 拼接所有卫星的局部观测。
-        维度 = n_agents × local_obs_dim
+        全局状态 = 所有卫星局部观测的均值 (mean pooling)。
+        维度 = local_obs_dim，与卫星数量无关，避免参数爆炸。
         """
         local_obs_list = []
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
-            local_obs = env._build_observation()
-            local_obs_list.append(local_obs)
-        return np.concatenate(local_obs_list, axis=0)
+            local_obs_list.append(env._build_observation())
+        return np.mean(local_obs_list, axis=0)
 
     # ===================================================================
     # 评估指标 (聚合所有卫星)
