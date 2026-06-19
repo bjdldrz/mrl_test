@@ -22,7 +22,7 @@ import logging
 
 from data.mission_generator import Mission
 from data.orbit_utils import OrbitPropagator
-from env.satellite_env import SatelliteSchedulingEnv
+from envs.satellite_env import SatelliteSchedulingEnv
 
 logger = logging.getLogger(__name__)
 
