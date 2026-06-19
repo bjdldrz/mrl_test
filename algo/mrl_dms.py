@@ -137,6 +137,11 @@ class MRLDMSTrainer:
             dynamic_ratio=0.0, n_dynamic_completed=0, n_routine_completed=0,
         )
 
+        # ---- 全局跨任务 VTW 缓存 ----
+        # key: (sat_name, round(lat,4), round(lon,4), horizon_s_int, step_s_int)
+        # 相同坐标在不同任务/迭代中完全复用，避免重复计算
+        self._global_vtw_cache: dict = {}
+
         # ---- 多智能体组件 (可选) ----
         self.multi_agent = config.mappo.n_satellites > 1
         self._multi_env = None
@@ -368,24 +373,24 @@ class MRLDMSTrainer:
             # 记录调制后的初始参数
             init_state = copy.deepcopy(base_model.state_dict())
 
-            # (c) 内循环适应
+            # (d) 内循环适应
             task_reward, task_info = self._inner_loop_adapt(
                 routine, dynamic_schedule
             )
 
-            # (d) 收集适应后参数差值
+            # (e) 收集适应后参数差值
             adapted_state = base_model.state_dict()
             diff = {}
             for name in adapted_state:
                 diff[name] = adapted_state[name] - init_state[name]
             param_diffs.append(diff)
 
-            # (e) 评估
+            # (f) 评估
             eval_reward, eval_metrics = self._evaluate_adapted_policy(
                 routine, dynamic_schedule
             )
 
-            # (f) 更新反馈向量
+            # (g) 更新反馈向量
             self._prev_feedback = MetaLearner.build_feedback_vector(
                 cumulative_reward=eval_reward,
                 avg_advantage=task_info.get('avg_advantage', 0.0),
@@ -620,33 +625,51 @@ class MRLDMSTrainer:
         dynamic_schedule: list,
     ) -> None:
         """
-        预热本次任务的 OrbitPropagator VTW 缓存。
+        为本次任务批量预计算 VTW，并注入每个 env.precomputed_vtw。
 
-        任务坐标确定后 VTW 即确定。提前调用 compute_vtw 填充每颗卫星
-        propagator._vtw_cache，使后续所有 env.reset() 和动态任务插入中
-        的 _compute_vtw_for_missions 全部命中缓存（近似 O(1)）。
+        两级缓存策略：
+          1. _global_vtw_cache：跨 meta-iteration / 跨任务，按坐标去重；
+             相同坐标只计算一次，即使 mission_id 不同。
+          2. env.precomputed_vtw：按 (sat_name, mission_id) 索引，供
+             env._compute_vtw_for_missions 走 O(1) 字典查找。
         """
         all_missions = list(routine_missions)
         for _, dyn_batch in dynamic_schedule:
             all_missions.extend(dyn_batch)
 
-        # 读取 env 上已设置好的 horizon_s 和 vtw_time_step_s
         ref_env = self.envs[0]
         horizon_s = ref_env.horizon_s
         step_s = ref_env.vtw_time_step_s
 
-        # 单星模式：预热各卫星 propagator
-        for env in self.envs:
-            for m in all_missions:
-                env.propagator.compute_vtw(m.lat, m.lon, horizon_s, time_step_s=step_s)
+        def _get_vtw_for_env(env, mission, h_s=None, s_s=None):
+            h_s = h_s if h_s is not None else horizon_s
+            s_s = s_s if s_s is not None else step_s
+            sat_name = env.sat_config.name
+            coord_key = (sat_name, round(mission.lat, 4), round(mission.lon, 4),
+                         int(h_s), int(s_s))
+            if coord_key not in self._global_vtw_cache:
+                self._global_vtw_cache[coord_key] = env.propagator.compute_vtw(
+                    mission.lat, mission.lon, h_s, time_step_s=s_s
+                )
+            return self._global_vtw_cache[coord_key]
 
-        # 多星模式：预热 _multi_env 各子环境的 propagator
+        # 单星模式：注入 self.envs；多星模式：只注入 _multi_env 子环境
+        if not self.multi_agent:
+            for env in self.envs:
+                pv = {}
+                for m in all_missions:
+                    pv[(env.sat_config.name, m.id)] = _get_vtw_for_env(env, m)
+                env.precomputed_vtw = pv
+
+        # 多星模式：同样处理 _multi_env 各子环境
         if self.multi_agent and self._multi_env is not None:
             for sub_env in self._multi_env.envs.values():
+                pv = {}
                 for m in all_missions:
-                    sub_env.propagator.compute_vtw(
-                        m.lat, m.lon, horizon_s, time_step_s=step_s
+                    pv[(sub_env.sat_config.name, m.id)] = _get_vtw_for_env(
+                        sub_env, m, sub_env.horizon_s, sub_env.vtw_time_step_s
                     )
+                sub_env.precomputed_vtw = pv
 
     # -------------------------------------------------------------------
     # 任务采样
@@ -678,7 +701,10 @@ class MRLDMSTrainer:
     # 评估
     # ===================================================================
     def evaluate(self, n_episodes: int = 3) -> Dict[str, float]:
-        """在测试任务上评估当前策略"""
+        """在测试任务上评估当前策略（含内循环适应，反映 MAML 快适应能力）"""
+        base_model = self._mappo_model.actor if self.multi_agent else self.actor_critic
+        base_state = copy.deepcopy(base_model.state_dict())
+
         all_metrics = []
 
         for _ in range(n_episodes):
@@ -686,10 +712,17 @@ class MRLDMSTrainer:
                 n_routine=200,
                 n_dynamic_per_insertion=50,
             )
+            self._precompute_task_vtw(routine, dynamic)
+
+            # 恢复 base 参数，执行内循环适应后再评估
+            base_model.load_state_dict(copy.deepcopy(base_state))
+            self._inner_loop_adapt(routine, dynamic)
             _, metrics = self._evaluate_adapted_policy(routine, dynamic)
             all_metrics.append(metrics)
 
-        # 平均
+        # 评估后恢复 base 参数（不污染外循环训练状态）
+        base_model.load_state_dict(base_state)
+
         avg = {}
         for key in all_metrics[0]:
             avg[key] = np.mean([m[key] for m in all_metrics])
@@ -708,10 +741,13 @@ class MRLDMSTrainer:
             'actor_critic': self.actor_critic.state_dict(),
             'meta_learner': self.meta_learner.state_dict(),
             'meta_optimizer': self.meta_optimizer.state_dict(),
+            'base_optimizer': self.base_optimizer.state_dict(),
             'global_step': self.global_step,
             'meta_iteration': self.meta_iteration,
             'best_reward': self.best_reward,
         }
+        if self.multi_agent and self._mappo_model is not None:
+            ckpt['mappo_model'] = self._mappo_model.state_dict()
         if hasattr(self, '_log_dir'):
             ckpt['log_dir'] = str(self._log_dir)
 
@@ -724,6 +760,10 @@ class MRLDMSTrainer:
         self.actor_critic.load_state_dict(ckpt['actor_critic'])
         self.meta_learner.load_state_dict(ckpt['meta_learner'])
         self.meta_optimizer.load_state_dict(ckpt['meta_optimizer'])
+        if 'base_optimizer' in ckpt:
+            self.base_optimizer.load_state_dict(ckpt['base_optimizer'])
+        if self.multi_agent and self._mappo_model is not None and 'mappo_model' in ckpt:
+            self._mappo_model.load_state_dict(ckpt['mappo_model'])
         self.global_step = ckpt.get('global_step', 0)
         self.meta_iteration = ckpt.get('meta_iteration', 0)
         self.best_reward = ckpt.get('best_reward', -float('inf'))
