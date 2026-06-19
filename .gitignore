@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# PyTorch model weights
+*.pt
+*.pth
+
+# Checkpoints
+checkpoints/
+
+# Data files (uncomment if data is too large)
+# *.csv
+# *.json
+# *.h5
+# *.npy
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# CodeFlicker
+.codeflicker/
