@@ -25,6 +25,7 @@ import csv
 import json
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -142,6 +143,7 @@ class MRLDMSTrainer:
         # key: (sat_name, round(lat,4), round(lon,4), horizon_s_int, step_s_int)
         # 相同坐标在不同任务/迭代中完全复用，避免重复计算
         self._global_vtw_cache: dict = {}
+        self._vtw_cache_lock = threading.Lock()  # 并行 worker 写缓存时需要加锁
 
         # ---- 多智能体组件 (可选) ----
         self.multi_agent = config.mappo.n_satellites > 1
@@ -246,6 +248,13 @@ class MRLDMSTrainer:
         """
         if self.mission_gen is None:
             self.setup_data()
+
+        # 单星并行模式：每个 worker 占用 1 个 PyTorch 线程，避免 N_worker×N_torch 个线程互相抢占
+        if not self.multi_agent:
+            cfg_workers = self.cfg.train.num_workers
+            n_workers = cfg_workers if cfg_workers > 0 else self.cfg.meta.meta_batch_size
+            torch.set_num_threads(max(1, torch.get_num_threads() // n_workers))
+            logger.info(f"已将 PyTorch 内部线程数设为 {torch.get_num_threads()} (并行 worker={n_workers})")
 
         total_iters = total_meta_iterations or (
             self.cfg.train.total_training_steps
@@ -378,15 +387,13 @@ class MRLDMSTrainer:
         n_tasks = len(tasks)
 
         # 预先为每个任务计算 LSTM 调制（串行，需共享 LSTM 状态）
+        # 注意：单星模式下 VTW 预计算推迟到 worker 内部执行（并行化）
         task_h_norms = []
         task_init_states = []
         for i, (routine, dynamic_schedule) in enumerate(tasks):
-            self._precompute_task_vtw(routine, dynamic_schedule)
-            # 单星模式：将预计算 VTW 同步到对应 worker env
-            if not self.multi_agent and self.envs:
-                self._worker_envs[i].precomputed_vtw = copy.deepcopy(
-                    self.envs[0].precomputed_vtw
-                )
+            if self.multi_agent:
+                # 多星模式串行执行，VTW 在主线程预计算
+                self._precompute_task_vtw(routine, dynamic_schedule)
             base_model.load_state_dict(copy.deepcopy(base_state))
             fb_t = torch.FloatTensor(self._prev_feedback).unsqueeze(0).to(self.device)
             h_t = self.meta_learner(fb_t)
@@ -461,6 +468,29 @@ class MRLDMSTrainer:
             worker_model = self._worker_models[idx]
             worker_env = self._worker_envs[idx]
             worker_model.load_state_dict(copy.deepcopy(init_state))
+
+            # 在 worker 内部并行预计算 VTW（用锁保护全局缓存写入）
+            all_missions = list(routine)
+            for _, dyn_batch in dynamic_schedule:
+                all_missions.extend(dyn_batch)
+            horizon_s = worker_env.horizon_s
+            step_s = worker_env.vtw_time_step_s
+            sat_name = worker_env.sat_config.name
+            pv = {}
+            for m in all_missions:
+                coord_key = (sat_name, round(m.lat, 4), round(m.lon, 4),
+                             int(horizon_s), int(step_s))
+                # 先不加锁检查（读多写少，双重检查减少锁竞争）
+                if coord_key in self._global_vtw_cache:
+                    pv[(sat_name, m.id)] = self._global_vtw_cache[coord_key]
+                else:
+                    vtw = worker_env.propagator.compute_vtw(
+                        m.lat, m.lon, horizon_s, time_step_s=step_s
+                    )
+                    with self._vtw_cache_lock:
+                        self._global_vtw_cache[coord_key] = vtw
+                    pv[(sat_name, m.id)] = vtw
+            worker_env.precomputed_vtw = pv
 
             inner_ppo = PPOTrainer(
                 actor_critic=worker_model,
@@ -812,9 +842,11 @@ class MRLDMSTrainer:
             coord_key = (sat_name, round(mission.lat, 4), round(mission.lon, 4),
                          int(h_s), int(s_s))
             if coord_key not in self._global_vtw_cache:
-                self._global_vtw_cache[coord_key] = env.propagator.compute_vtw(
+                vtw = env.propagator.compute_vtw(
                     mission.lat, mission.lon, h_s, time_step_s=s_s
                 )
+                with self._vtw_cache_lock:
+                    self._global_vtw_cache.setdefault(coord_key, vtw)
             return self._global_vtw_cache[coord_key]
 
         # 单星模式：注入 self.envs；多星模式：只注入 _multi_env 子环境
