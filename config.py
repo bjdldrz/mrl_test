@@ -112,7 +112,7 @@ class MetaConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class MAPPOConfig:
-    n_satellites: int = 6                    # 参与调度的卫星数量
+    n_satellites: int = 1                    # 参与调度的卫星数量
     parameter_sharing: bool = True           # Actor 是否共享参数
     critic_hidden_dims: List[int] = field(
         default_factory=lambda: [256, 256]   # 集中式 Critic 隐藏层
