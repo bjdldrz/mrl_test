@@ -8,11 +8,15 @@ import os
 # 否则 N 个 worker 进程 × N 个 BLAS 线程 = N² 个线程争抢 N 个物理核，
 # 严重 oversubscription，表现为 CPU 大部分时间低利用 + 偶发窄尖峰。
 # 必须在 import numpy / torch 之前设置才能生效。
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")  # macOS Accelerate
+#
+# 注意：用直接赋值而非 setdefault —— 服务器环境可能已把 OMP_NUM_THREADS
+# 设成非法值（如空串/带空格），导致 libgomp 报 "Invalid value" 且单线程
+# 设置失效。这里强制覆盖为合法的 "1"。
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"  # macOS Accelerate
 
 import copy
 import numpy as np

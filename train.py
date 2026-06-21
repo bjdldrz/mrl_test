@@ -15,10 +15,21 @@
     python train.py --method mrl_dms --fast
 """
 
+# ⚠️ 必须在 import numpy / torch 之前覆盖线程环境变量。
+# 1) 服务器环境可能把 OMP_NUM_THREADS 设成非法值（空串/带空格），
+#    导致 libgomp 报 "Invalid value" 并使单线程设置失效；
+# 2) 父进程设好后，spawn 出的 worker 子进程会继承到合法的 "1"，
+#    从根本上避免 N 进程 × N BLAS 线程 的过度订阅。
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+
 import argparse
 import logging
 import sys
-import os
 
 # 将项目根目录加入 path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

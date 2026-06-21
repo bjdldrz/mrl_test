@@ -238,6 +238,7 @@ class MRLDMSTrainer:
                 * self.cfg.meta.inner_steps
                 * self.cfg.meta.rollout_steps)
         )
+        self._total_iters = total_iters  # 供任务课程式采样计算进度
 
         # ---- 日志目录 ----
         run_name = exp_name or f"mrl_dms_{int(time.time())}"
@@ -822,16 +823,36 @@ class MRLDMSTrainer:
     # -------------------------------------------------------------------
     def _sample_task_batch(self, n_tasks: int) -> list:
         """
-        从任务分布 p(T) 中采样一批任务。
-        每个"任务"= (routine_missions, dynamic_schedule)
-        """
-        tasks = []
-        routine_sizes = self.cfg.mission.routine_pool_sizes
-        dynamic_sizes = self.cfg.mission.dynamic_pool_sizes
+        从任务分布 p(T) 中采样一批任务（课程式：从少到多递增规模）。
 
+        每个"任务"= (routine_missions, dynamic_schedule)。
+
+        课程设计：pool_sizes 已按从小到大排序。训练早期只解锁最小的若干档，
+        随 meta_iteration 推进线性解锁更大规模，到训练 50% 时全部解锁。
+        这样首个 meta-iteration 不会一上来就撞到 500 routine + 300 dynamic
+        的最重任务（既慢又不利于学习）。
+        """
+        # 升序排列的规模档位
+        routine_sizes = sorted(self.cfg.mission.routine_pool_sizes)
+        dynamic_sizes = sorted(self.cfg.mission.dynamic_pool_sizes)
+
+        # 训练进度 [0, 1]；训练前 50% 内把可选档位从「仅最小档」线性放开到「全部」
+        total_iters = getattr(self, '_total_iters', 0) or 1
+        warmup_frac = 0.5
+        progress = min(1.0, self.meta_iteration / (total_iters * warmup_frac))
+
+        def _unlocked(sizes):
+            # 至少解锁第 1 档，最多解锁全部；随进度线性增加
+            k = 1 + int(round(progress * (len(sizes) - 1)))
+            return sizes[:k]
+
+        cur_routine = _unlocked(routine_sizes)
+        cur_dynamic = _unlocked(dynamic_sizes)
+
+        tasks = []
         for _ in range(n_tasks):
-            n_routine = np.random.choice(routine_sizes)
-            n_dynamic = np.random.choice(dynamic_sizes)
+            n_routine = np.random.choice(cur_routine)
+            n_dynamic = np.random.choice(cur_dynamic)
             strategy = np.random.choice(["uniform", "hotspot"])
 
             routine, dynamic = self.mission_gen.generate_episode_missions(

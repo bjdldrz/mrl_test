@@ -99,8 +99,8 @@ class NetworkConfig:
 class MetaConfig:
     meta_lr: float = 0.0005                  # η_outer (batch=16 方差更小，可适当提高 lr)
     meta_batch_size: int = 16                # 每次元更新采样的任务数（=CPU核心数，充分并行）
-    inner_steps: int = 10                    # 内循环 PPO 更新步数 K (增大让内循环充分适应)
-    rollout_steps: int = 2048                # T_rollout (每次采集的轨迹长度)
+    inner_steps: int = 4                     # 内循环 PPO 更新步数 K（调小加速，4 步足够内循环适应）
+    rollout_steps: int = 512                 # T_rollout（调小加速，512 步轨迹）
     eval_steps: int = 1024                   # T_eval (评估轨迹长度)
     feedback_dim: int = 64                   # 反馈向量压缩后的维度 (g_η 输出)
 
@@ -136,7 +136,7 @@ class RewardConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    total_training_steps: int = 32_768_000   # 16 batch × 10 steps × 2048 rollout × 100 iters
+    total_training_steps: int = 3_276_800    # 16 batch × 4 steps × 512 rollout × 100 iters
     seed: int = 42
     device: str = "auto"                     # "auto" / "cpu" / "cuda" / "mps"
     log_interval: int = 1          # 单位: 元迭代次数
@@ -144,7 +144,7 @@ class TrainConfig:
     save_interval: int = 20        # 每 20 次元迭代保存一次
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
-    vtw_time_step_s: float = 120.0           # VTW 采样步长: 越大越快, 精度略降
+    vtw_time_step_s: float = 300.0           # VTW 采样步长: 越大越快, 精度略降（300s 比 120s 快约 2.5x）
     num_workers: int = 16                    # 并行 worker 数; 0 = 自动(等于 meta_batch_size)
 
 
