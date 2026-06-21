@@ -143,27 +143,6 @@ class MRLDMSTrainer:
         # 相同坐标在不同任务/迭代中完全复用，避免重复计算
         self._global_vtw_cache: dict = {}
 
-        # ---- 并行 meta-batch 用的独立模型副本 ----
-        # 每个任务需独立的 actor_critic + inner_ppo，避免线程间参数竞争
-        n_workers = config.meta.meta_batch_size
-        self._worker_models: List[ActorCritic] = []
-        self._worker_envs: List = []
-        for _ in range(n_workers):
-            model_copy = ActorCritic(
-                obs_dim=obs_dim,
-                action_dim=action_dim,
-                hidden_dims=config.network.hidden_layers,
-                activation=config.network.activation,
-            ).to(self.device)
-            env_copy = SatelliteSchedulingEnv(
-                satellite_config=config.satellites[0],
-                max_action_dim=config.mission.max_action_dim,
-                reward_config=config.reward,
-                vtw_time_step_s=config.train.vtw_time_step_s,
-            )
-            self._worker_models.append(model_copy)
-            self._worker_envs.append(env_copy)
-
         # ---- 多智能体组件 (可选) ----
         self.multi_agent = config.mappo.n_satellites > 1
         self._multi_env = None
@@ -172,6 +151,26 @@ class MRLDMSTrainer:
 
         if self.multi_agent:
             self._init_multi_agent(config, obs_dim, action_dim)
+
+        # ---- 并行 meta-batch 用的独立模型副本 ----
+        # 必须在所有 attach_to_actor_critic 调用之后 deepcopy，确保层名与 base_model 一致
+        base_for_workers = (
+            self._mappo_model.actor if self.multi_agent else self.actor_critic
+        )
+        cfg_workers = config.train.num_workers
+        n_workers = cfg_workers if cfg_workers > 0 else config.meta.meta_batch_size
+        self._worker_models: List[ActorCritic] = []
+        self._worker_envs: List = []
+        for _ in range(n_workers):
+            model_copy = copy.deepcopy(base_for_workers)
+            env_copy = SatelliteSchedulingEnv(
+                satellite_config=config.satellites[0],
+                max_action_dim=config.mission.max_action_dim,
+                reward_config=config.reward,
+                vtw_time_step_s=config.train.vtw_time_step_s,
+            )
+            self._worker_models.append(model_copy)
+            self._worker_envs.append(env_copy)
 
     def setup_data(self, acled_df=None):
         """初始化任务生成器"""
@@ -472,7 +471,9 @@ class MRLDMSTrainer:
         ]
 
         results = [None] * len(tasks)
-        n_workers = min(len(tasks), self.cfg.meta.meta_batch_size)
+        cfg_workers = self.cfg.train.num_workers
+        n_workers = cfg_workers if cfg_workers > 0 else len(tasks)
+        n_workers = min(n_workers, len(tasks))
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_run_task, arg): arg[0] for arg in task_args}
             for future in as_completed(futures):
@@ -487,16 +488,22 @@ class MRLDMSTrainer:
             total_dynamic_rate += eval_metrics.get('dynamic_completion_rate', 0.0)
             self.global_step += steps
 
-        # 更新反馈向量（用最后一个任务的 metrics，与原逻辑一致）
-        last_metrics = results[-1][2]
+        # 更新反馈向量（对所有任务取平均，减少 batch=16 时的单任务噪声）
+        avg_dyn_rate = total_dynamic_rate / n_tasks
+        avg_cum_reward = sum(meta_rewards) / n_tasks
+        avg_routine_rate = sum(
+            r[2].get('routine_completion_rate', 0.0) for r in results
+        ) / n_tasks
+        avg_n_dynamic = int(avg_dyn_rate * 100)
+        avg_n_routine = int(avg_routine_rate * 100)
         self._prev_feedback = MetaLearner.build_feedback_vector(
-            cumulative_reward=meta_rewards[-1],
+            cumulative_reward=avg_cum_reward,
             avg_advantage=0.0,
             policy_entropy=0.0,
             kl_divergence=0.0,
-            dynamic_ratio=last_metrics.get('dynamic_completion_rate', 0.0),
-            n_dynamic_completed=int(last_metrics.get('dynamic_completion_rate', 0) * 100),
-            n_routine_completed=int(last_metrics.get('routine_completion_rate', 0) * 100),
+            dynamic_ratio=avg_dyn_rate,
+            n_dynamic_completed=avg_n_dynamic,
+            n_routine_completed=avg_n_routine,
         )
 
         # FOMAML base 参数更新

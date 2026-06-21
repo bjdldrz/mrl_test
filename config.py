@@ -74,7 +74,7 @@ class PPOConfig:
     discount_factor: float = 0.99            # γ
     clip_ratio: float = 0.2                  # ε
     gae_lambda: float = 0.95                 # λ
-    entropy_coeff: float = 0.01
+    entropy_coeff: float = 0.05             # 提高探索，防止内循环过早收敛到局部最优
     value_loss_coeff: float = 0.5
     batch_size: int = 128
     ppo_epochs: int = 4                      # 每次更新的梯度步数 K
@@ -97,8 +97,8 @@ class NetworkConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class MetaConfig:
-    meta_lr: float = 0.0003                  # η_outer (外循环学习率，降低以减小 FOMAML 梯度方差)
-    meta_batch_size: int = 4                 # 每次元更新采样的任务数
+    meta_lr: float = 0.0005                  # η_outer (batch=16 方差更小，可适当提高 lr)
+    meta_batch_size: int = 16                # 每次元更新采样的任务数（=CPU核心数，充分并行）
     inner_steps: int = 10                    # 内循环 PPO 更新步数 K (增大让内循环充分适应)
     rollout_steps: int = 2048                # T_rollout (每次采集的轨迹长度)
     eval_steps: int = 1024                   # T_eval (评估轨迹长度)
@@ -124,7 +124,7 @@ class MAPPOConfig:
 @dataclass
 class RewardConfig:
     w_priority: float = 1.0                  # w_p (优先级权重)
-    w_dynamic: float = 2.0                   # w_d (动态任务权重)
+    w_dynamic: float = 3.0                   # w_d (动态任务权重，提高以强化 dyn 信号)
     w_quality: float = 0.5                   # w_q (观测质量权重, 基于 off-nadir 角)
     penalty_idle: float = -0.1               # 空闲惩罚
     penalty_invalid: float = -1.0            # 无效动作惩罚
@@ -136,15 +136,16 @@ class RewardConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    total_training_steps: int = 8_192_000    # 环境交互总步数 (= 100 × meta_batch × inner_steps × rollout = 100 次元迭代)
+    total_training_steps: int = 32_768_000   # 16 batch × 10 steps × 2048 rollout × 100 iters
     seed: int = 42
     device: str = "auto"                     # "auto" / "cpu" / "cuda" / "mps"
-    log_interval: int = 1          # 单位: 元迭代次数 (total_iters ≈ 48)
+    log_interval: int = 1          # 单位: 元迭代次数
     eval_interval: int = 10        # 每 10 次元迭代评估一次
     save_interval: int = 20        # 每 20 次元迭代保存一次
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
     vtw_time_step_s: float = 120.0           # VTW 采样步长: 越大越快, 精度略降
+    num_workers: int = 16                    # 并行 worker 数; 0 = 自动(等于 meta_batch_size)
 
 
 # -----------------------------------------------------------------------
