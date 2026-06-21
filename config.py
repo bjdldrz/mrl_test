@@ -70,7 +70,7 @@ class MissionConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class PPOConfig:
-    learning_rate: float = 0.005
+    learning_rate: float = 0.0003           # 内循环 PPO LR，与 meta_lr 对齐（FOMAML 一阶近似在大步长下误差大）
     discount_factor: float = 0.99            # γ
     clip_ratio: float = 0.2                  # ε
     gae_lambda: float = 0.95                 # λ
@@ -136,7 +136,7 @@ class RewardConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    total_training_steps: int = 2_000_000    # 环境交互总步数 (≈ 244 次元迭代，保证充分收敛)
+    total_training_steps: int = 8_192_000    # 环境交互总步数 (= 100 × meta_batch × inner_steps × rollout = 100 次元迭代)
     seed: int = 42
     device: str = "auto"                     # "auto" / "cpu" / "cuda" / "mps"
     log_interval: int = 1          # 单位: 元迭代次数 (total_iters ≈ 48)
