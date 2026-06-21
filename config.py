@@ -97,9 +97,9 @@ class NetworkConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class MetaConfig:
-    meta_lr: float = 0.001                   # η_outer (外循环学习率)
+    meta_lr: float = 0.0003                  # η_outer (外循环学习率，降低以减小 FOMAML 梯度方差)
     meta_batch_size: int = 4                 # 每次元更新采样的任务数
-    inner_steps: int = 5                     # 内循环 PPO 更新步数 K
+    inner_steps: int = 10                    # 内循环 PPO 更新步数 K (增大让内循环充分适应)
     rollout_steps: int = 2048                # T_rollout (每次采集的轨迹长度)
     eval_steps: int = 1024                   # T_eval (评估轨迹长度)
     feedback_dim: int = 64                   # 反馈向量压缩后的维度 (g_η 输出)
@@ -136,7 +136,7 @@ class RewardConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    total_training_steps: int = 500_000      # 环境交互总步数 (论文 Table 3 × 5 以保证足够元迭代)
+    total_training_steps: int = 2_000_000    # 环境交互总步数 (≈ 244 次元迭代，保证充分收敛)
     seed: int = 42
     device: str = "auto"                     # "auto" / "cpu" / "cuda" / "mps"
     log_interval: int = 1          # 单位: 元迭代次数 (total_iters ≈ 48)
