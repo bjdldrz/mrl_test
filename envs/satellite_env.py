@@ -46,7 +46,7 @@ class SatelliteSchedulingEnv(gym.Env):
     def __init__(
         self,
         satellite_config,
-        max_action_dim: int = 600,
+        max_action_dim: int = 800,
         horizon_s: float = 86400.0,
         reward_config=None,
         precomputed_vtw: Optional[Dict] = None,
@@ -231,29 +231,62 @@ class SatelliteSchedulingEnv(gym.Env):
     def _build_action_mask(self) -> np.ndarray:
         """
         构建二值掩码向量 M_t (论文 Eq.13)。
-        Valid(a_i | s_t) = 1 当且仅当:
+        Valid(a_i | s_t) = 1 当且仅当三条判据同时满足:
           (1) 目标在 VTW 内可见
-          (2) 姿态机动时间可行
-          (3) 未执行过
+          (2) 姿态机动时间可行 (Constraint 8)
+          (3) 无先前执行冲突: 未执行过 + 与已调度任务时间窗不重叠 (Constraint 10)
+        论文用掩码"先验排除"不可行动作 (Eq.14), 而非事后惩罚。
         """
         mask = np.zeros(self.max_action_dim + 1, dtype=np.float32)
         mask[self.IDLE_ACTION] = 1.0  # idle 动作始终可用
 
+        # 上一次观测的结束时刻与姿态角 (用于机动时间判据)
+        last_obs_end = self.schedule_log[-1].obs_end_s if self.schedule_log else None
+
         for i in range(self.max_action_dim):
             m = self.missions[i]
             if m is None or m.is_observed:
-                continue
+                continue  # 判据(3): 已执行过
             if m.earliest_time_s > self.current_time_s:
                 continue  # 动态任务尚未到达
             if self.current_time_s > m.deadline_s:
                 continue  # 已过截止时间
 
-            # 检查是否在 VTW 内
-            vtws = self.mission_vtw.get(m.id, [])
-            for vtw in vtws:
+            # 判据(1): 找到当前可用的 VTW
+            usable_vtw = None
+            for vtw in self.mission_vtw.get(m.id, []):
                 if vtw.start_time <= self.current_time_s <= vtw.end_time - m.duration_s:
-                    mask[i] = 1.0
+                    usable_vtw = vtw
                     break
+            if usable_vtw is None:
+                continue
+
+            # 判据(2): 姿态机动时间可行 (Constraint 8)
+            obs_start = self.current_time_s
+            if last_obs_end is not None:
+                transition = self.propagator.compute_transition_time(
+                    self._last_off_nadir_deg, usable_vtw.off_nadir_deg
+                )
+                earliest_feasible = last_obs_end + transition
+                if obs_start < earliest_feasible:
+                    obs_start = earliest_feasible
+                # 机动顺延后仍须落在 VTW 与截止时间内
+                if obs_start > usable_vtw.end_time - m.duration_s:
+                    continue
+                if obs_start + m.duration_s > m.deadline_s:
+                    continue
+            obs_end = obs_start + m.duration_s
+
+            # 判据(3): 与已调度任务时间窗不重叠 (Constraint 10)
+            conflict = False
+            for record in self.schedule_log:
+                if not (obs_end <= record.obs_start_s or obs_start >= record.obs_end_s):
+                    conflict = True
+                    break
+            if conflict:
+                continue
+
+            mask[i] = 1.0
 
         return mask
 
@@ -342,20 +375,22 @@ class SatelliteSchedulingEnv(gym.Env):
         if mission.is_dynamic and tau <= dc and dc > t0:
             delta_t = 1.0  # δ_t = 1 (动态任务)
             time_ratio = (tau - t0) / (dc - t0) if dc > t0 else 1.0
-            f_decay = np.exp(-2.0 * time_ratio)
+            # f=exp(-k·time_ratio): 越早完成 f 越大(与 Eq.17 自洽); k 可配置
+            f_decay = np.exp(-self.rw_cfg.dynamic_decay_k * time_ratio)
             R_d = delta_t * self.rw_cfg.w_dynamic * f_decay
         else:
             R_d = 0.0
 
-        # (d) 观测质量奖励 R_q (新增)
-        # off-nadir 角越小, cos 值越大, 质量越高
-        max_roll = self.sat_config.max_roll_deg
-        if max_roll > 0:
-            R_q = self.rw_cfg.w_quality * np.cos(
-                off_nadir_deg / max_roll * (np.pi / 2.0)
-            )
-        else:
-            R_q = self.rw_cfg.w_quality
+        # (d) 观测质量奖励 R_q —— 论文外扩展, 仅 w_quality>0 时启用 (论文 Eq.15 仅 Rp+Rt+Rd)
+        R_q = 0.0
+        if self.rw_cfg.w_quality > 0:
+            max_roll = self.sat_config.max_roll_deg
+            if max_roll > 0:
+                R_q = self.rw_cfg.w_quality * np.cos(
+                    off_nadir_deg / max_roll * (np.pi / 2.0)
+                )
+            else:
+                R_q = self.rw_cfg.w_quality
 
         total_reward = R_p + R_t + R_d + R_q
         return total_reward
@@ -449,7 +484,10 @@ class SatelliteSchedulingEnv(gym.Env):
             else:
                 break
         if n_discarded > 0:
-            logger.debug(f"动态槽位已满, 丢弃 {n_discarded} 个任务")
+            logger.warning(
+                f"动态槽位已满 (max_action_dim={self.max_action_dim}), 丢弃 {n_discarded} 个任务; "
+                f"这会污染 dynamic_completion_rate 指标，应调大 max_action_dim"
+            )
 
     def _compute_vtw_for_missions(self, missions: List[Mission]):
         """为指定任务计算 VTW 并缓存"""

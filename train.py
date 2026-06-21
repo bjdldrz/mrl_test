@@ -222,7 +222,7 @@ def main():
         config.mission.dynamic_pool_sizes = [5]
         config.mission.max_action_dim = 50
         config.mappo.n_satellites = 1          # 单星模式, 省去 5 颗卫星的 VTW 计算
-        config.train.vtw_time_step_s = 300.0   # 步长 300s: 精度够用, 计算快 2.5x
+        config.train.vtw_time_step_s = 60.0    # 步长 60s: LEO 过境快, 300s 会漏采窗口
         config.train.log_interval = 1
         config.train.eval_interval = 5
         logger.info("快速测试模式")

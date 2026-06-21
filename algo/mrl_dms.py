@@ -379,7 +379,7 @@ class MRLDMSTrainer:
         # 预先为每个任务计算 LSTM 调制（串行，需共享 LSTM 状态）
         # 注意：单星模式下 VTW 预计算推迟到 worker 内部执行（并行化）
         t_serial = time.perf_counter()
-        task_h_norms = []
+        task_log_probs = []   # 每个任务的随机调制 log_prob (REINFORCE, 连在计算图上)
         task_init_states = []
         for i, (routine, dynamic_schedule) in enumerate(tasks):
             if self.multi_agent:
@@ -388,9 +388,10 @@ class MRLDMSTrainer:
             base_model.load_state_dict(copy.deepcopy(base_state))
             fb_t = torch.FloatTensor(self._prev_feedback).unsqueeze(0).to(self.device)
             h_t = self.meta_learner(fb_t)
-            actor_mods, critic_mods = self.meta_learner.get_modulations(h_t)
+            # 随机调制 (Eq.26-27 REINFORCE): 采样调制量并记录 log_prob
+            actor_mods, critic_mods, log_prob = self.meta_learner.get_modulations_stochastic(h_t)
             self.meta_learner.apply_modulations(base_model, actor_mods, critic_mods)
-            task_h_norms.append(h_t.norm())
+            task_log_probs.append(log_prob)
             task_init_states.append(copy.deepcopy(base_model.state_dict()))
         serial_s = time.perf_counter() - t_serial
         if not self.multi_agent:
@@ -436,13 +437,17 @@ class MRLDMSTrainer:
                 avg_diff = diffs.mean(dim=0)
                 param.data.add_(meta_lr * avg_diff)
 
-        # LSTM / 调制头更新
+        # LSTM / 调制头更新 (论文 Eq.27 元目标的 REINFORCE 实现)
+        # 把"LSTM 产生调制"视为随机策略动作, 适应后累积奖励 R 作为 return,
+        # loss = -(R_normalized · log_prob), 使 R 的信号通过 log_prob 反传到 LSTM。
+        # R_normalized 用 batch 内均值做 baseline 降方差。
         self.meta_optimizer.zero_grad()
         rewards_t = torch.tensor(meta_rewards, dtype=torch.float32, device=self.device)
-        r_std = rewards_t.std().clamp(min=1.0)
-        rewards_normalized = (rewards_t - rewards_t.mean()) / r_std
-        h_norms = torch.stack(task_h_norms)
-        lstm_loss = -(rewards_normalized * h_norms).mean()
+        r_std = rewards_t.std().clamp(min=1e-6)
+        rewards_normalized = (rewards_t - rewards_t.mean()) / r_std  # 优势 (REINFORCE baseline)
+        log_probs = torch.stack(task_log_probs)
+        # 优势作为常数权重 (detach), 梯度只流经 log_prob → LSTM/调制头
+        lstm_loss = -(rewards_normalized.detach() * log_probs).mean()
         lstm_loss.backward()
         nn.utils.clip_grad_norm_(self.meta_learner.parameters(), 1.0)
         self.meta_optimizer.step()

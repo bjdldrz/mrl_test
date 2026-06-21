@@ -211,7 +211,7 @@ class MetaLearner(nn.Module):
         self, h_t: torch.Tensor
     ) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
-        通过调制头生成参数偏移 (论文 Eq.26)。
+        通过调制头生成参数偏移 (论文 Eq.26)。确定性版本(评估用)。
 
         返回
         ----
@@ -225,6 +225,53 @@ class MetaLearner(nn.Module):
         if self.critic_modulation is not None:
             critic_mods = self.critic_modulation(h_t)
         return actor_mods, critic_mods
+
+    def get_modulations_stochastic(
+        self, h_t: torch.Tensor, explore_std: float = 0.05,
+    ) -> Tuple[Optional[Dict], Optional[Dict], torch.Tensor]:
+        """
+        随机调制 (论文 Eq.26-27 的 REINFORCE 实现)。
+
+        把"LSTM 产生调制"视为一个随机策略动作: 以确定性调制头输出为均值,
+        叠加固定标准差的高斯噪声采样得到实际调制量, 并记录其对数概率 log_prob。
+        外循环用 L = -(R_normalized · log_prob) 做策略梯度更新, 使适应后累积奖励 R
+        的信号通过 log_prob 真正反传到 LSTM + 调制头 (实现 Eq.27 元目标精神)。
+
+        返回
+        ----
+        actor_mods  : {name: (scale, shift)}  采样后的调制 (用于应用到 base 网络)
+        critic_mods : {name: (scale, shift)}
+        log_prob    : 标量 tensor, 本次全部调制采样的对数概率之和 (连在计算图上)
+        """
+        det_actor, det_critic = self.get_modulations(h_t)
+        log_prob_terms = []
+
+        def _sample(mods):
+            if mods is None:
+                return None
+            sampled = {}
+            for name, (scale_mu, shift_mu) in mods.items():
+                # 对 scale 和 shift 各自建高斯分布, 采样并累加 log_prob
+                # 用 sample()(非 rsample): REINFORCE 需 log_prob 对均值 mu 保留梯度,
+                # 而 rsample 的重参数化会使 (x-mu) 成为常数路径, 导致 log_prob 对 mu 梯度为 0
+                scale_dist = torch.distributions.Normal(scale_mu, explore_std)
+                shift_dist = torch.distributions.Normal(shift_mu, explore_std)
+                scale_s = scale_dist.sample()
+                shift_s = shift_dist.sample()
+                log_prob_terms.append(scale_dist.log_prob(scale_s).sum())
+                log_prob_terms.append(shift_dist.log_prob(shift_s).sum())
+                sampled[name] = (scale_s, shift_s)
+            return sampled
+
+        actor_mods = _sample(det_actor)
+        critic_mods = _sample(det_critic)
+
+        if log_prob_terms:
+            log_prob = torch.stack(log_prob_terms).sum()
+        else:
+            log_prob = torch.zeros(1, device=h_t.device).sum()
+
+        return actor_mods, critic_mods, log_prob
 
     def apply_modulations(
         self,
@@ -245,9 +292,10 @@ class MetaLearner(nn.Module):
         for name, param in actor_critic.named_parameters():
             if name in all_mods:
                 scale, shift = all_mods[name]
-                # 确保维度匹配
-                scale = scale.view_as(param.data)
-                shift = shift.view_as(param.data)
+                # 调制量应用到 base 参数仅用于给内循环提供初始化, 不需梯度
+                # (REINFORCE 的梯度路径靠 log_prob, 不靠这步); detach 避免脱图警告
+                scale = scale.detach().view_as(param.data)
+                shift = shift.detach().view_as(param.data)
                 param.data = param.data * scale + shift
 
     @staticmethod

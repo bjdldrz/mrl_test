@@ -1,0 +1,8 @@
+{
+  "exp_name": "smoke_mappo",
+  "total_iters": 2,
+  "global_step": 4096,
+  "best_reward": -Infinity,
+  "train_log": "runs/smoke_mappo/train_log.csv",
+  "eval_log": "runs/smoke_mappo/eval_log.csv"
+}

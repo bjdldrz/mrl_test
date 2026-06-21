@@ -1,0 +1,3 @@
+iter,global_step,meta_loss,avg_reward,avg_dynamic_rate
+0,2048,11.338623,12.9536,0.1167
+1,4096,0.254883,10.9099,0.0833

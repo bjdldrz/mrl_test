@@ -38,7 +38,7 @@ class MultiSatelliteEnv:
     def __init__(
         self,
         satellite_configs: list,
-        max_action_dim: int = 600,
+        max_action_dim: int = 800,
         horizon_s: float = 86400.0,
         reward_config=None,
         vtw_time_step_s: float = 120.0,

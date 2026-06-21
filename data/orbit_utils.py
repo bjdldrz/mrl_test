@@ -282,9 +282,9 @@ class OrbitPropagator:
         else:
             sat_pos_all = self._propagate_kepler_batch(times)
 
-        # 批量可见性判断
+        # 批量可见性判断 (传入 times 以计算太阳光照约束)
         visible_arr, elev_arr, off_nadir_arr = self._check_visibility_batch(
-            sat_pos_all, target_ecef
+            sat_pos_all, target_ecef, times
         )
 
         # 用 diff 找窗口边界（0→1 为开始，1→0 为结束）
@@ -304,23 +304,41 @@ class OrbitPropagator:
             ))
         return windows
 
+    def _gmst_rad(self, times: np.ndarray) -> np.ndarray:
+        """格林尼治平恒星时 (弧度), 用于 TEME/ECI → ECEF 旋转。times: 相对 epoch 秒数。"""
+        jd0, fr0 = jday(
+            self.epoch.year, self.epoch.month, self.epoch.day,
+            self.epoch.hour, self.epoch.minute, self.epoch.second
+        )
+        d = (jd0 + fr0) + times / 86400.0 - 2451545.0   # 自 J2000.0 的天数
+        return np.radians((280.46061837 + 360.98564736629 * d) % 360.0)
+
+    @staticmethod
+    def _teme_to_ecef(pos_teme: np.ndarray, gmst: np.ndarray) -> np.ndarray:
+        """绕 z 轴旋转 GMST: ECEF = Rz(GMST)·TEME。pos_teme [N,3], gmst [N]。"""
+        cos_g, sin_g = np.cos(gmst), np.sin(gmst)
+        x, y, z = pos_teme[:, 0], pos_teme[:, 1], pos_teme[:, 2]
+        x_e = cos_g * x + sin_g * y
+        y_e = -sin_g * x + cos_g * y
+        return np.stack([x_e, y_e, z], axis=1)
+
     def _propagate_sgp4_batch(self, times: np.ndarray) -> np.ndarray:
-        """批量 SGP4 传播，返回 [N, 3] ECEF 位置数组"""
+        """批量 SGP4 传播，返回 [N, 3] ECEF 位置数组 (已做 TEME→ECEF 旋转)"""
         n = len(times)
-        pos = np.zeros((n, 3))
-        epoch_jd = self._satrec.jdsatepoch + self._satrec.jdsatepochF
+        pos_teme = np.zeros((n, 3))
         for i, t in enumerate(times):
             e, r, _ = self._satrec.sgp4(
                 self._satrec.jdsatepoch,
                 self._satrec.jdsatepochF + t / 86400.0
             )
             if e == 0:
-                pos[i] = r
+                pos_teme[i] = r
             else:
-                # fallback 到开普勒单点
-                state = self._propagate_kepler(float(t))
-                pos[i] = state.position_ecef
-        return pos
+                # fallback 到开普勒单点 (已是 ECEF), 先存后续不再旋转
+                pos_teme[i] = self._propagate_kepler(float(t)).position_ecef
+        # TEME → ECEF (关键: SGP4 输出 TEME, 必须绕 z 轴旋转 GMST 才能与地面 ECEF 目标一致)
+        gmst = self._gmst_rad(times)
+        return self._teme_to_ecef(pos_teme, gmst)
 
     def _propagate_kepler_batch(self, times: np.ndarray) -> np.ndarray:
         """批量开普勒传播，返回 [N, 3] ECEF 位置数组（全向量化）"""
@@ -342,14 +360,61 @@ class OrbitPropagator:
 
         return np.stack([x, y, z], axis=1)  # [N, 3]
 
+    def _sun_ecef_batch(self, times: np.ndarray) -> np.ndarray:
+        """
+        批量计算太阳单位方向向量 (ECEF), 用于太阳光照约束 (论文 Constraint 4)。
+
+        采用标准低精度天文公式 (NOAA/天文年历), 纯 numpy 实现, 不依赖外部库。
+        返回 [N, 3] 的太阳方向单位向量 (ECEF 坐标系)。
+        """
+        # 各时刻的儒略日 (UT)
+        jd0, fr0 = jday(
+            self.epoch.year, self.epoch.month, self.epoch.day,
+            self.epoch.hour, self.epoch.minute, self.epoch.second
+        )
+        jd = (jd0 + fr0) + times / 86400.0      # [N]
+
+        # 自 J2000.0 起的儒略世纪/天数
+        d = jd - 2451545.0                      # 天数
+        # 太阳平黄经与平近点角 (度)
+        g = np.radians((357.529 + 0.98560028 * d) % 360.0)   # 平近点角
+        q = (280.459 + 0.98564736 * d) % 360.0               # 平黄经
+        # 黄道经度 (度)
+        L = np.radians((q + 1.915 * np.sin(g) + 0.020 * np.sin(2 * g)) % 360.0)
+        # 黄赤交角 (度)
+        eps = np.radians(23.439 - 0.00000036 * d)
+
+        # 太阳在地心赤道惯性系 (ECI/GCRF 近似) 的单位方向
+        x_eci = np.cos(L)
+        y_eci = np.cos(eps) * np.sin(L)
+        z_eci = np.sin(eps) * np.sin(L)
+
+        # 格林尼治平恒星时 (GMST, 弧度), 用于 ECI→ECEF 旋转
+        gmst = np.radians((280.46061837 + 360.98564736629 * d) % 360.0)   # [N]
+        cos_g, sin_g = np.cos(gmst), np.sin(gmst)
+        # 绕 z 轴旋转 -GMST: ECEF = Rz(GMST) · ECI
+        x_ecef = cos_g * x_eci + sin_g * y_eci
+        y_ecef = -sin_g * x_eci + cos_g * y_eci
+        z_ecef = z_eci
+
+        sun = np.stack([x_ecef, y_ecef, z_ecef], axis=1)     # [N, 3]
+        sun /= np.linalg.norm(sun, axis=1, keepdims=True)
+        return sun
+
     def _check_visibility_batch(
         self,
         sat_pos_all: np.ndarray,
         target_ecef: np.ndarray,
+        times: np.ndarray = None,
     ) -> tuple:
         """
         批量可见性判断，返回 (visible[N], elevation_deg[N], off_nadir_deg[N])。
         全程 NumPy 向量化，无 Python 循环。
+
+        论文 Constraint 4 三项几何/光照约束:
+          - off-nadir ≤ ±25° roll
+          - off-nadir ≤ FOV/2 (45° 视场)
+          - 目标处太阳光照 (光学成像需白天)
         """
         # to_sat: [N, 3]
         to_sat = sat_pos_all - target_ecef[np.newaxis, :]
@@ -374,8 +439,21 @@ class OrbitPropagator:
         cos_nadir = np.clip(cos_nadir, -1.0, 1.0)
         off_nadir_deg = np.degrees(np.arccos(cos_nadir))
 
-        # 可见条件
-        is_visible = valid & (elevation_deg > 0.0) & (off_nadir_deg <= self.max_roll_deg)
+        # 可见条件: (1) 仰角>0  (2) off-nadir ≤ ±25° roll  (3) off-nadir ≤ FOV/2
+        is_visible = (
+            valid
+            & (elevation_deg > 0.0)
+            & (off_nadir_deg <= self.max_roll_deg)
+            & (off_nadir_deg <= self.fov_deg / 2.0)
+        )
+
+        # (4) 太阳光照约束 (论文 Constraint 4): 目标处太阳高度角 > 阈值
+        # 光学成像需目标处于日照. 阈值 0° = 目标在地平线以上受日照(白天)
+        if times is not None:
+            sun_dir = self._sun_ecef_batch(times)                 # [N, 3] 太阳方向
+            sun_elev_sin = np.einsum('ij,j->i', sun_dir, target_up)  # 太阳高度角的 sin
+            sunlit = sun_elev_sin > 0.0                           # 太阳在目标地平线以上
+            is_visible = is_visible & sunlit
 
         return is_visible, elevation_deg, off_nadir_deg
 
@@ -418,7 +496,13 @@ class OrbitPropagator:
         # 可见条件:
         #   1) 仰角 > 0° (卫星在目标的地平线以上)
         #   2) off-nadir 角 <= max_roll_deg (±25° 滚动角约束)
-        is_visible = (elevation_deg > 0.0) and (off_nadir_deg <= self.max_roll_deg)
+        #   3) off-nadir 角 <= FOV/2 (45° 视场约束)
+        # 注: 太阳光照约束需时间参数, 仅在批量版 _check_visibility_batch 中施加
+        is_visible = (
+            (elevation_deg > 0.0)
+            and (off_nadir_deg <= self.max_roll_deg)
+            and (off_nadir_deg <= self.fov_deg / 2.0)
+        )
 
         return is_visible, elevation_deg, off_nadir_deg
 

@@ -1,0 +1,8 @@
+{
+  "exp_name": "smoke_single",
+  "total_iters": 3,
+  "global_step": 7680,
+  "best_reward": 10.750980033882243,
+  "train_log": "runs/smoke_single/train_log.csv",
+  "eval_log": "runs/smoke_single/eval_log.csv"
+}

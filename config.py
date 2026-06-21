@@ -62,7 +62,9 @@ class MissionConfig:
     schedule_horizon_hours: float = 24.0     # 24小时规划周期 (论文 4.1.2)
 
     # 动作空间
-    max_action_dim: int = 600                # A_max, 常规+动态槽位总数
+    max_action_dim: int = 800                # A_max, 常规+动态槽位总数
+                                             # = routine_max(500) + insertions(3)×dynamic_per_insertion_max(100)
+                                             # 必须 ≥800,否则动态任务会溢出槽位被静默丢弃，污染 dynamic_completion_rate
 
 
 # -----------------------------------------------------------------------
@@ -70,11 +72,11 @@ class MissionConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class PPOConfig:
-    learning_rate: float = 0.0003           # 内循环 PPO LR，与 meta_lr 对齐（FOMAML 一阶近似在大步长下误差大）
+    learning_rate: float = 0.005            # 论文 Table 3: α=0.005
     discount_factor: float = 0.99            # γ
     clip_ratio: float = 0.2                  # ε
     gae_lambda: float = 0.95                 # λ
-    entropy_coeff: float = 0.05             # 提高探索，防止内循环过早收敛到局部最优
+    entropy_coeff: float = 0.01             # 论文 Table 3: 0.01
     value_loss_coeff: float = 0.5
     batch_size: int = 128
     ppo_epochs: int = 4                      # 每次更新的梯度步数 K
@@ -97,7 +99,7 @@ class NetworkConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class MetaConfig:
-    meta_lr: float = 0.0005                  # η_outer (batch=16 方差更小，可适当提高 lr)
+    meta_lr: float = 0.005                    # 论文 Table 3: α=0.005（内外循环统一学习率）
     meta_batch_size: int = 16                # 每次元更新采样的任务数（=CPU核心数，充分并行）
     inner_steps: int = 4                     # 内循环 PPO 更新步数 K（调小加速，4 步足够内循环适应）
     rollout_steps: int = 512                 # T_rollout（调小加速，512 步轨迹）
@@ -123,12 +125,17 @@ class MAPPOConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class RewardConfig:
-    w_priority: float = 1.0                  # w_p (优先级权重)
-    w_dynamic: float = 3.0                   # w_d (动态任务权重，提高以强化 dyn 信号)
-    w_quality: float = 0.5                   # w_q (观测质量权重, 基于 off-nadir 角)
-    penalty_idle: float = -0.1               # 空闲惩罚
-    penalty_invalid: float = -1.0            # 无效动作惩罚
-    penalty_deadline_miss: float = -0.5      # 错过截止时间的惩罚
+    # --- 论文 Eq.15 奖励: R = Rp + Rt + Rd (严格复现) ---
+    w_priority: float = 1.0                  # w_p (优先级权重, Eq.16)
+    w_dynamic: float = 1.0                   # w_d (动态任务权重, Eq.18; 论文 Table 3 未给具体值, 取 1.0 中性)
+    dynamic_decay_k: float = 2.0             # Rd 指数衰减系数 f=exp(-k·time_ratio)
+                                             # 论文文字矛盾: 第639行"越早完成奖励越高"(与Eq.17/此实现一致),
+                                             # 第642行"越接近截止越高"(相反). 此处取与 Eq.17 自洽的"越早越高"
+    # --- 以下为论文外扩展(reward shaping), 严格复现时置 0 关闭; 作为优化方案可开启 ---
+    w_quality: float = 0.0                   # w_q 观测质量(论文无此项, Eq.15 仅三项); >0 时启用
+    penalty_idle: float = 0.0                # 空闲惩罚(论文无, 论文靠掩码而非惩罚)
+    penalty_invalid: float = 0.0             # 无效动作惩罚(论文无)
+    penalty_deadline_miss: float = 0.0       # 超截止惩罚(论文无)
 
 
 # -----------------------------------------------------------------------
@@ -144,7 +151,8 @@ class TrainConfig:
     save_interval: int = 20        # 每 20 次元迭代保存一次
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
-    vtw_time_step_s: float = 300.0           # VTW 采样步长: 越大越快, 精度略降（300s 比 120s 快约 2.5x）
+    vtw_time_step_s: float = 60.0            # VTW 采样步长(秒); LEO 过境快, >60s 会漏采过境最接近点
+                                             # 实测: 300s 严重漏窗→0, 60s 稳定且单次仅 ~4ms(有跨任务缓存)
     num_workers: int = 16                    # 并行 worker 数; 0 = 自动(等于 meta_batch_size)
 
 
