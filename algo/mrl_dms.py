@@ -363,8 +363,11 @@ class MRLDMSTrainer:
     def _meta_update(self) -> tuple:
         """
         执行一次元更新 (FOMAML 实现)。
-        meta_batch 内各任务通过 ThreadPoolExecutor 并行执行，
-        充分利用多核 CPU（VTW 计算 + 环境 step 均为 CPU 密集型）。
+
+        单星模式：meta_batch 内各任务通过 ThreadPoolExecutor 并行执行，
+        充分利用多核 CPU。
+        多星模式：MAPPO 内部已经是 N 星并发，meta_batch 串行执行避免多环境
+        共享状态竞态问题。
         """
         base_model = self._mappo_model.actor if self.multi_agent else self.actor_critic
         base_state = copy.deepcopy(base_model.state_dict())
@@ -372,21 +375,18 @@ class MRLDMSTrainer:
         self.meta_learner.reset_hidden(batch_size=1, device=self.device)
 
         tasks = self._sample_task_batch(self.cfg.meta.meta_batch_size)
+        n_tasks = len(tasks)
 
         # 预先为每个任务计算 LSTM 调制（串行，需共享 LSTM 状态）
         task_h_norms = []
         task_init_states = []
-        task_vtw_maps = []  # 保存每个任务的 VTW 映射，供 worker env 使用
         for i, (routine, dynamic_schedule) in enumerate(tasks):
             self._precompute_task_vtw(routine, dynamic_schedule)
-            # 将预计算 VTW 同步到对应 worker env（关键：否则 worker env 每次重算 VTW）
+            # 单星模式：将预计算 VTW 同步到对应 worker env
             if not self.multi_agent and self.envs:
                 self._worker_envs[i].precomputed_vtw = copy.deepcopy(
                     self.envs[0].precomputed_vtw
                 )
-            task_vtw_maps.append(
-                getattr(self._worker_envs[i], 'precomputed_vtw', {})
-            )
             base_model.load_state_dict(copy.deepcopy(base_state))
             fb_t = torch.FloatTensor(self._prev_feedback).unsqueeze(0).to(self.device)
             h_t = self.meta_learner(fb_t)
@@ -395,15 +395,73 @@ class MRLDMSTrainer:
             task_h_norms.append(h_t.norm())
             task_init_states.append(copy.deepcopy(base_model.state_dict()))
 
-        # 并行执行内循环 + 评估
+        if self.multi_agent:
+            results = self._meta_update_mappo(tasks, task_init_states, base_model, base_state)
+        else:
+            results = self._meta_update_single(tasks, task_init_states)
+
+        param_diffs, meta_rewards, total_dynamic_rate, total_reward = [], [], 0.0, 0.0
+        for param_diff, eval_reward, eval_metrics, steps in results:
+            param_diffs.append(param_diff)
+            meta_rewards.append(eval_reward)
+            total_reward += eval_reward
+            total_dynamic_rate += eval_metrics.get('dynamic_completion_rate', 0.0)
+            self.global_step += steps
+
+        # 更新反馈向量（对所有任务取平均，减少 batch=16 时的单任务噪声）
+        avg_dyn_rate = total_dynamic_rate / n_tasks
+        avg_cum_reward = sum(meta_rewards) / n_tasks
+        avg_routine_rate = sum(
+            r[2].get('routine_completion_rate', 0.0) for r in results
+        ) / n_tasks
+        avg_n_dynamic = int(avg_dyn_rate * 100)
+        avg_n_routine = int(avg_routine_rate * 100)
+        self._prev_feedback = MetaLearner.build_feedback_vector(
+            cumulative_reward=avg_cum_reward,
+            avg_advantage=0.0,
+            policy_entropy=0.0,
+            kl_divergence=0.0,
+            dynamic_ratio=avg_dyn_rate,
+            n_dynamic_completed=avg_n_dynamic,
+            n_routine_completed=avg_n_routine,
+        )
+
+        # FOMAML base 参数更新
+        base_model.load_state_dict(base_state)
+        meta_lr = self.cfg.meta.meta_lr
+        with torch.no_grad():
+            for name, param in base_model.named_parameters():
+                diffs = torch.stack([d[name].to(param.device) for d in param_diffs])
+                avg_diff = diffs.mean(dim=0)
+                param.data.add_(meta_lr * avg_diff)
+
+        # LSTM / 调制头更新
+        self.meta_optimizer.zero_grad()
+        rewards_t = torch.tensor(meta_rewards, dtype=torch.float32, device=self.device)
+        r_std = rewards_t.std().clamp(min=1.0)
+        rewards_normalized = (rewards_t - rewards_t.mean()) / r_std
+        h_norms = torch.stack(task_h_norms)
+        lstm_loss = -(rewards_normalized * h_norms).mean()
+        lstm_loss.backward()
+        nn.utils.clip_grad_norm_(self.meta_learner.parameters(), 1.0)
+        self.meta_optimizer.step()
+
+        info = {
+            'avg_reward': total_reward / n_tasks,
+            'avg_dynamic_rate': total_dynamic_rate / n_tasks,
+        }
+        return lstm_loss.item(), info
+
+    def _meta_update_single(self, tasks, task_init_states) -> list:
+        """单星并行内循环：ThreadPoolExecutor 跑 meta_batch 中所有任务"""
+        from algo.ppo import PPOTrainer, RolloutBuffer
+
         def _run_task(args):
             idx, (routine, dynamic_schedule), init_state = args
             worker_model = self._worker_models[idx]
             worker_env = self._worker_envs[idx]
             worker_model.load_state_dict(copy.deepcopy(init_state))
 
-            # 独立 PPO 训练器
-            from algo.ppo import PPOTrainer, RolloutBuffer
             inner_ppo = PPOTrainer(
                 actor_critic=worker_model,
                 lr=self.cfg.ppo.learning_rate,
@@ -433,8 +491,8 @@ class MRLDMSTrainer:
                     reset_options=reset_options,
                 )
                 task_reward += ep_reward
-                obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
                 with torch.no_grad():
+                    obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
                     last_value = worker_model.get_value(obs_t).cpu().item()
                 update_info = inner_ppo.update(buffer, last_value)
 
@@ -465,12 +523,8 @@ class MRLDMSTrainer:
             steps_consumed = self.cfg.meta.inner_steps * self.cfg.meta.rollout_steps
             return idx, param_diff, eval_reward, eval_metrics, update_info, steps_consumed
 
-        task_args = [
-            (i, tasks[i], task_init_states[i])
-            for i in range(len(tasks))
-        ]
-
-        results = [None] * len(tasks)
+        task_args = [(i, tasks[i], task_init_states[i]) for i in range(len(tasks))]
+        raw = [None] * len(tasks)
         cfg_workers = self.cfg.train.num_workers
         n_workers = cfg_workers if cfg_workers > 0 else len(tasks)
         n_workers = min(n_workers, len(tasks))
@@ -478,60 +532,60 @@ class MRLDMSTrainer:
             futures = {executor.submit(_run_task, arg): arg[0] for arg in task_args}
             for future in as_completed(futures):
                 idx, param_diff, eval_reward, eval_metrics, update_info, steps = future.result()
-                results[idx] = (param_diff, eval_reward, eval_metrics, steps)
+                raw[idx] = (param_diff, eval_reward, eval_metrics, steps)
+        return raw
 
-        param_diffs, meta_rewards, total_dynamic_rate, total_reward = [], [], 0.0, 0.0
-        for param_diff, eval_reward, eval_metrics, steps in results:
-            param_diffs.append(param_diff)
-            meta_rewards.append(eval_reward)
-            total_reward += eval_reward
-            total_dynamic_rate += eval_metrics.get('dynamic_completion_rate', 0.0)
-            self.global_step += steps
+    def _meta_update_mappo(self, tasks, task_init_states, base_model, base_state) -> list:
+        """多星串行内循环：每个任务用 MAPPOTrainer + MultiSatelliteEnv 完整跑一遍"""
+        from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
 
-        # 更新反馈向量（对所有任务取平均，减少 batch=16 时的单任务噪声）
-        avg_dyn_rate = total_dynamic_rate / n_tasks
-        avg_cum_reward = sum(meta_rewards) / n_tasks
-        avg_routine_rate = sum(
-            r[2].get('routine_completion_rate', 0.0) for r in results
-        ) / n_tasks
-        avg_n_dynamic = int(avg_dyn_rate * 100)
-        avg_n_routine = int(avg_routine_rate * 100)
-        self._prev_feedback = MetaLearner.build_feedback_vector(
-            cumulative_reward=avg_cum_reward,
-            avg_advantage=0.0,
-            policy_entropy=0.0,
-            kl_divergence=0.0,
-            dynamic_ratio=avg_dyn_rate,
-            n_dynamic_completed=avg_n_dynamic,
-            n_routine_completed=avg_n_routine,
-        )
+        results = []
+        for i, (routine, dynamic_schedule) in enumerate(tasks):
+            init_state = task_init_states[i]
+            # 每个任务独立加载调制后的初始参数（actor 是 base_model）
+            base_model.load_state_dict(copy.deepcopy(init_state))
 
-        # FOMAML base 参数更新
-        base_model.load_state_dict(base_state)
-        n_tasks = len(tasks)
-        meta_lr = self.cfg.meta.meta_lr
-        with torch.no_grad():
-            for name, param in base_model.named_parameters():
-                diffs = torch.stack([d[name].to(param.device) for d in param_diffs])
-                avg_diff = diffs.mean(dim=0)
-                param.data.add_(meta_lr * avg_diff)
+            multi_env = self._multi_env
+            reset_options = {
+                "routine_missions": copy.deepcopy(routine),
+                "dynamic_schedule": copy.deepcopy(dynamic_schedule),
+            }
+            reset_result = multi_env.reset(options=reset_options)
+            current_obs = {aid: r[0] for aid, r in reset_result.items()}
+            current_infos = {aid: r[1] for aid, r in reset_result.items()}
 
-        # LSTM / 调制头更新
-        self.meta_optimizer.zero_grad()
-        rewards_t = torch.tensor(meta_rewards, dtype=torch.float32, device=self.device)
-        r_std = rewards_t.std().clamp(min=1.0)
-        rewards_normalized = (rewards_t - rewards_t.mean()) / r_std
-        h_norms = torch.stack(task_h_norms)
-        lstm_loss = -(rewards_normalized * h_norms).mean()
-        lstm_loss.backward()
-        nn.utils.clip_grad_norm_(self.meta_learner.parameters(), 1.0)
-        self.meta_optimizer.step()
+            buffer = MultiAgentRolloutBuffer()
+            buffer.init_agents(multi_env.agent_ids)
 
-        info = {
-            'avg_reward': total_reward / n_tasks,
-            'avg_dynamic_rate': total_dynamic_rate / n_tasks,
-        }
-        return lstm_loss.item(), info
+            # 每个任务重置 Adam 动量
+            self._inner_mappo.optimizer = optim.Adam(
+                self._mappo_model.parameters(),
+                lr=self.cfg.ppo.learning_rate,
+            )
+
+            for _ in range(self.cfg.meta.inner_steps):
+                buffer.clear()
+                buffer.init_agents(multi_env.agent_ids)
+                current_obs, current_infos, ep_reward = self._inner_mappo.collect_rollout(
+                    multi_env, buffer, self.cfg.meta.rollout_steps,
+                    current_obs, current_infos,
+                )
+                last_gs = multi_env.get_global_state()
+                self._inner_mappo.update(buffer, last_gs)
+
+            # 评估
+            eval_reward, eval_metrics = self._evaluate_multi(routine, dynamic_schedule)
+
+            adapted_state = base_model.state_dict()
+            param_names = {name for name, _ in base_model.named_parameters()}
+            param_diff = {
+                name: adapted_state[name] - init_state[name]
+                for name in param_names
+            }
+            steps_consumed = self.cfg.meta.inner_steps * self.cfg.meta.rollout_steps
+            results.append((param_diff, eval_reward, eval_metrics, steps_consumed))
+
+        return results
 
     # -------------------------------------------------------------------
     # 内循环 PPO 适应
