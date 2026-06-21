@@ -43,14 +43,40 @@ COLORS = {
     "PPO":      "#FF9800",
     "A2C":      "#4CAF50",
     "DQN":      "#9C27B0",
+    # 方案对比(compare_methods.py)
+    "MAPPO":      "#2196F3",
+    "Indep-PPO":  "#FF9800",
+    "Single-PPO": "#9E9E9E",
     "routine":  "#42A5F5",
     "dynamic":  "#EF5350",
     "idle":     "#E0E0E0",
     "meta_loss":"#78909C",
 }
 
+def _pick_cjk_font():
+    """自动挑选系统可用的中文字体, 避免 PNG 中文显示成方块.
+    兼容本地 Mac (PingFang/Heiti/Songti) 与 Linux 服务器 (Noto/WenQuanYi/SimHei)."""
+    from matplotlib import font_manager
+    candidates = [
+        "PingFang SC", "Heiti SC", "Songti SC", "Arial Unicode MS",  # macOS
+        "Noto Sans CJK SC", "Noto Sans CJK JP", "WenQuanYi Zen Hei",  # Linux
+        "WenQuanYi Micro Hei", "Source Han Sans SC", "SimHei", "Microsoft YaHei",  # 其他
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            return name
+    return None
+
+
+_CJK_FONT = _pick_cjk_font()
+# 中文字体优先, DejaVu Sans 作为拉丁字符/数字回退
+_FONT_FAMILY = ([_CJK_FONT] if _CJK_FONT else []) + ["DejaVu Sans"]
+
 plt.rcParams.update({
-    "font.family":      "DejaVu Sans",
+    "font.family":      "sans-serif",
+    "font.sans-serif":  _FONT_FAMILY,
+    "axes.unicode_minus": False,   # 负号正常显示
     "font.size":        11,
     "axes.titlesize":   13,
     "axes.labelsize":   11,
@@ -757,6 +783,102 @@ def compare_runs(run_dirs: list, labels: list, out_dir: Path):
 # -----------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------
+def plot_method_comparison(results: dict, out_dir: Path):
+    """
+    方案对比图 (参照论文 Fig.7-8): 三方案在性能与协同指标上的对比。
+
+    参数
+    ----
+    results : {method_name: {metric: value}}  来自 compare_methods.py 的 JSON
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    methods = list(results.keys())
+
+    # --- 图 1: 性能指标 (完成率 + 累积奖励), 参照 Fig.7-8 ---
+    rate_metrics = [
+        ("observation_success_rate", "观测成功率"),
+        ("dynamic_completion_rate",  "动态完成率"),
+        ("routine_completion_rate",  "常规完成率"),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # 左: 完成率分组柱状
+    ax = axes[0]
+    x = np.arange(len(rate_metrics))
+    w = 0.8 / len(methods)
+    for i, mth in enumerate(methods):
+        vals = [results[mth].get(k, 0) * 100 for k, _ in rate_metrics]
+        bars = ax.bar(x + i * w - (len(methods) - 1) * w / 2, vals, w,
+                      label=mth, color=COLORS.get(mth, f"C{i}"), alpha=0.85)
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.5,
+                    f"{v:.0f}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels([t for _, t in rate_metrics])
+    ax.set_ylabel("完成率 (%)"); ax.set_ylim(0, 110)
+    ax.set_title("完成率对比 (feasible 口径, 论文 Table 4)")
+    ax.legend()
+
+    # 右: 累积奖励
+    ax = axes[1]
+    rewards = [results[m].get("total_reward", 0) for m in methods]
+    bars = ax.bar(methods, rewards, color=[COLORS.get(m, f"C{i}") for i, m in enumerate(methods)],
+                  alpha=0.85)
+    for b, v in zip(bars, rewards):
+        ax.text(b.get_x() + b.get_width() / 2, b.get_height(),
+                f"{v:.1f}", ha="center", va="bottom", fontsize=9)
+    ax.set_ylabel("累积奖励"); ax.set_title("累积奖励对比")
+    fig.tight_layout()
+    p = out_dir / "method_comparison_performance.png"
+    fig.savefig(p, bbox_inches="tight"); plt.close(fig)
+    logger.info(f"已保存: {p}")
+
+    # --- 图 2: 协同质量指标 (多星方案), 体现 MAPPO 协同优势 ---
+    coord_metrics = [
+        ("duplicate_rate",          "重复观测率", "%", "越低越好"),
+        ("load_balance_cv",         "负载变异系数", "", "越低越均衡"),
+        ("avg_off_nadir_deg",       "平均off-nadir(°)", "", "越低质量越高"),
+        ("avg_dynamic_response_s",  "动态响应延迟(s)", "", "越低越快"),
+        ("coordination_gain",       "协同增益", "", "越高越好"),
+    ]
+    # 只画有协同指标的多星方案
+    multi_methods = [m for m in methods if results[m].get("duplicate_rate") is not None
+                     or results[m].get("coordination_gain") is not None]
+    if multi_methods:
+        n = len(coord_metrics)
+        fig, axes = plt.subplots(1, n, figsize=(3.2 * n, 4.5))
+        if n == 1:
+            axes = [axes]
+        for ax, (key, label, unit, hint) in zip(axes, coord_metrics):
+            vals, labs, cols = [], [], []
+            for i, mth in enumerate(multi_methods):
+                v = results[mth].get(key)
+                if v is None:
+                    continue
+                vals.append(v * 100 if unit == "%" else v)
+                labs.append(mth); cols.append(COLORS.get(mth, f"C{i}"))
+            bars = ax.bar(labs, vals, color=cols, alpha=0.85)
+            for b, v in zip(bars, vals):
+                ax.text(b.get_x() + b.get_width() / 2, b.get_height(),
+                        f"{v:.2f}", ha="center", va="bottom", fontsize=8)
+            ax.set_title(f"{label}\n({hint})", fontsize=10)
+            ax.tick_params(axis="x", rotation=15)
+        fig.suptitle("多星协同质量对比 (MAPPO vs 无协同)", fontsize=13)
+        fig.tight_layout()
+        p = out_dir / "method_comparison_coordination.png"
+        fig.savefig(p, bbox_inches="tight"); plt.close(fig)
+        logger.info(f"已保存: {p}")
+
+    # --- 文本汇总表 ---
+    summary = out_dir / "comparison_summary.txt"
+    with open(summary, "w") as f:
+        all_keys = sorted({k for v in results.values() for k in v})
+        f.write(f"{'指标':<30}" + "".join(f"{m:>14}" for m in methods) + "\n")
+        f.write("-" * (30 + 14 * len(methods)) + "\n")
+        for k in all_keys:
+            f.write(f"{k:<30}" + "".join(f"{results[m].get(k, 0):>14.4f}" for m in methods) + "\n")
+    logger.info(f"已保存: {summary}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MRL-DMS Visualization")
     parser.add_argument("--run_dir",  type=str, default=None,
@@ -769,11 +891,19 @@ def main():
                         help="模型 checkpoint 路径, 用于生成甘特图")
     parser.add_argument("--label",    type=str, default="MRL-DMS",
                         help="单次运行的标签 (默认 MRL-DMS)")
+    parser.add_argument("--compare_json", type=str, default=None,
+                        help="compare_methods.py 输出的 comparison_results.json, 生成方案对比图")
     parser.add_argument("--out_dir",  type=str, default=None,
                         help="多运行对比图的输出目录 (默认 plots/)")
     args = parser.parse_args()
 
-    if args.run_dirs:
+    if args.compare_json:
+        import json
+        with open(args.compare_json) as f:
+            results = json.load(f)
+        out = Path(args.out_dir) if args.out_dir else Path(args.compare_json).parent
+        plot_method_comparison(results, out)
+    elif args.run_dirs:
         labels = args.labels or [f"run{i}" for i in range(len(args.run_dirs))]
         out = Path(args.out_dir) if args.out_dir else Path("plots")
         compare_runs(args.run_dirs, labels, out)

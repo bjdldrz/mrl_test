@@ -77,13 +77,15 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
 
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
-    # 设备检测: CUDA > MPS > CPU
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
+    # 设备检测: 优先用配置指定的设备, "auto" 时 CUDA > MPS > CPU
+    device = config.train.device
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
     logger.info(f"=== PPO Baseline 训练, 设备: {device} ===")
 
     actor_critic = ActorCritic(
@@ -205,6 +207,9 @@ def main():
     parser.add_argument("--fast", action="store_true",
                         help="快速测试模式 (减少训练步数)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default="auto",
+                        choices=["auto", "cpu", "cuda", "mps"],
+                        help="计算设备; 本地 Mac 请用 cpu (MPS 的 LSTM backward 有 bug 会崩溃)")
     parser.add_argument("--exp_name", type=str, default=None,
                         help="实验名称, 用于命名日志目录 runs/<exp_name>/")
     args = parser.parse_args()
@@ -212,6 +217,7 @@ def main():
     # 加载配置
     config = get_default_config()
     config.train.seed = args.seed
+    config.train.device = args.device
 
     if args.fast:
         config.train.total_training_steps = 5000

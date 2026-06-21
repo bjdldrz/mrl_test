@@ -31,6 +31,9 @@ class ScheduleRecord:
     obs_start_s: float
     obs_end_s: float
     reward: float
+    off_nadir_deg: float = 0.0   # 观测时的偏离星下点角(图像质量, 越小越好)
+    is_dynamic: bool = False     # 是否动态任务
+    earliest_time_s: float = 0.0 # 任务可用/到达时间(算响应延迟用)
 
 
 class SatelliteSchedulingEnv(gym.Env):
@@ -459,6 +462,9 @@ class SatelliteSchedulingEnv(gym.Env):
             obs_start_s=obs_start,
             obs_end_s=obs_end,
             reward=reward,
+            off_nadir_deg=usable_vtw.off_nadir_deg,
+            is_dynamic=mission.is_dynamic,
+            earliest_time_s=mission.earliest_time_s,
         ))
 
         # 时间推进到观测结束
@@ -591,6 +597,19 @@ class SatelliteSchedulingEnv(gym.Env):
             if any(m is not None and m.id == r.mission_id and m.is_dynamic for m in self.missions)
         )
 
+        # --- 协同/质量指标 ---
+        # 平均观测质量: off-nadir 越小图像质量越高
+        if self.schedule_log:
+            avg_off_nadir = float(np.mean([r.off_nadir_deg for r in self.schedule_log]))
+        else:
+            avg_off_nadir = 0.0
+        # 动态任务平均响应延迟: 从任务可用(到达)到观测完成的时间(秒)
+        dyn_delays = [
+            r.obs_end_s - r.earliest_time_s
+            for r in self.schedule_log if r.is_dynamic
+        ]
+        avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
+
         return {
             "total_reward": total_reward,
             # 论文 Table 4 口径: 分母 = feasible 任务
@@ -604,7 +623,11 @@ class SatelliteSchedulingEnv(gym.Env):
             # feasible 比例 (反映物理可达性)
             "feasible_ratio": feas_total / total_missions if total_missions > 0 else 0.0,
             "dynamic_feasible_ratio": len(dynamic_feas) / dynamic_total if dynamic_total > 0 else 0.0,
+            # 协同/质量指标
+            "avg_off_nadir_deg": avg_off_nadir,
+            "avg_dynamic_response_s": avg_dynamic_response_s,
             "dynamic_reward": dynamic_reward,
             "routine_reward": total_reward - dynamic_reward,
             "n_scheduled": len(self.schedule_log),
+            "n_duplicates": 0,  # 单星无重复观测(占位, 多星覆盖)
         }

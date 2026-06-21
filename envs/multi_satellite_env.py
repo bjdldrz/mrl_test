@@ -42,12 +42,16 @@ class MultiSatelliteEnv:
         horizon_s: float = 86400.0,
         reward_config=None,
         vtw_time_step_s: float = 120.0,
+        coordinate: bool = True,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
         self.agent_ids = [cfg.name for cfg in satellite_configs]
         self.max_action_dim = max_action_dim
         self.horizon_s = horizon_s
+        # coordinate=True: 冲突协调 + 观测状态同步(MAPPO 协同).
+        # coordinate=False: 各卫星完全独立决策, 不去冲突、不共享观测(无协同 baseline).
+        self.coordinate = coordinate
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -120,19 +124,23 @@ class MultiSatelliteEnv:
         """
         results = {}
 
-        # 1) 冲突检测：同一任务只能被一颗卫星执行
-        resolved_actions = {}
-        claimed_missions = set()
-        for agent_id, action in actions.items():
-            idle = self.max_action_dim
-            if action != idle and action not in claimed_missions:
-                resolved_actions[agent_id] = action
-                claimed_missions.add(action)
-            elif action != idle and action in claimed_missions:
-                # 冲突：强制 idle
-                resolved_actions[agent_id] = idle
-            else:
-                resolved_actions[agent_id] = action
+        # 1) 冲突检测：同一任务只能被一颗卫星执行 (仅协同模式)
+        #    无协同 baseline 下各卫星独立决策, 不做去冲突 → 可能重复观测
+        if self.coordinate:
+            resolved_actions = {}
+            claimed_missions = set()
+            for agent_id, action in actions.items():
+                idle = self.max_action_dim
+                if action != idle and action not in claimed_missions:
+                    resolved_actions[agent_id] = action
+                    claimed_missions.add(action)
+                elif action != idle and action in claimed_missions:
+                    # 冲突：强制 idle
+                    resolved_actions[agent_id] = idle
+                else:
+                    resolved_actions[agent_id] = action
+        else:
+            resolved_actions = dict(actions)
 
         # 2) 每颗卫星执行（已去冲突的）动作
         for agent_id in self.agent_ids:
@@ -140,8 +148,9 @@ class MultiSatelliteEnv:
             obs, reward, term, trunc, info = env.step(resolved_actions[agent_id])
             results[agent_id] = (obs, reward, term, trunc, info)
 
-        # 3) 同步观测状态
-        self._sync_mission_status()
+        # 3) 同步观测状态 (仅协同模式: 一颗星完成则全体知晓, 避免重复)
+        if self.coordinate:
+            self._sync_mission_status()
 
         # 4) 用同步后的状态重新构建观测和掩码
         for agent_id, env in self.envs.items():
@@ -244,6 +253,30 @@ class MultiSatelliteEnv:
         routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.id in all_scheduled_ids)
         dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.id in all_scheduled_ids)
 
+        # --- 协同质量指标 (体现多星协同 vs 无协同的核心差异) ---
+        # 1) 重复观测: 总调度记录数 - 去重后完成数. 协同好 → ≈0
+        total_records = sum(len(env.schedule_log) for env in self.envs.values())
+        n_duplicates = total_records - observed_total
+        duplicate_rate = n_duplicates / max(total_records, 1)
+
+        # 2) 负载均衡: 各卫星完成任务数的方差/变异系数. 协同好 → 均衡(方差小)
+        per_sat_counts = [len(env.schedule_log) for env in self.envs.values()]
+        mean_load = float(np.mean(per_sat_counts)) if per_sat_counts else 0.0
+        load_std = float(np.std(per_sat_counts)) if per_sat_counts else 0.0
+        load_cv = load_std / mean_load if mean_load > 0 else 0.0  # 变异系数(越小越均衡)
+
+        # 3) 平均观测质量(off-nadir, 跨所有卫星记录)
+        all_off = [r.off_nadir_deg for env in self.envs.values() for r in env.schedule_log]
+        avg_off_nadir = float(np.mean(all_off)) if all_off else 0.0
+
+        # 4) 动态任务平均响应延迟(到达→完成, 取最早完成那次)
+        dyn_delays = []
+        for env in self.envs.values():
+            for r in env.schedule_log:
+                if r.is_dynamic:
+                    dyn_delays.append(r.obs_end_s - r.earliest_time_s)
+        avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
+
         return {
             "total_reward": total_reward,
             # 论文 Table 4 口径: 分母 = feasible 任务
@@ -256,10 +289,13 @@ class MultiSatelliteEnv:
             "routine_completion_rate_raw": routine_done / max(routine_total, 1),
             "feasible_ratio": feas_total / max(total_missions, 1),
             "dynamic_feasible_ratio": len(feasible_dynamic) / max(dynamic_total, 1),
+            # --- 协同质量指标 ---
+            "n_duplicates": n_duplicates,           # 重复观测数 (协同好→0)
+            "duplicate_rate": duplicate_rate,       # 重复观测率
+            "load_balance_cv": load_cv,             # 负载变异系数 (越小越均衡)
+            "avg_off_nadir_deg": avg_off_nadir,     # 平均观测质量 (越小越好)
+            "avg_dynamic_response_s": avg_dynamic_response_s,  # 动态响应延迟 (越小越快)
             "n_scheduled": observed_total,
-            "n_duplicates": sum(
-                len(env.schedule_log) for env in self.envs.values()
-            ) - observed_total,  # 重复观测数
         }
 
     def is_done(self) -> bool:
