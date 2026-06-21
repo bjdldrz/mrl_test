@@ -217,25 +217,45 @@ class MultiSatelliteEnv:
         first_env = list(self.envs.values())[0]
         all_missions = [m for m in first_env.missions if m is not None]
         total_missions = len(all_missions)
-        routine_total = sum(1 for m in all_missions if not m.is_dynamic)
-        dynamic_total = sum(1 for m in all_missions if m.is_dynamic)
+
+        # feasible 划分 (论文 Table 4 口径): 任意一颗卫星对该任务有可用 VTW 即可行
+        def _feasible_any(mission_id):
+            for env in self.envs.values():
+                for m in env.missions:
+                    if m is not None and m.id == mission_id and env._is_feasible(m):
+                        return True
+            return False
+
+        feasible_routine = [m for m in all_missions if not m.is_dynamic and _feasible_any(m.id)]
+        feasible_dynamic = [m for m in all_missions if m.is_dynamic and _feasible_any(m.id)]
+        feas_total = len(feasible_routine) + len(feasible_dynamic)
 
         # 统计哪些任务被任意一颗卫星完成
         observed_total = len(all_scheduled_ids)
-        routine_done = sum(
-            1 for m in all_missions
-            if not m.is_dynamic and m.id in all_scheduled_ids
+        feas_observed = sum(
+            1 for m in (feasible_routine + feasible_dynamic) if m.id in all_scheduled_ids
         )
-        dynamic_done = sum(
-            1 for m in all_missions
-            if m.is_dynamic and m.id in all_scheduled_ids
-        )
+        routine_feas_done = sum(1 for m in feasible_routine if m.id in all_scheduled_ids)
+        dynamic_feas_done = sum(1 for m in feasible_dynamic if m.id in all_scheduled_ids)
+
+        # 全部任务口径 (诊断对照)
+        routine_total = sum(1 for m in all_missions if not m.is_dynamic)
+        dynamic_total = sum(1 for m in all_missions if m.is_dynamic)
+        routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.id in all_scheduled_ids)
+        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.id in all_scheduled_ids)
 
         return {
             "total_reward": total_reward,
-            "observation_success_rate": observed_total / max(total_missions, 1),
-            "dynamic_completion_rate": dynamic_done / max(dynamic_total, 1),
-            "routine_completion_rate": routine_done / max(routine_total, 1),
+            # 论文 Table 4 口径: 分母 = feasible 任务
+            "observation_success_rate": feas_observed / max(feas_total, 1),
+            "dynamic_completion_rate": dynamic_feas_done / max(len(feasible_dynamic), 1),
+            "routine_completion_rate": routine_feas_done / max(len(feasible_routine), 1),
+            # 全部任务口径 (诊断对照)
+            "observation_success_rate_raw": observed_total / max(total_missions, 1),
+            "dynamic_completion_rate_raw": dynamic_done / max(dynamic_total, 1),
+            "routine_completion_rate_raw": routine_done / max(routine_total, 1),
+            "feasible_ratio": feas_total / max(total_missions, 1),
+            "dynamic_feasible_ratio": len(feasible_dynamic) / max(dynamic_total, 1),
             "n_scheduled": observed_total,
             "n_duplicates": sum(
                 len(env.schedule_log) for env in self.envs.values()

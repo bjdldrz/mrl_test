@@ -533,16 +533,58 @@ class SatelliteSchedulingEnv(gym.Env):
     # ===================================================================
     # 评估指标 (论文 Table 4)
     # ===================================================================
+    def _is_feasible(self, mission) -> bool:
+        """
+        判断任务是否"可行"(feasible): 在其可用时间之后, 至少存在一个
+        满足观测时长、且不晚于截止时间的可见窗口 (VTW)。
+
+        论文 Table 4 用 "feasible missions" 作为成功率/完成率的分母——
+        即排除那些物理上根本看不到的任务 (SSO 近极轨对中低纬度覆盖差,
+        大量任务一整天无 VTW)。把不可见任务计入分母会不合理地稀释指标。
+        """
+        if mission is None:
+            return False
+        for vtw in self.mission_vtw.get(mission.id, []):
+            # 窗口须能容纳观测时长
+            if vtw.end_time - vtw.start_time < mission.duration_s:
+                continue
+            # 窗口须在任务可用时间之后结束 (动态任务到达前的窗口无效)
+            if vtw.end_time < mission.earliest_time_s + mission.duration_s:
+                continue
+            # 观测须能在截止时间前完成
+            earliest_obs_end = max(vtw.start_time, mission.earliest_time_s) + mission.duration_s
+            if earliest_obs_end <= min(vtw.end_time, mission.deadline_s):
+                return True
+        return False
+
     def get_metrics(self) -> Dict[str, float]:
         """
         计算当前 episode 的评估指标 (对应论文 Table 4)。
+
+        完成率/成功率的分母采用论文口径 = "feasible(可行)任务", 即至少有一个
+        可用 VTW 的任务; 排除物理上无可见窗口、不可能完成的任务。
+        同时额外给出 *_raw (以全部任务为分母) 与 feasible 统计以便诊断。
         """
-        total_missions = sum(1 for m in self.missions if m is not None)
-        observed = sum(1 for m in self.missions if m is not None and m.is_observed)
-        routine_total = sum(1 for m in self.missions if m is not None and not m.is_dynamic)
-        routine_done = sum(1 for m in self.missions if m is not None and not m.is_dynamic and m.is_observed)
-        dynamic_total = sum(1 for m in self.missions if m is not None and m.is_dynamic)
-        dynamic_done = sum(1 for m in self.missions if m is not None and m.is_dynamic and m.is_observed)
+        all_missions = [m for m in self.missions if m is not None]
+        total_missions = len(all_missions)
+        observed = sum(1 for m in all_missions if m.is_observed)
+
+        # feasible 划分 (论文 Table 4 分母)
+        feasible = [m for m in all_missions if self._is_feasible(m)]
+        feas_total = len(feasible)
+        feas_observed = sum(1 for m in feasible if m.is_observed)
+
+        routine_feas = [m for m in feasible if not m.is_dynamic]
+        dynamic_feas = [m for m in feasible if m.is_dynamic]
+        routine_feas_done = sum(1 for m in routine_feas if m.is_observed)
+        dynamic_feas_done = sum(1 for m in dynamic_feas if m.is_observed)
+
+        # 全部任务口径 (诊断用)
+        routine_total = sum(1 for m in all_missions if not m.is_dynamic)
+        routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.is_observed)
+        dynamic_total = sum(1 for m in all_missions if m.is_dynamic)
+        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.is_observed)
+
         total_reward = sum(r.reward for r in self.schedule_log)
         dynamic_reward = sum(
             r.reward for r in self.schedule_log
@@ -551,9 +593,17 @@ class SatelliteSchedulingEnv(gym.Env):
 
         return {
             "total_reward": total_reward,
-            "observation_success_rate": observed / total_missions if total_missions > 0 else 0.0,
-            "dynamic_completion_rate": dynamic_done / dynamic_total if dynamic_total > 0 else 0.0,
-            "routine_completion_rate": routine_done / routine_total if routine_total > 0 else 0.0,
+            # 论文 Table 4 口径: 分母 = feasible 任务
+            "observation_success_rate": feas_observed / feas_total if feas_total > 0 else 0.0,
+            "dynamic_completion_rate": dynamic_feas_done / len(dynamic_feas) if dynamic_feas else 0.0,
+            "routine_completion_rate": routine_feas_done / len(routine_feas) if routine_feas else 0.0,
+            # 全部任务口径 (诊断对照)
+            "observation_success_rate_raw": observed / total_missions if total_missions > 0 else 0.0,
+            "dynamic_completion_rate_raw": dynamic_done / dynamic_total if dynamic_total > 0 else 0.0,
+            "routine_completion_rate_raw": routine_done / routine_total if routine_total > 0 else 0.0,
+            # feasible 比例 (反映物理可达性)
+            "feasible_ratio": feas_total / total_missions if total_missions > 0 else 0.0,
+            "dynamic_feasible_ratio": len(dynamic_feas) / dynamic_total if dynamic_total > 0 else 0.0,
             "dynamic_reward": dynamic_reward,
             "routine_reward": total_reward - dynamic_reward,
             "n_scheduled": len(self.schedule_log),
