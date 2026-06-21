@@ -25,7 +25,7 @@ import csv
 import json
 import time
 import logging
-from multiprocessing import Pool, get_context
+from multiprocessing import get_context
 from typing import Dict, List, Optional
 from pathlib import Path
 from tqdm import tqdm
@@ -275,6 +275,13 @@ class MRLDMSTrainer:
             dynamic_ncols=True,
         )
 
+        # 单星模式：在训练开始时创建持久进程池（只 spawn 一次，整个训练复用）
+        if not self.multi_agent:
+            cfg_workers = self.cfg.train.num_workers
+            n_workers = cfg_workers if cfg_workers > 0 else self.cfg.meta.meta_batch_size
+            self._worker_pool = get_context('spawn').Pool(processes=n_workers)
+            logger.info(f"持久进程池已创建: {n_workers} 个 worker")
+
         try:
             for meta_iter in pbar:
                 self.meta_iteration = meta_iter
@@ -326,6 +333,11 @@ class MRLDMSTrainer:
             train_csv_f.close()
             eval_csv_f.close()
             pbar.close()
+            # 关闭持久进程池
+            if hasattr(self, '_worker_pool'):
+                self._worker_pool.terminate()
+                self._worker_pool.join()
+                logger.info("持久进程池已关闭")
 
         # ---- 训练结束：写 JSON 摘要 ----
         summary = {
@@ -439,10 +451,6 @@ class MRLDMSTrainer:
         """单星并行内循环：multiprocessing.Pool 跑 meta_batch 中所有任务，绕开 GIL"""
         from algo.task_worker import run_single_task
 
-        cfg_workers = self.cfg.train.num_workers
-        n_workers = cfg_workers if cfg_workers > 0 else len(tasks)
-        n_workers = min(n_workers, len(tasks))
-
         # 将 state_dict 张量转为 numpy（减少跨进程序列化体积）
         def _state_to_numpy(sd):
             return {k: v.cpu().numpy() for k, v in sd.items()}
@@ -467,10 +475,8 @@ class MRLDMSTrainer:
                 'activation': self.cfg.network.activation,
             })
 
-        # spawn 避免 CUDA / tqdm fork 问题
-        ctx = get_context('spawn')
-        with ctx.Pool(processes=n_workers) as pool:
-            results_raw = pool.map(run_single_task, task_args)
+        # 使用持久进程池（训练开始时创建，复用直到训练结束）
+        results_raw = self._worker_pool.map(run_single_task, task_args)
 
         raw = [None] * len(tasks)
         for r in results_raw:
