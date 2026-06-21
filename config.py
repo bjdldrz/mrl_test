@@ -136,12 +136,12 @@ class RewardConfig:
 # -----------------------------------------------------------------------
 @dataclass
 class TrainConfig:
-    total_training_steps: int = 100_000      # 论文 Table 3
+    total_training_steps: int = 500_000      # 环境交互总步数 (论文 Table 3 × 5 以保证足够元迭代)
     seed: int = 42
     device: str = "auto"                     # "auto" / "cpu" / "cuda" / "mps"
-    log_interval: int = 100
-    eval_interval: int = 1000
-    save_interval: int = 5000
+    log_interval: int = 1          # 单位: 元迭代次数 (total_iters ≈ 48)
+    eval_interval: int = 10        # 每 10 次元迭代评估一次
+    save_interval: int = 20        # 每 20 次元迭代保存一次
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
     vtw_time_step_s: float = 120.0           # VTW 采样步长: 越大越快, 精度略降

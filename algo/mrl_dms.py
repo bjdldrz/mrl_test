@@ -227,7 +227,8 @@ class MRLDMSTrainer:
             self.setup_data()
 
         total_iters = total_meta_iterations or (
-            self.cfg.train.total_training_steps // self.cfg.meta.rollout_steps
+            self.cfg.train.total_training_steps
+            // (self.cfg.meta.meta_batch_size * self.cfg.meta.rollout_steps)
         )
 
         # ---- 日志目录 ----
