@@ -25,8 +25,7 @@ import csv
 import json
 import time
 import logging
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import Pool, get_context
 from typing import Dict, List, Optional
 from pathlib import Path
 from tqdm import tqdm
@@ -143,7 +142,6 @@ class MRLDMSTrainer:
         # key: (sat_name, round(lat,4), round(lon,4), horizon_s_int, step_s_int)
         # 相同坐标在不同任务/迭代中完全复用，避免重复计算
         self._global_vtw_cache: dict = {}
-        self._vtw_cache_lock = threading.Lock()  # 并行 worker 写缓存时需要加锁
 
         # ---- 多智能体组件 (可选) ----
         self.multi_agent = config.mappo.n_satellites > 1
@@ -154,25 +152,9 @@ class MRLDMSTrainer:
         if self.multi_agent:
             self._init_multi_agent(config, obs_dim, action_dim)
 
-        # ---- 并行 meta-batch 用的独立模型副本 ----
-        # 必须在所有 attach_to_actor_critic 调用之后 deepcopy，确保层名与 base_model 一致
-        base_for_workers = (
-            self._mappo_model.actor if self.multi_agent else self.actor_critic
-        )
-        cfg_workers = config.train.num_workers
-        n_workers = cfg_workers if cfg_workers > 0 else config.meta.meta_batch_size
-        self._worker_models: List[ActorCritic] = []
-        self._worker_envs: List = []
-        for _ in range(n_workers):
-            model_copy = copy.deepcopy(base_for_workers)
-            env_copy = SatelliteSchedulingEnv(
-                satellite_config=config.satellites[0],
-                max_action_dim=config.mission.max_action_dim,
-                reward_config=config.reward,
-                vtw_time_step_s=config.train.vtw_time_step_s,
-            )
-            self._worker_models.append(model_copy)
-            self._worker_envs.append(env_copy)
+        # 多进程模式：子进程自己创建模型和环境，主进程只保存构建所需的参数
+        self._worker_obs_dim = obs_dim
+        self._worker_action_dim = action_dim
 
     def setup_data(self, acled_df=None):
         """初始化任务生成器"""
@@ -249,12 +231,6 @@ class MRLDMSTrainer:
         if self.mission_gen is None:
             self.setup_data()
 
-        # 单星并行模式：每个 worker 占用 1 个 PyTorch 线程，避免 N_worker×N_torch 个线程互相抢占
-        if not self.multi_agent:
-            cfg_workers = self.cfg.train.num_workers
-            n_workers = cfg_workers if cfg_workers > 0 else self.cfg.meta.meta_batch_size
-            torch.set_num_threads(max(1, torch.get_num_threads() // n_workers))
-            logger.info(f"已将 PyTorch 内部线程数设为 {torch.get_num_threads()} (并行 worker={n_workers})")
 
         total_iters = total_meta_iterations or (
             self.cfg.train.total_training_steps
@@ -373,7 +349,7 @@ class MRLDMSTrainer:
         """
         执行一次元更新 (FOMAML 实现)。
 
-        单星模式：meta_batch 内各任务通过 ThreadPoolExecutor 并行执行，
+        单星模式：meta_batch 内各任务通过 multiprocessing.Pool 并行执行，
         充分利用多核 CPU。
         多星模式：MAPPO 内部已经是 N 星并发，meta_batch 串行执行避免多环境
         共享状态竞态问题。
@@ -460,109 +436,53 @@ class MRLDMSTrainer:
         return lstm_loss.item(), info
 
     def _meta_update_single(self, tasks, task_init_states) -> list:
-        """单星并行内循环：ThreadPoolExecutor 跑 meta_batch 中所有任务"""
-        from algo.ppo import PPOTrainer, RolloutBuffer
+        """单星并行内循环：multiprocessing.Pool 跑 meta_batch 中所有任务，绕开 GIL"""
+        from algo.task_worker import run_single_task
 
-        def _run_task(args):
-            idx, (routine, dynamic_schedule), init_state = args
-            worker_model = self._worker_models[idx]
-            worker_env = self._worker_envs[idx]
-            worker_model.load_state_dict(copy.deepcopy(init_state))
-
-            # 在 worker 内部并行预计算 VTW（用锁保护全局缓存写入）
-            all_missions = list(routine)
-            for _, dyn_batch in dynamic_schedule:
-                all_missions.extend(dyn_batch)
-            horizon_s = worker_env.horizon_s
-            step_s = worker_env.vtw_time_step_s
-            sat_name = worker_env.sat_config.name
-            pv = {}
-            for m in all_missions:
-                coord_key = (sat_name, round(m.lat, 4), round(m.lon, 4),
-                             int(horizon_s), int(step_s))
-                # 先不加锁检查（读多写少，双重检查减少锁竞争）
-                if coord_key in self._global_vtw_cache:
-                    pv[(sat_name, m.id)] = self._global_vtw_cache[coord_key]
-                else:
-                    vtw = worker_env.propagator.compute_vtw(
-                        m.lat, m.lon, horizon_s, time_step_s=step_s
-                    )
-                    with self._vtw_cache_lock:
-                        self._global_vtw_cache[coord_key] = vtw
-                    pv[(sat_name, m.id)] = vtw
-            worker_env.precomputed_vtw = pv
-
-            inner_ppo = PPOTrainer(
-                actor_critic=worker_model,
-                lr=self.cfg.ppo.learning_rate,
-                gamma=self.cfg.ppo.discount_factor,
-                gae_lambda=self.cfg.ppo.gae_lambda,
-                clip_ratio=self.cfg.ppo.clip_ratio,
-                entropy_coeff=self.cfg.ppo.entropy_coeff,
-                value_loss_coeff=self.cfg.ppo.value_loss_coeff,
-                ppo_epochs=self.cfg.ppo.ppo_epochs,
-                batch_size=self.cfg.ppo.batch_size,
-                device=str(self.device),
-            )
-
-            reset_options = {
-                "routine_missions": copy.deepcopy(routine),
-                "dynamic_schedule": copy.deepcopy(dynamic_schedule),
-            }
-            obs, info = worker_env.reset(options=reset_options)
-            buffer = RolloutBuffer()
-            task_reward = 0.0
-            update_info = {}
-
-            for _ in range(self.cfg.meta.inner_steps):
-                buffer.clear()
-                obs, info, ep_reward = inner_ppo.collect_rollout(
-                    worker_env, buffer, self.cfg.meta.rollout_steps, obs, info,
-                    reset_options=reset_options,
-                )
-                task_reward += ep_reward
-                with torch.no_grad():
-                    obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                    last_value = worker_model.get_value(obs_t).cpu().item()
-                update_info = inner_ppo.update(buffer, last_value)
-
-            # 评估
-            obs, info = worker_env.reset(options=reset_options)
-            eval_reward = 0.0
-            done = False
-            max_steps = int(worker_env.horizon_s / 10.0) + 100
-            for _ in range(max_steps):
-                if done:
-                    break
-                action_mask = info.get("action_mask", np.ones(worker_env.action_space.n))
-                with torch.no_grad():
-                    obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                    mask_t = torch.FloatTensor(action_mask).unsqueeze(0).to(self.device)
-                    action, _, _, _ = worker_model.get_action_and_value(obs_t, mask_t)
-                obs, reward, terminated, truncated, info = worker_env.step(action.cpu().item())
-                eval_reward += reward
-                done = terminated or truncated
-
-            eval_metrics = worker_env.get_metrics()
-            adapted_state = worker_model.state_dict()
-            param_names = {name for name, _ in worker_model.named_parameters()}
-            param_diff = {
-                name: adapted_state[name] - init_state[name]
-                for name in param_names
-            }
-            steps_consumed = self.cfg.meta.inner_steps * self.cfg.meta.rollout_steps
-            return idx, param_diff, eval_reward, eval_metrics, update_info, steps_consumed
-
-        task_args = [(i, tasks[i], task_init_states[i]) for i in range(len(tasks))]
-        raw = [None] * len(tasks)
         cfg_workers = self.cfg.train.num_workers
         n_workers = cfg_workers if cfg_workers > 0 else len(tasks)
         n_workers = min(n_workers, len(tasks))
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_run_task, arg): arg[0] for arg in task_args}
-            for future in as_completed(futures):
-                idx, param_diff, eval_reward, eval_metrics, update_info, steps = future.result()
-                raw[idx] = (param_diff, eval_reward, eval_metrics, steps)
+
+        # 将 state_dict 张量转为 numpy（减少跨进程序列化体积）
+        def _state_to_numpy(sd):
+            return {k: v.cpu().numpy() for k, v in sd.items()}
+
+        task_args = []
+        for i, (routine, dynamic_schedule) in enumerate(tasks):
+            task_args.append({
+                'idx': i,
+                'routine': routine,
+                'dynamic_schedule': dynamic_schedule,
+                'init_state': _state_to_numpy(task_init_states[i]),
+                'sat_config': self.cfg.satellites[0],
+                'reward_config': self.cfg.reward,
+                'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
+                'max_action_dim': self.cfg.mission.max_action_dim,
+                'vtw_cache': dict(self._global_vtw_cache),  # 只读快照
+                'cfg_ppo': self.cfg.ppo,
+                'cfg_meta': self.cfg.meta,
+                'obs_dim': self._worker_obs_dim,
+                'action_dim': self._worker_action_dim,
+                'hidden_dims': self.cfg.network.hidden_layers,
+                'activation': self.cfg.network.activation,
+            })
+
+        # spawn 避免 CUDA / tqdm fork 问题
+        ctx = get_context('spawn')
+        with ctx.Pool(processes=n_workers) as pool:
+            results_raw = pool.map(run_single_task, task_args)
+
+        raw = [None] * len(tasks)
+        for r in results_raw:
+            idx = r['idx']
+            # numpy → torch tensor
+            param_diff = {
+                name: torch.from_numpy(arr).to(self.device)
+                for name, arr in r['param_diff_np'].items()
+            }
+            # 将子进程新计算的 VTW 合并回主进程缓存
+            self._global_vtw_cache.update(r['new_vtw'])
+            raw[idx] = (param_diff, r['eval_reward'], r['eval_metrics'], r['steps_consumed'])
         return raw
 
     def _meta_update_mappo(self, tasks, task_init_states, base_model, base_state) -> list:
@@ -842,11 +762,9 @@ class MRLDMSTrainer:
             coord_key = (sat_name, round(mission.lat, 4), round(mission.lon, 4),
                          int(h_s), int(s_s))
             if coord_key not in self._global_vtw_cache:
-                vtw = env.propagator.compute_vtw(
+                self._global_vtw_cache[coord_key] = env.propagator.compute_vtw(
                     mission.lat, mission.lon, h_s, time_step_s=s_s
                 )
-                with self._vtw_cache_lock:
-                    self._global_vtw_cache.setdefault(coord_key, vtw)
             return self._global_vtw_cache[coord_key]
 
         # 单星模式：注入 self.envs；多星模式：只注入 _multi_env 子环境
