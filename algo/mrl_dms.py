@@ -275,12 +275,13 @@ class MRLDMSTrainer:
             dynamic_ncols=True,
         )
 
-        # 单星模式：在训练开始时创建持久进程池（只 spawn 一次，整个训练复用）
-        if not self.multi_agent:
-            cfg_workers = self.cfg.train.num_workers
-            n_workers = cfg_workers if cfg_workers > 0 else self.cfg.meta.meta_batch_size
-            self._worker_pool = get_context('spawn').Pool(processes=n_workers)
-            logger.info(f"持久进程池已创建: {n_workers} 个 worker")
+        # 创建持久进程池（只 spawn 一次，整个训练复用）
+        # 单星走 _meta_update_single，多星走 _meta_update_mappo，二者都用此池并行
+        cfg_workers = self.cfg.train.num_workers
+        n_workers = cfg_workers if cfg_workers > 0 else self.cfg.meta.meta_batch_size
+        self._worker_pool = get_context('spawn').Pool(processes=n_workers)
+        logger.info(f"持久进程池已创建: {n_workers} 个 worker "
+                    f"({'多星 MAPPO' if self.multi_agent else '单星 PPO'} 并行)")
 
         try:
             for meta_iter in pbar:
@@ -376,6 +377,7 @@ class MRLDMSTrainer:
 
         # 预先为每个任务计算 LSTM 调制（串行，需共享 LSTM 状态）
         # 注意：单星模式下 VTW 预计算推迟到 worker 内部执行（并行化）
+        t_serial = time.perf_counter()
         task_h_norms = []
         task_init_states = []
         for i, (routine, dynamic_schedule) in enumerate(tasks):
@@ -389,6 +391,9 @@ class MRLDMSTrainer:
             self.meta_learner.apply_modulations(base_model, actor_mods, critic_mods)
             task_h_norms.append(h_t.norm())
             task_init_states.append(copy.deepcopy(base_model.state_dict()))
+        serial_s = time.perf_counter() - t_serial
+        if not self.multi_agent:
+            tqdm.write(f"[iter {self.meta_iteration}] LSTM调制串行准备={serial_s:.2f}s")
 
         if self.multi_agent:
             results = self._meta_update_mappo(tasks, task_init_states, base_model, base_state)
@@ -455,6 +460,7 @@ class MRLDMSTrainer:
         def _state_to_numpy(sd):
             return {k: v.cpu().numpy() for k, v in sd.items()}
 
+        t_prep = time.perf_counter()
         task_args = []
         for i, (routine, dynamic_schedule) in enumerate(tasks):
             task_args.append({
@@ -466,7 +472,6 @@ class MRLDMSTrainer:
                 'reward_config': self.cfg.reward,
                 'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
                 'max_action_dim': self.cfg.mission.max_action_dim,
-                'vtw_cache': dict(self._global_vtw_cache),  # 只读快照
                 'cfg_ppo': self.cfg.ppo,
                 'cfg_meta': self.cfg.meta,
                 'obs_dim': self._worker_obs_dim,
@@ -474,10 +479,14 @@ class MRLDMSTrainer:
                 'hidden_dims': self.cfg.network.hidden_layers,
                 'activation': self.cfg.network.activation,
             })
+        prep_s = time.perf_counter() - t_prep
 
         # 使用持久进程池（训练开始时创建，复用直到训练结束）
+        t_map = time.perf_counter()
         results_raw = self._worker_pool.map(run_single_task, task_args)
+        map_s = time.perf_counter() - t_map
 
+        t_post = time.perf_counter()
         raw = [None] * len(tasks)
         for r in results_raw:
             idx = r['idx']
@@ -486,61 +495,78 @@ class MRLDMSTrainer:
                 name: torch.from_numpy(arr).to(self.device)
                 for name, arr in r['param_diff_np'].items()
             }
-            # 将子进程新计算的 VTW 合并回主进程缓存
-            self._global_vtw_cache.update(r['new_vtw'])
             raw[idx] = (param_diff, r['eval_reward'], r['eval_metrics'], r['steps_consumed'])
+        post_s = time.perf_counter() - t_post
+
+        # 计时日志：直观看到并行段(map) vs 主进程串行段(prep/post) 的占比
+        tqdm.write(
+            f"[iter {self.meta_iteration}] 并行 map={map_s:.2f}s | "
+            f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
+            f"tasks={len(tasks)} workers={self._worker_pool._processes}"
+        )
         return raw
 
     def _meta_update_mappo(self, tasks, task_init_states, base_model, base_state) -> list:
-        """多星串行内循环：每个任务用 MAPPOTrainer + MultiSatelliteEnv 完整跑一遍"""
-        from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
+        """多星并行内循环：每个任务用独立进程跑 MAPPOTrainer + MultiSatelliteEnv。
 
-        results = []
+        与单星 _meta_update_single 对称：task_init_states 里是已调制的 actor 初始
+        state_dict；critic 用统一初始快照（不再跨任务累积，外循环只聚合 actor）。
+        """
+        from algo.task_worker import run_mappo_task
+
+        def _state_to_numpy(sd):
+            return {k: v.cpu().numpy() for k, v in sd.items()}
+
+        # critic 统一初始快照（所有 worker 共用同一份）
+        critic_init_np = _state_to_numpy(self._mappo_model.critic.state_dict())
+
+        # 参与的卫星配置（与 _init_multi_agent 中一致）
+        n_sat = min(self.cfg.mappo.n_satellites, len(self.cfg.satellites))
+        sat_configs = self.cfg.satellites[:n_sat]
+
+        t_prep = time.perf_counter()
+        task_args = []
         for i, (routine, dynamic_schedule) in enumerate(tasks):
-            init_state = task_init_states[i]
-            # 每个任务独立加载调制后的初始参数（actor 是 base_model）
-            base_model.load_state_dict(copy.deepcopy(init_state))
+            task_args.append({
+                'idx': i,
+                'routine': routine,
+                'dynamic_schedule': dynamic_schedule,
+                'actor_init_state': _state_to_numpy(task_init_states[i]),
+                'critic_init_state': critic_init_np,
+                'sat_configs': sat_configs,
+                'reward_config': self.cfg.reward,
+                'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
+                'max_action_dim': self.cfg.mission.max_action_dim,
+                'cfg_ppo': self.cfg.ppo,
+                'cfg_meta': self.cfg.meta,
+                'obs_dim': self._worker_obs_dim,
+                'action_dim': self._worker_action_dim,
+                'global_state_dim': self._worker_obs_dim,  # mean pooling，与 obs 同维
+                'actor_hidden_dims': self.cfg.network.hidden_layers,
+                'critic_hidden_dims': self.cfg.mappo.critic_hidden_dims,
+            })
+        prep_s = time.perf_counter() - t_prep
 
-            multi_env = self._multi_env
-            reset_options = {
-                "routine_missions": copy.deepcopy(routine),
-                "dynamic_schedule": copy.deepcopy(dynamic_schedule),
-            }
-            reset_result = multi_env.reset(options=reset_options)
-            current_obs = {aid: r[0] for aid, r in reset_result.items()}
-            current_infos = {aid: r[1] for aid, r in reset_result.items()}
+        t_map = time.perf_counter()
+        results_raw = self._worker_pool.map(run_mappo_task, task_args)
+        map_s = time.perf_counter() - t_map
 
-            buffer = MultiAgentRolloutBuffer()
-            buffer.init_agents(multi_env.agent_ids)
-
-            # 每个任务重置 Adam 动量
-            self._inner_mappo.optimizer = optim.Adam(
-                self._mappo_model.parameters(),
-                lr=self.cfg.ppo.learning_rate,
-            )
-
-            for _ in range(self.cfg.meta.inner_steps):
-                buffer.clear()
-                buffer.init_agents(multi_env.agent_ids)
-                current_obs, current_infos, ep_reward = self._inner_mappo.collect_rollout(
-                    multi_env, buffer, self.cfg.meta.rollout_steps,
-                    current_obs, current_infos,
-                )
-                last_gs = multi_env.get_global_state()
-                self._inner_mappo.update(buffer, last_gs)
-
-            # 评估
-            eval_reward, eval_metrics = self._evaluate_multi(routine, dynamic_schedule)
-
-            adapted_state = base_model.state_dict()
-            param_names = {name for name, _ in base_model.named_parameters()}
+        t_post = time.perf_counter()
+        results = [None] * len(tasks)
+        for r in results_raw:
+            idx = r['idx']
             param_diff = {
-                name: adapted_state[name] - init_state[name]
-                for name in param_names
+                name: torch.from_numpy(arr).to(self.device)
+                for name, arr in r['param_diff_np'].items()
             }
-            steps_consumed = self.cfg.meta.inner_steps * self.cfg.meta.rollout_steps
-            results.append((param_diff, eval_reward, eval_metrics, steps_consumed))
+            results[idx] = (param_diff, r['eval_reward'], r['eval_metrics'], r['steps_consumed'])
+        post_s = time.perf_counter() - t_post
 
+        tqdm.write(
+            f"[iter {self.meta_iteration}] 多星并行 map={map_s:.2f}s | "
+            f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
+            f"tasks={len(tasks)} workers={self._worker_pool._processes}"
+        )
         return results
 
     # -------------------------------------------------------------------
