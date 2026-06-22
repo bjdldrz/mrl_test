@@ -53,6 +53,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from utils.experiment_dirs import unique_dir, safe_name
 
 ROOT = Path(__file__).resolve().parent
 
@@ -449,6 +450,10 @@ def main():
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
+    parser.add_argument("--batch_name", type=str, default=None,
+                        help="本批消融实验名称; 默认由 preset/关键参数生成")
+    parser.add_argument("--flat_out_root", action="store_true",
+                        help="直接写入 --out_root, 不自动创建唯一批次子目录")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--n_satellites", type=int, default=6)
     parser.add_argument("--train_iters", type=int, default=30)
@@ -470,8 +475,15 @@ def main():
                         help="给每个子实验额外运行 Greedy-Oracle")
     args = parser.parse_args()
 
-    out_root = Path(args.out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
+    if args.flat_out_root:
+        out_root = Path(args.out_root)
+        out_root.mkdir(parents=True, exist_ok=True)
+    else:
+        batch_name = args.batch_name or (
+            f"{args.preset}_sat{args.n_satellites}_iter{args.train_iters}_"
+            f"eval{args.eval_episodes}_seed{args.seed}"
+        )
+        out_root = unique_dir(args.out_root, safe_name(batch_name))
 
     if args.preset == "assignment_v2":
         specs = build_assignment_v2_specs(
@@ -508,6 +520,7 @@ def main():
             "--out_dir", str(out_dir),
             "--device", args.device,
             "--experiment_tag", tag,
+            "--flat_out_dir",
             *spec["extra_args"],
         ]
         if args.run_oracle and "--run_oracle" not in cmd:

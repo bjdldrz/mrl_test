@@ -120,6 +120,8 @@ python train.py --method mrl_dms --fast
 python train.py --method mrl_dms --acled_path ./DynamicMission/DynamicMission.shp
 # 本地 Mac 训练务必加 --device cpu (规避 MPS 的 LSTM backward 崩溃):
 python train.py --method mrl_dms --acled_path ./DynamicMission/DynamicMission.shp --device cpu
+# 每次训练默认会写入唯一目录 runs/<method>_<timestamp>/; 可加标签便于区分:
+python train.py --method mrl_dms --acled_path ./DynamicMission/DynamicMission.shp --device cpu --run_tag paper_repro
 ```
 
 > 用真实 ACLED 数据训练时,冲突热点聚集会**大幅提高任务可达率**,更贴近论文设定。
@@ -148,6 +150,10 @@ python compare_methods.py \
 #   --release_before_deadline_s 1800         截止前释放所有权, 回收硬指派吞吐损失
 ```
 
+默认情况下,`compare_methods.py` 会在 `--out_dir` 下自动创建唯一子目录,例如
+`runs/compare/single_compare_sat6_iter30_assign_on_seed42_20260622_143000/`,
+避免重复运行覆盖旧结果。若确实想直接写入指定目录,加 `--flat_out_dir`。
+
 | 方案 | 含义 |
 |---|---|
 | `Single-PPO`  | 单星 PPO |
@@ -174,6 +180,10 @@ python run_ablation.py \
 # 快速检查命令组合,不真正运行:
 python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
 ```
+
+默认情况下,`run_ablation.py` 会在 `--out_root` 下创建唯一批次目录,例如
+`runs/ablation_assignment_v2/assignment_v2_sat6_iter30_eval5_seed42_20260622_143000/`;
+各子实验再写入该批次目录下的 `<tag>/`。若要复用指定目录,加 `--flat_out_root`。
 
 默认 `assignment_v2` preset 会比较:
 - `--no_episode_assignment` baseline

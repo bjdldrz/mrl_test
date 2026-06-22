@@ -103,6 +103,7 @@
 |---|---|---|
 | 实验 manifest | ✅ 已实现(2026-06-22) | `compare_methods.py` 每次输出 `manifest.json` |
 | 批量消融 runner | ✅ 已实现(2026-06-22) | `run_ablation.py --preset assignment_v2` |
+| 结果目录隔离 | ✅ 已实现(2026-06-22) | compare/ablation/train 默认自动创建唯一输出目录 |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |
@@ -129,6 +130,11 @@ python run_ablation.py \
 ```
 
 **后续所有优化版本约定**:每个新方案必须提供开关,并进入 `run_ablation.py` 或新增 preset 做消融;路线图记录方案、默认值、对照组、结果路径和结论。
+
+**结果目录约定**:
+- `train.py` 未指定 `--exp_name` 时自动写入 `runs/<method>[_tag][_fast]_<timestamp>/`;显式 `--exp_name` 可加 `--append_timestamp` 避免覆盖。
+- `compare_methods.py` 默认在 `--out_dir` 下创建唯一子目录;需要旧行为时使用 `--flat_out_dir`。
+- `run_ablation.py` 默认在 `--out_root` 下创建唯一批次目录,子实验写入 `<batch>/<tag>/`;需要旧行为时使用 `--flat_out_root`。
 
 **本地验证**:
 - 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall compare_methods.py run_ablation.py`。

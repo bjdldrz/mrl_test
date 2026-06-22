@@ -16,7 +16,11 @@ build/
 checkpoints/
 
 # Generated experiment outputs
+runs/compare*/
 runs/ablation_*/
+runs/mrl_dms*/
+runs/ppo*/
+runs/*_smoke/
 runs/compare_opt_smoke/
 runs/train_stability_smoke/
 runs/communication_smoke/

@@ -40,6 +40,7 @@ from algo.ppo import PPOTrainer, RolloutBuffer
 from models.actor_critic import ActorCritic
 from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator, load_acled_shapefile
+from utils.experiment_dirs import safe_name, timestamp
 
 import numpy as np
 import torch
@@ -212,6 +213,10 @@ def main():
                         help="计算设备; 本地 Mac 请用 cpu (MPS 的 LSTM backward 有 bug 会崩溃)")
     parser.add_argument("--exp_name", type=str, default=None,
                         help="实验名称, 用于命名日志目录 runs/<exp_name>/")
+    parser.add_argument("--run_tag", type=str, default=None,
+                        help="实验标签; 未指定 exp_name 时用于生成 runs/<method>_<tag>_<timestamp>/")
+    parser.add_argument("--append_timestamp", action="store_true",
+                        help="给显式指定的 exp_name 也追加时间戳, 避免覆盖同名目录")
     args = parser.parse_args()
 
     # 加载配置
@@ -245,11 +250,20 @@ def main():
     else:
         logger.info("未指定 ACLED 数据, 将使用合成动态任务")
 
+    # 输出目录命名: 默认每次训练生成唯一 exp_name; 显式 exp_name 默认保持旧行为.
+    exp_name = args.exp_name
+    if exp_name is None:
+        tag = f"_{safe_name(args.run_tag)}" if args.run_tag else ""
+        mode = "_fast" if args.fast else ""
+        exp_name = f"{args.method}{tag}{mode}_{timestamp()}"
+    elif args.append_timestamp:
+        exp_name = f"{safe_name(exp_name)}_{timestamp()}"
+
     # 训练
     if args.method == "mrl_dms":
-        train_mrl_dms(config, acled_df, exp_name=args.exp_name)
+        train_mrl_dms(config, acled_df, exp_name=exp_name)
     elif args.method == "ppo":
-        train_ppo_baseline(config, acled_df, exp_name=args.exp_name)
+        train_ppo_baseline(config, acled_df, exp_name=exp_name)
     else:
         logger.info(f"Baseline {args.method} 可通过修改 PPO 训练器实现")
         # A2C / DQN 的实现可参照 PPO baseline 结构扩展

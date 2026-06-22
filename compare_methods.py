@@ -41,6 +41,7 @@ import torch
 
 from config import get_default_config
 from data.mission_generator import MissionGenerator, load_acled_shapefile
+from utils.experiment_dirs import unique_dir, safe_name
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -391,6 +392,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", type=str, default="runs/compare")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--run_name", type=str, default=None,
+                        help="本次 compare run 名称; 默认由 experiment_tag/关键参数生成")
+    parser.add_argument("--flat_out_dir", action="store_true",
+                        help="直接写入 --out_dir, 不自动创建唯一子目录")
     parser.add_argument("--episode_assignment", action="store_true", default=True,
                         help="MAPPO 启用全局 episode 级任务指派 (默认开)")
     parser.add_argument("--no_episode_assignment", dest="episode_assignment",
@@ -495,8 +500,17 @@ def main():
             )
         results["Greedy-Oracle"]["oracle_relative_completion"] = 1.0
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.flat_out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        assignment_tag = "assign_on" if args.episode_assignment else "assign_off"
+        run_name = args.run_name or (
+            f"{args.experiment_tag}_sat{args.n_satellites}_"
+            f"iter{args.train_iters}_{assignment_tag}_seed{args.seed}"
+        )
+        out_dir = unique_dir(args.out_dir, safe_name(run_name))
+        args.out_dir = str(out_dir)
     with open(out_dir / "comparison_results.json", "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     elapsed_s = time.time() - t0
