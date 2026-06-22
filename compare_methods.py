@@ -134,7 +134,10 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device):
 # =======================================================================
 # 方案 2/3: 多星 (independent_ppo: coordinate=False; mappo: coordinate=True)
 # =======================================================================
-def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate):
+def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
+              episode_assignment=True, assign_w_load=0.1,
+              assignment_capacity_mode="proportional",
+              release_before_deadline_s=1800.0):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -145,6 +148,11 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate):
         satellite_configs=sat_cfgs, max_action_dim=cfg.mission.max_action_dim,
         reward_config=cfg.reward, vtw_time_step_s=cfg.train.vtw_time_step_s,
         coordinate=coordinate,
+        # 全局 episode 级指派仅对协同方法 (MAPPO) 启用
+        episode_assignment=(coordinate and episode_assignment),
+        assign_w_load=assign_w_load,
+        assignment_capacity_mode=assignment_capacity_mode,
+        release_before_deadline_s=release_before_deadline_s,
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -180,6 +188,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate):
 
     # 评估
     metrics_list = []
+    env.set_eval_mode(True)   # 评估期启用 A1 败者改派 (训练期关闭以保信用分配)
     for routine, dynamic in scenarios:
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
@@ -217,6 +226,17 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", type=str, default="runs/compare")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--episode_assignment", action="store_true", default=True,
+                        help="MAPPO 启用全局 episode 级任务指派 (默认开)")
+    parser.add_argument("--no_episode_assignment", dest="episode_assignment",
+                        action="store_false", help="关闭全局指派 (退回逐时刻协同)")
+    parser.add_argument("--assign_w_load", type=float, default=0.1,
+                        help="全局指派的负载均衡权重 (越大越均衡, 吞吐换均衡)")
+    parser.add_argument("--assignment_capacity_mode", type=str, default="proportional",
+                        choices=["proportional", "equal"],
+                        help="全局指派目标容量: proportional=按覆盖质量比例, equal=每星等额")
+    parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
+                        help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -244,7 +264,11 @@ def main():
     results["Indep-PPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False)
 
     logger.info("=== [3/3] 多星 MAPPO (协同, 本方法) ===")
-    results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device, coordinate=True)
+    results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
+                                 coordinate=True, episode_assignment=args.episode_assignment,
+                                 assign_w_load=args.assign_w_load,
+                                 assignment_capacity_mode=args.assignment_capacity_mode,
+                                 release_before_deadline_s=args.release_before_deadline_s)
 
     # 协同增益: MAPPO 完成数 / (N × 单星完成数)
     n_sat = args.n_satellites

@@ -57,9 +57,16 @@ mrl_dms/
 
 - **CTDE 架构**:每颗卫星一个分布式 Actor(只看局部观测),共享一个集中式 Critic(看全局状态 = 各星局部观测的 mean pooling,维度与卫星数无关,避免参数爆炸)。
 - **`coordinate` 开关**(`envs/multi_satellite_env.py`)是对照实验的关键:
-  - `coordinate=True`(**MAPPO,本方法**):① 冲突检测——同一任务只允许第一颗星执行,其余强制 idle;② 观测状态同步——任一颗星完成任务后全体标记完成,避免重复观测。
+  - `coordinate=True`(**MAPPO,本方法**):① 全局 episode 级任务指派(见下);② 逐时刻冲突解决(负载感知贪心拍卖 + 败者改派);③ 观测状态同步——任一颗星完成任务后全体标记完成,避免重复观测。
   - `coordinate=False`(**Indep-PPO,无协同 baseline**):各星完全独立决策,不去冲突、不同步,会产生重复观测。
 - 这样设计使"多星 vs 单星"的对比不会因"卫星数量多 = 可观测窗口多"而失真,**重复观测率/负载均衡/动态响应延迟**才是体现协同价值的真正指标。
+
+#### 协同优化机制(`OPTIMIZATION_ROADMAP.md` 记录完整路线图)
+
+- **全局 episode 级任务指派**(主力):`reset()` 时综合每颗星对每个任务在整个 24h 内的窗口质量(最小 off-nadir),用「最少候选优先 + 负载惩罚」贪心广义指派,为每个任务预分配归属卫星;**所有权掩码**让各星只在自己负责的任务上行动,从构造上消除重复、按设计均衡负载。动态任务到达时增量指派。
+  - 效果:MAPPO 负载变异系数从 0.46 降到 0.15(优于无协同的 0.21)、重复率 0%、画质(off-nadir)最优。
+  - **权衡旋钮 `assign_w_load`**:存在"负载均衡 vs 吞吐"的本质权衡(覆盖好的卫星被限额后其多余任务可能无人完成);该权重越大越均衡、吞吐越低,把权衡变成可调的帕累托曲线。
+- **逐时刻冲突解决**(辅助):同一时刻多星争抢同一任务时按边际价值竞价(优先级 + 质量 − 负载),败者评估期改派次优任务、训练期保持 idle 以保信用分配。在当前 SSO 稀疏可行性下杠杆较低,主要作安全网。
 
 ---
 
@@ -134,6 +141,11 @@ python compare_methods.py \
     --n_satellites 6 --train_iters 30 --eval_episodes 5 \
     --n_routine 200 --n_dynamic 50 \
     --out_dir runs/compare
+# 协同机制开关 (仅影响 MAPPO):
+#   --no_episode_assignment   关闭全局指派, 退回逐时刻协同
+#   --assign_w_load 0.1       负载均衡权重 (越大越均衡, 吞吐换均衡)
+#   --assignment_capacity_mode proportional  按覆盖容量比例指派; equal 为等额指派
+#   --release_before_deadline_s 1800         截止前释放所有权, 回收硬指派吞吐损失
 ```
 
 | 方案 | 含义 |
