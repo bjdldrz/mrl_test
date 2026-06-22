@@ -171,6 +171,9 @@ python run_ablation.py \
 | state_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset state_v1` |
 | J33 Greedy-Oracle 参考 | ✅ 已实现(2026-06-22) | `--run_oracle`;集中式启发式参考上界 |
 | J34 Oracle 相对增益 | ✅ 已实现(2026-06-22) | `oracle_relative_completion` + `mappo_oracle_gap_n_scheduled` |
+| I30 卫星数量课程 | ✅ 已实现(2026-06-22) | `satellite_curriculum`;训练期活跃卫星数线性增加 |
+| I31 轻量联合探索 | ✅ 已实现(2026-06-22) | `joint_explore_prob`;训练期随机选择互不重复可行动作 |
+| train_stability_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset train_stability_v1` |
 
 **实现**:`reset()` 时综合每颗星对每个任务在全 24h 的窗口质量(最小 off-nadir),用「**最少候选优先 + 负载惩罚**」贪心广义指派算出 `task_owner`(每任务归属一颗星);通过**所有权掩码**让各星只在自己负责的任务上行动。动态任务到达时增量指派。仅 `coordinate=True` 生效;训练/评估都套用所有权掩码(纯掩码,不破坏信用分配)。
 
@@ -316,3 +319,35 @@ python run_ablation.py \
 - oracle dry-run: `python3 run_ablation.py --preset oracle_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_oracle_dry_run`。
 - 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --preset oracle_v1 --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_oracle_smoke --device cpu`。
 - 验证输出: `runs/ablation_oracle_smoke/ablation_summary.csv/json`。该冒烟仅验证 Greedy-Oracle 与 oracle-relative 指标链路,不作为效果结论。
+
+---
+
+### 训练稳定性 v1(2026-06-22,I30 / I31)
+
+**目标**:前面已加入指派、奖励、critic 状态等优化,但多星协同策略可能仍因早期探索空间过大而收敛慢。train_stability_v1 提供两个训练层面的低侵入改动,帮助策略先学简单协同再逐步扩展。
+
+**实现**:
+- I30 `satellite_curriculum`: 训练期只让前 `k` 颗卫星参与 rollout/update,`k` 从 `curriculum_min_satellites` 在 `curriculum_iters` 个训练迭代内线性增加到全部卫星。评估期始终使用全部卫星。
+- I31 `joint_explore_prob`: 训练 rollout 中以给定概率执行轻量联合探索,集中式随机选择互不重复的可行动作,减少多星同时撞同一任务的探索样本。
+- `MAPPOTrainer.collect_rollout()` 新增 `active_agent_ids` 和 `joint_explore_prob`;默认关闭,保持原训练行为。
+- `run_ablation.py --preset train_stability_v1`: 比较 default/curriculum/joint_explore/combined 四组。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset train_stability_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_train_stability_v1 \
+  --device cpu
+```
+
+**注意**:联合探索会让部分训练动作不是直接从当前 policy sample 出来,因此只作为轻量探索消融,不应默认开启。若正式结果显示收益明显,后续应实现更严格的 correlated policy / shared latent exploration。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall algo compare_methods.py run_ablation.py`。
+- state 回归 dry-run: `python3 run_ablation.py --preset state_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_state_dry_run`。
+- train stability dry-run: `python3 run_ablation.py --preset train_stability_v1 --dry_run --train_iters 1 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_train_stability_dry_run`。
+- 训练路径冒烟: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python compare_methods.py --n_satellites 2 --train_iters 1 --eval_episodes 1 --n_routine 8 --n_dynamic 1 --out_dir runs/train_stability_smoke --device cpu --satellite_curriculum --curriculum_min_satellites 1 --curriculum_iters 2 --joint_explore_prob 1.0 --experiment_tag train_stability_smoke`。
+- 验证输出: `runs/train_stability_smoke/manifest.json`。该冒烟仅验证 active-agent curriculum 与 joint exploration 训练链路,不作为效果结论。

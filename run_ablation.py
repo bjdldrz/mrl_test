@@ -26,6 +26,12 @@ preset=oracle_v1:
   - no episode assignment + Greedy-Oracle
   - default assignment_v2 + Greedy-Oracle
 
+preset=train_stability_v1:
+  - default assignment_v2
+  - satellite curriculum
+  - joint exploration
+  - curriculum + joint exploration
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -162,35 +168,6 @@ def build_state_v1_specs():
         "--assign_w_load", "0.1",
         "--release_before_deadline_s", "1800",
     ]
-
-
-def build_oracle_v1_specs():
-    return [
-        {
-            "tag": "oracle_no_assignment",
-            "extra_args": ["--no_episode_assignment", "--run_oracle"],
-            "params": {
-                "oracle_variant": "no_assignment",
-                "episode_assignment": False,
-            },
-        },
-        {
-            "tag": "oracle_assignment_v2",
-            "extra_args": [
-                "--assignment_capacity_mode", "proportional",
-                "--assign_w_load", "0.1",
-                "--release_before_deadline_s", "1800",
-                "--run_oracle",
-            ],
-            "params": {
-                "oracle_variant": "assignment_v2",
-                "episode_assignment": True,
-                "assignment_capacity_mode": "proportional",
-                "assign_w_load": 0.1,
-                "release_before_deadline_s": 1800.0,
-            },
-        },
-    ]
     return [
         {
             "tag": "state_mean",
@@ -226,6 +203,99 @@ def build_oracle_v1_specs():
                 "state_variant": "concat_task_stats",
                 "global_state_mode": "concat",
                 "global_state_task_stats": True,
+            },
+        },
+    ]
+
+
+def build_oracle_v1_specs():
+    return [
+        {
+            "tag": "oracle_no_assignment",
+            "extra_args": ["--no_episode_assignment", "--run_oracle"],
+            "params": {
+                "oracle_variant": "no_assignment",
+                "episode_assignment": False,
+            },
+        },
+        {
+            "tag": "oracle_assignment_v2",
+            "extra_args": [
+                "--assignment_capacity_mode", "proportional",
+                "--assign_w_load", "0.1",
+                "--release_before_deadline_s", "1800",
+                "--run_oracle",
+            ],
+            "params": {
+                "oracle_variant": "assignment_v2",
+                "episode_assignment": True,
+                "assignment_capacity_mode": "proportional",
+                "assign_w_load": 0.1,
+                "release_before_deadline_s": 1800.0,
+            },
+        },
+    ]
+
+
+def build_train_stability_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    return [
+        {
+            "tag": "train_default",
+            "extra_args": [*base_assignment],
+            "params": {
+                "train_variant": "default",
+                "satellite_curriculum": False,
+                "joint_explore_prob": 0.0,
+            },
+        },
+        {
+            "tag": "train_curriculum",
+            "extra_args": [
+                *base_assignment,
+                "--satellite_curriculum",
+                "--curriculum_min_satellites", "1",
+                "--curriculum_iters", "10",
+            ],
+            "params": {
+                "train_variant": "curriculum",
+                "satellite_curriculum": True,
+                "curriculum_min_satellites": 1,
+                "curriculum_iters": 10,
+                "joint_explore_prob": 0.0,
+            },
+        },
+        {
+            "tag": "train_joint_explore_0p05",
+            "extra_args": [
+                *base_assignment,
+                "--joint_explore_prob", "0.05",
+            ],
+            "params": {
+                "train_variant": "joint_explore",
+                "satellite_curriculum": False,
+                "joint_explore_prob": 0.05,
+            },
+        },
+        {
+            "tag": "train_curriculum_joint_explore",
+            "extra_args": [
+                *base_assignment,
+                "--satellite_curriculum",
+                "--curriculum_min_satellites", "1",
+                "--curriculum_iters", "10",
+                "--joint_explore_prob", "0.05",
+            ],
+            "params": {
+                "train_variant": "curriculum_joint_explore",
+                "satellite_curriculum": True,
+                "curriculum_min_satellites": 1,
+                "curriculum_iters": 10,
+                "joint_explore_prob": 0.05,
             },
         },
     ]
@@ -316,7 +386,8 @@ def parse_str_list(text):
 def main():
     parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
-                        choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1"])
+                        choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
+                                 "train_stability_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -355,8 +426,10 @@ def main():
         specs = build_reward_v1_specs()
     elif args.preset == "state_v1":
         specs = build_state_v1_specs()
-    else:
+    elif args.preset == "oracle_v1":
         specs = build_oracle_v1_specs()
+    else:
+        specs = build_train_stability_v1_specs()
 
     rows = []
     for idx, spec in enumerate(specs, start=1):

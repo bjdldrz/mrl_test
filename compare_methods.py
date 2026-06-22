@@ -194,7 +194,11 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               team_completion_bonus=0.0,
               normalize_agent_rewards=False,
               global_state_mode="mean",
-              global_state_task_stats=False):
+              global_state_task_stats=False,
+              satellite_curriculum=False,
+              curriculum_min_satellites=1,
+              curriculum_iters=10,
+              joint_explore_prob=0.0):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -233,6 +237,18 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
     )
 
     for it in range(train_iters):
+        active_agent_ids = None
+        if coordinate and satellite_curriculum:
+            min_sat = max(1, min(curriculum_min_satellites, n_sat))
+            if curriculum_iters <= 1:
+                active_n = n_sat
+            else:
+                progress = min(it / max(curriculum_iters - 1, 1), 1.0)
+                span = n_sat - min_sat
+                active_n = int(round(min_sat + progress * span))
+                active_n = max(min_sat, min(n_sat, active_n))
+            active_agent_ids = env.agent_ids[:active_n]
+
         routine, dynamic = mission_gen.generate_episode_missions(
             n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
             n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
@@ -244,9 +260,11 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         cur_obs = {a: r[0] for a, r in res.items()}
         cur_info = {a: r[1] for a, r in res.items()}
         buf = MultiAgentRolloutBuffer()
-        buf.init_agents(env.agent_ids)
+        buf.init_agents(active_agent_ids or env.agent_ids)
         cur_obs, cur_info, _ = trainer.collect_rollout(
-            env, buf, cfg.meta.rollout_steps, cur_obs, cur_info)
+            env, buf, cfg.meta.rollout_steps, cur_obs, cur_info,
+            active_agent_ids=active_agent_ids,
+            joint_explore_prob=(joint_explore_prob if coordinate else 0.0))
         trainer.update(buf, env.get_global_state())
 
     # 评估
@@ -396,6 +414,14 @@ def main():
                         help="MAPPO critic 全局状态追加任务/负载统计")
     parser.add_argument("--run_oracle", action="store_true",
                         help="额外运行 Greedy-Oracle 集中式启发式参考")
+    parser.add_argument("--satellite_curriculum", action="store_true",
+                        help="MAPPO 训练期从少量活跃卫星逐步增加到全部卫星")
+    parser.add_argument("--curriculum_min_satellites", type=int, default=1,
+                        help="卫星数量课程的起始活跃卫星数")
+    parser.add_argument("--curriculum_iters", type=int, default=10,
+                        help="多少个训练迭代内从 min 卫星线性增加到全部卫星")
+    parser.add_argument("--joint_explore_prob", type=float, default=0.0,
+                        help="训练期联合探索概率; 随机挑选互不重复的可行动作")
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
@@ -435,7 +461,11 @@ def main():
                                  team_completion_bonus=args.team_completion_bonus,
                                  normalize_agent_rewards=args.normalize_agent_rewards,
                                  global_state_mode=args.global_state_mode,
-                                 global_state_task_stats=args.global_state_task_stats)
+                                 global_state_task_stats=args.global_state_task_stats,
+                                 satellite_curriculum=args.satellite_curriculum,
+                                 curriculum_min_satellites=args.curriculum_min_satellites,
+                                 curriculum_iters=args.curriculum_iters,
+                                 joint_explore_prob=args.joint_explore_prob)
 
     if args.run_oracle:
         logger.info("=== [4/4] Greedy Oracle (集中式启发式参考) ===")

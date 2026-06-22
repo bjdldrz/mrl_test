@@ -18,6 +18,7 @@ checkpoints/
 # Generated experiment outputs
 runs/ablation_*/
 runs/compare_opt_smoke/
+runs/train_stability_smoke/
 
 # Data files (uncomment if data is too large)
 # *.csv

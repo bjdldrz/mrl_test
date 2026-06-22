@@ -134,6 +134,8 @@ class MAPPOTrainer:
         n_steps: int,
         current_obs: Optional[Dict] = None,
         current_infos: Optional[Dict] = None,
+        active_agent_ids: Optional[List[str]] = None,
+        joint_explore_prob: float = 0.0,
     ) -> Tuple[Dict, Dict, float]:
         """
         从多星环境中并行采集经验。
@@ -145,7 +147,7 @@ class MAPPOTrainer:
             current_obs = {aid: r[0] for aid, r in reset_result.items()}
             current_infos = {aid: r[1] for aid, r in reset_result.items()}
 
-        agent_ids = multi_env.agent_ids
+        agent_ids = active_agent_ids or multi_env.agent_ids
         total_reward = 0.0
 
         for step in range(n_steps):
@@ -157,18 +159,35 @@ class MAPPOTrainer:
                 gs_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)
                 value = self.model.get_values(gs_t).cpu().item()
 
-            # 每颗卫星独立选择动作 (用共享 Actor)
-            actions_dict = {}
+            obs_by_agent = {}
+            mask_by_agent = {}
             for aid in agent_ids:
-                obs = current_obs[aid]
-                mask = current_infos[aid].get(
+                obs_by_agent[aid] = current_obs[aid]
+                mask_by_agent[aid] = current_infos[aid].get(
                     "action_mask", np.ones(multi_env.action_dim)
                 )
+
+            explore_actions = {}
+            if joint_explore_prob > 0 and np.random.rand() < joint_explore_prob:
+                explore_actions = self._joint_exploration_actions(
+                    mask_by_agent, multi_env.idle_action
+                )
+
+            # 每颗活跃卫星独立选择动作 (用共享 Actor); 非活跃卫星在 env.step 中视为 idle
+            actions_dict = {}
+            for aid in agent_ids:
+                obs = obs_by_agent[aid]
+                mask = mask_by_agent[aid]
 
                 with torch.no_grad():
                     obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
                     mask_t = torch.FloatTensor(mask).unsqueeze(0).to(self.device)
-                    action, log_prob, _ = self.model.actor.get_action(obs_t, mask_t)
+                    forced_action = None
+                    if aid in explore_actions:
+                        forced_action = torch.LongTensor([explore_actions[aid]]).to(self.device)
+                    action, log_prob, _ = self.model.actor.get_action(
+                        obs_t, mask_t, forced_action
+                    )
 
                 action_np = action.cpu().item()
                 log_prob_np = log_prob.cpu().item()
@@ -208,6 +227,28 @@ class MAPPOTrainer:
                 break
 
         return current_obs, current_infos, total_reward
+
+    def _joint_exploration_actions(
+        self,
+        masks: Dict[str, np.ndarray],
+        idle_action: int,
+    ) -> Dict[str, int]:
+        """
+        I31 轻量联合探索: 在同一步为多个 agent 随机挑选互不重复的可行动作。
+
+        该探索只用于训练 rollout; log_prob 仍用当前 policy 对所选动作计算,便于 PPO
+        buffer 保持同一数据结构。默认关闭,作为消融项使用。
+        """
+        claimed = set()
+        actions = {}
+        for aid in np.random.permutation(list(masks.keys())):
+            feasible = np.nonzero(masks[aid][:idle_action])[0].tolist()
+            feasible = [a for a in feasible if a not in claimed]
+            if feasible:
+                action = int(np.random.choice(feasible))
+                actions[aid] = action
+                claimed.add(action)
+        return actions
 
     # -------------------------------------------------------------------
     # GAE (使用集中式 Critic 的价值估计)

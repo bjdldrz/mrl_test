@@ -234,6 +234,22 @@ python run_ablation.py --preset assignment_v2 --run_oracle
 
 `--run_oracle` 会额外运行 `Greedy-Oracle`:每一步由集中式启发式在所有卫星可行动作中选择非冲突任务,用于估计当前场景下的可达参考上界。它不是严格 ILP 最优,但能给出 `oracle_relative_completion` 和 `mappo_oracle_gap_n_scheduled`,用于判断 MAPPO 离强启发式还有多远。
 
+训练稳定性消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset train_stability_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_train_stability_v1 \
+    --device cpu
+```
+
+`train_stability_v1` 比较默认训练、卫星数量课程、联合探索、课程+联合探索。单次运行可用:
+- `--satellite_curriculum --curriculum_min_satellites 1 --curriculum_iters 10`
+- `--joint_explore_prob 0.05`
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash
