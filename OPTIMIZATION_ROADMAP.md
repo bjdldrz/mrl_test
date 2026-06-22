@@ -104,6 +104,7 @@
 | 实验 manifest | ✅ 已实现(2026-06-22) | `compare_methods.py` 每次输出 `manifest.json` |
 | 批量消融 runner | ✅ 已实现(2026-06-22) | `run_ablation.py --preset assignment_v2` |
 | 结果目录隔离 | ✅ 已实现(2026-06-22) | compare/ablation/train 默认自动创建唯一输出目录 |
+| 可视化与可观测任务统计 | ✅ 已实现(2026-06-22) | 输出 `*_viz_data.json`,支持任务分布图/调度甘特图/可观测任务数 |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |

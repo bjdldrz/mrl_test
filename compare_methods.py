@@ -113,6 +113,9 @@ def _write_manifest(out_dir: Path, args, results, elapsed_s: float):
         "outputs": {
             "results_json": str(out_dir / "comparison_results.json"),
             "manifest_json": str(out_dir / "manifest.json"),
+            "viz_data_json": [
+                str(p) for p in sorted(out_dir.glob("*_viz_data.json"))
+            ],
         },
         "results": results,
     }
@@ -120,10 +123,73 @@ def _write_manifest(out_dir: Path, args, results, elapsed_s: float):
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
+def _mission_to_dict(m):
+    return {
+        "id": int(m.id),
+        "lat": float(m.lat),
+        "lon": float(m.lon),
+        "priority": float(m.priority),
+        "duration_s": float(m.duration_s),
+        "earliest_time_s": float(m.earliest_time_s),
+        "deadline_s": float(m.deadline_s),
+        "is_dynamic": bool(m.is_dynamic),
+        "arrival_time_s": float(getattr(m, "arrival_time_s", m.earliest_time_s)),
+        "event_type": getattr(m, "event_type", ""),
+    }
+
+
+def _record_to_dict(r):
+    return {
+        "mission_id": int(r.mission_id),
+        "satellite_name": r.satellite_name,
+        "obs_start_s": float(r.obs_start_s),
+        "obs_end_s": float(r.obs_end_s),
+        "reward": float(r.reward),
+        "off_nadir_deg": float(r.off_nadir_deg),
+        "is_dynamic": bool(r.is_dynamic),
+        "earliest_time_s": float(r.earliest_time_s),
+    }
+
+
+def _save_single_viz_data(env, out_dir: Path, method_name: str):
+    missions = [m for m in env.missions if m is not None]
+    payload = {
+        "method": method_name,
+        "horizon_s": float(env.horizon_s),
+        "missions": [_mission_to_dict(m) for m in missions],
+        "schedule": {
+            env.sat_config.name: [_record_to_dict(r) for r in env.schedule_log],
+        },
+    }
+    path = out_dir / f"{method_name}_viz_data.json"
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return path
+
+
+def _save_multi_viz_data(env, out_dir: Path, method_name: str):
+    first_env = list(env.envs.values())[0]
+    missions = [m for m in first_env.missions if m is not None]
+    payload = {
+        "method": method_name,
+        "horizon_s": float(env.horizon_s),
+        "missions": [_mission_to_dict(m) for m in missions],
+        "schedule": {
+            aid: [_record_to_dict(r) for r in sub_env.schedule_log]
+            for aid, sub_env in env.envs.items()
+        },
+    }
+    path = out_dir / f"{method_name}_viz_data.json"
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return path
+
+
 # =======================================================================
 # 方案 1: 单星 PPO
 # =======================================================================
-def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device):
+def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
+                   viz_out_dir: Path = None):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
     from algo.ppo import PPOTrainer, RolloutBuffer
@@ -163,7 +229,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device):
 
     # 评估
     metrics_list = []
-    for routine, dynamic in scenarios:
+    for ep_idx, (routine, dynamic) in enumerate(scenarios):
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
         obs, info = env.reset(options=opts)
@@ -180,6 +246,8 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device):
             obs, r, term, trunc, info = env.step(a.cpu().item())
             done = term or trunc
         metrics_list.append(env.get_metrics())
+        if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
+            _save_single_viz_data(env, viz_out_dir, "Single-PPO")
     return _avg_metrics(metrics_list)
 
 
@@ -201,7 +269,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               curriculum_iters=10,
               joint_explore_prob=0.0,
               intent_broadcast=False,
-              intent_replan_rounds=1):
+              intent_replan_rounds=1,
+              method_name="MAPPO",
+              viz_out_dir: Path = None):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -275,7 +345,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
     # 评估
     metrics_list = []
     env.set_eval_mode(True)   # 评估期启用 A1 败者改派 (训练期关闭以保信用分配)
-    for routine, dynamic in scenarios:
+    for ep_idx, (routine, dynamic) in enumerate(scenarios):
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
         res = env.reset(options=opts)
@@ -297,6 +367,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             if env.is_done():
                 break
         metrics_list.append(env.get_metrics())
+        if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
+            _save_multi_viz_data(env, viz_out_dir, method_name)
     return _avg_metrics(metrics_list)
 
 
@@ -349,7 +421,7 @@ def _greedy_oracle_actions(env):
     return actions
 
 
-def run_greedy_oracle(cfg, scenarios):
+def run_greedy_oracle(cfg, scenarios, viz_out_dir: Path = None):
     from envs.multi_satellite_env import MultiSatelliteEnv
 
     n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
@@ -365,7 +437,7 @@ def run_greedy_oracle(cfg, scenarios):
     )
 
     metrics_list = []
-    for routine, dynamic in scenarios:
+    for ep_idx, (routine, dynamic) in enumerate(scenarios):
         opts = {
             "routine_missions": copy.deepcopy(routine),
             "dynamic_schedule": copy.deepcopy(dynamic),
@@ -378,6 +450,8 @@ def run_greedy_oracle(cfg, scenarios):
             actions = _greedy_oracle_actions(env)
             env.step(actions)
         metrics_list.append(env.get_metrics())
+        if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
+            _save_multi_viz_data(env, viz_out_dir, "Greedy-Oracle")
     return _avg_metrics(metrics_list)
 
 
@@ -456,11 +530,26 @@ def main():
     results = {}
     t0 = time.time()
 
+    if args.flat_out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        assignment_tag = "assign_on" if args.episode_assignment else "assign_off"
+        run_name = args.run_name or (
+            f"{args.experiment_tag}_sat{args.n_satellites}_"
+            f"iter{args.train_iters}_{assignment_tag}_seed{args.seed}"
+        )
+        out_dir = unique_dir(args.out_dir, safe_name(run_name))
+        args.out_dir = str(out_dir)
+
     logger.info("=== [1/3] 单星 PPO ===")
-    results["Single-PPO"] = run_single_ppo(cfg, mission_gen, scenarios, args.train_iters, device)
+    results["Single-PPO"] = run_single_ppo(
+        cfg, mission_gen, scenarios, args.train_iters, device, viz_out_dir=out_dir)
 
     logger.info("=== [2/3] 多星独立 PPO (无协同 baseline) ===")
-    results["Indep-PPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False)
+    results["Indep-PPO"] = run_multi(
+        cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
+        method_name="Indep-PPO", viz_out_dir=out_dir)
 
     logger.info("=== [3/3] 多星 MAPPO (协同, 本方法) ===")
     results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
@@ -479,11 +568,13 @@ def main():
                                  curriculum_iters=args.curriculum_iters,
                                  joint_explore_prob=args.joint_explore_prob,
                                  intent_broadcast=args.intent_broadcast,
-                                 intent_replan_rounds=args.intent_replan_rounds)
+                                 intent_replan_rounds=args.intent_replan_rounds,
+                                 method_name="MAPPO",
+                                 viz_out_dir=out_dir)
 
     if args.run_oracle:
         logger.info("=== [4/4] Greedy Oracle (集中式启发式参考) ===")
-        results["Greedy-Oracle"] = run_greedy_oracle(cfg, scenarios)
+        results["Greedy-Oracle"] = run_greedy_oracle(cfg, scenarios, viz_out_dir=out_dir)
 
     # 协同增益: MAPPO 完成数 / (N × 单星完成数)
     n_sat = args.n_satellites
@@ -500,17 +591,6 @@ def main():
             )
         results["Greedy-Oracle"]["oracle_relative_completion"] = 1.0
 
-    if args.flat_out_dir:
-        out_dir = Path(args.out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        assignment_tag = "assign_on" if args.episode_assignment else "assign_off"
-        run_name = args.run_name or (
-            f"{args.experiment_tag}_sat{args.n_satellites}_"
-            f"iter{args.train_iters}_{assignment_tag}_seed{args.seed}"
-        )
-        out_dir = unique_dir(args.out_dir, safe_name(run_name))
-        args.out_dir = str(out_dir)
     with open(out_dir / "comparison_results.json", "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     elapsed_s = time.time() - t0
@@ -528,6 +608,10 @@ def main():
         ("dynamic_completion_rate", "动态完成率", "%"),
         ("routine_completion_rate", "常规完成率", "%"),
         ("total_reward", "累积奖励", ""),
+        ("n_total_tasks", "全部任务数", ""),
+        ("n_feasible_tasks", "可观测任务数", ""),
+        ("n_feasible_routine", "可观测常规任务数", ""),
+        ("n_feasible_dynamic", "可观测动态任务数", ""),
         ("n_scheduled", "完成任务数", ""),
         ("n_duplicates", "重复观测数", ""),
         ("duplicate_rate", "重复观测率", "%"),

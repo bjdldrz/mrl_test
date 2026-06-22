@@ -289,6 +289,85 @@ def plot_gantt_multi(sat_logs: dict, horizon_s: float, out_dir: Path, dynamic_id
     logger.info(f"已保存: {path}")
 
 
+def plot_task_distribution_from_payload(payload: dict, out_dir: Path, suffix: str = ""):
+    """任务地理分布图: routine/dynamic + feasible/scheduled 状态。"""
+    missions = payload.get("missions", [])
+    if not missions:
+        logger.warning("viz_data 中没有 missions, 跳过任务分布图")
+        return
+
+    scheduled_ids = {
+        int(rec["mission_id"])
+        for records in payload.get("schedule", {}).values()
+        for rec in records
+    }
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    for is_dynamic, marker, label, color in [
+        (False, "o", "Routine", COLORS["routine"]),
+        (True, "^", "Dynamic", COLORS["dynamic"]),
+    ]:
+        xs = [m["lon"] for m in missions if bool(m.get("is_dynamic")) == is_dynamic]
+        ys = [m["lat"] for m in missions if bool(m.get("is_dynamic")) == is_dynamic]
+        if xs:
+            ax.scatter(xs, ys, s=22 if not is_dynamic else 34, marker=marker,
+                       c=color, alpha=0.45, edgecolors="none", label=label)
+
+    sched = [m for m in missions if int(m["id"]) in scheduled_ids]
+    if sched:
+        ax.scatter([m["lon"] for m in sched], [m["lat"] for m in sched],
+                   s=70, facecolors="none", edgecolors="black", linewidths=0.8,
+                   label="Scheduled")
+
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-90, 90)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    method = payload.get("method", "method")
+    ax.set_title(f"Task Distribution — {method} | total={len(missions)}, scheduled={len(scheduled_ids)}")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="lower left")
+    fig.tight_layout()
+    path = out_dir / f"task_distribution{suffix}.png"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"已保存: {path}")
+
+
+def plot_gantt_from_payload(payload: dict, out_dir: Path, suffix: str = ""):
+    """从 compare_methods.py 保存的 viz_data 画调度甘特图。"""
+    schedule = payload.get("schedule", {})
+    if not schedule:
+        logger.warning("viz_data 中没有 schedule, 跳过甘特图")
+        return
+    dynamic_ids = {int(m["id"]) for m in payload.get("missions", []) if m.get("is_dynamic")}
+    horizon_s = float(payload.get("horizon_s", 86400.0))
+    sat_logs = {}
+    for sat, records in schedule.items():
+        # 用轻量对象兼容现有 plot_gantt_multi
+        sat_logs[sat] = [
+            type("ScheduleRecordLike", (), rec)()
+            for rec in records
+        ]
+    plot_gantt_multi(sat_logs, horizon_s, out_dir, dynamic_ids)
+    src = out_dir / "gantt_multi.png"
+    if suffix and src.exists():
+        dst = out_dir / f"gantt_multi{suffix}.png"
+        src.replace(dst)
+        logger.info(f"已保存: {dst}")
+
+
+def plot_compare_viz_data(compare_dir: Path, out_dir: Path):
+    """为 compare_methods.py 的各方法 viz_data 生成任务分布图和甘特图。"""
+    for path in sorted(compare_dir.glob("*_viz_data.json")):
+        import json
+        with open(path) as f:
+            payload = json.load(f)
+        suffix = "_" + path.stem.replace("_viz_data", "")
+        plot_task_distribution_from_payload(payload, out_dir, suffix=suffix)
+        plot_gantt_from_payload(payload, out_dir, suffix=suffix)
+
+
 # -----------------------------------------------------------------------
 # 4. 完成率对比柱状图（多算法）
 # -----------------------------------------------------------------------
@@ -832,6 +911,28 @@ def plot_method_comparison(results: dict, out_dir: Path):
     fig.savefig(p, bbox_inches="tight"); plt.close(fig)
     logger.info(f"已保存: {p}")
 
+    # --- 图 1b: feasible 分母与完成数, 解释完成率口径 ---
+    if any("n_feasible_tasks" in v for v in results.values()):
+        fig, ax = plt.subplots(figsize=(10, 5))
+        x = np.arange(len(methods))
+        total = [results[m].get("n_total_tasks", 0) for m in methods]
+        feasible = [results[m].get("n_feasible_tasks", 0) for m in methods]
+        scheduled = [results[m].get("n_scheduled", 0) for m in methods]
+        w = 0.25
+        ax.bar(x - w, total, w, label="Total tasks", color="#BDBDBD")
+        ax.bar(x, feasible, w, label="Feasible/observable tasks", color="#66BB6A")
+        ax.bar(x + w, scheduled, w, label="Scheduled tasks", color="#42A5F5")
+        ax.set_xticks(x)
+        ax.set_xticklabels(methods, rotation=10)
+        ax.set_ylabel("Task Count")
+        ax.set_title("Completion Rate Denominator: Feasible Tasks vs Total Tasks")
+        ax.legend()
+        fig.tight_layout()
+        p = out_dir / "method_comparison_task_counts.png"
+        fig.savefig(p, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"已保存: {p}")
+
     # --- 图 2: 协同质量指标 (多星方案), 体现 MAPPO 协同优势 ---
     coord_metrics = [
         ("duplicate_rate",          "重复观测率", "%", "越低越好"),
@@ -903,6 +1004,7 @@ def main():
             results = json.load(f)
         out = Path(args.out_dir) if args.out_dir else Path(args.compare_json).parent
         plot_method_comparison(results, out)
+        plot_compare_viz_data(Path(args.compare_json).parent, out)
     elif args.run_dirs:
         labels = args.labels or [f"run{i}" for i in range(len(args.run_dirs))]
         out = Path(args.out_dir) if args.out_dir else Path("plots")

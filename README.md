@@ -275,6 +275,49 @@ python run_ablation.py \
 `communication_v1` 比较默认训练、意图广播、意图广播+训练稳定性。单次运行可用:
 - `--intent_broadcast --intent_replan_rounds 1`
 
+### 4.2 优化步骤命令清单
+
+建议按下面顺序跑,每一步都会自动生成唯一结果目录,便于横向对比。
+
+```bash
+# Step 1: 全局任务指派/所有权/截止释放消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset assignment_v2 --out_root runs/ablation_assignment_v2 --batch_name step1_assignment --device cpu
+
+# Step 2: 协同奖励塑形消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset reward_v1 --out_root runs/ablation_reward_v1 --batch_name step2_reward --device cpu
+
+# Step 3: 集中式 critic 全局状态消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset state_v1 --out_root runs/ablation_state_v1 --batch_name step3_state --device cpu
+
+# Step 4: Greedy-Oracle 参考上界
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset oracle_v1 --out_root runs/ablation_oracle_v1 --batch_name step4_oracle --device cpu
+
+# Step 5: 训练稳定性消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset train_stability_v1 --out_root runs/ablation_train_stability_v1 --batch_name step5_train_stability --device cpu
+
+# Step 6: 规则式意图广播通信消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset communication_v1 --out_root runs/ablation_communication_v1 --batch_name step6_communication --device cpu
+```
+
+每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。
+
+可视化某次 compare/ablation 子实验:
+
+```bash
+python visualize.py --compare_json <结果目录>/comparison_results.json
+```
+
+该命令会额外生成:
+- `method_comparison_task_counts.png`: 全部任务数 / 可观测任务数 / 已调度任务数
+- `task_distribution_<method>.png`: 任务地理分布图
+- `gantt_multi_<method>.png`: 任务调度甘特图
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

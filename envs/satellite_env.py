@@ -621,6 +621,15 @@ class SatelliteSchedulingEnv(gym.Env):
             "dynamic_completion_rate_raw": dynamic_done / dynamic_total if dynamic_total > 0 else 0.0,
             "routine_completion_rate_raw": routine_done / routine_total if routine_total > 0 else 0.0,
             # feasible 比例 (反映物理可达性)
+            "n_total_tasks": total_missions,
+            "n_routine_tasks": routine_total,
+            "n_dynamic_tasks": dynamic_total,
+            "n_feasible_tasks": feas_total,
+            "n_feasible_routine": len(routine_feas),
+            "n_feasible_dynamic": len(dynamic_feas),
+            "n_feasible_observed": feas_observed,
+            "n_feasible_routine_done": routine_feas_done,
+            "n_feasible_dynamic_done": dynamic_feas_done,
             "feasible_ratio": feas_total / total_missions if total_missions > 0 else 0.0,
             "dynamic_feasible_ratio": len(dynamic_feas) / dynamic_total if dynamic_total > 0 else 0.0,
             # 协同/质量指标
