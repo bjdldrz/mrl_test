@@ -16,6 +16,12 @@ preset=reward_v1:
   - team_completion_bonus
   - combined reward shaping + reward normalization
 
+preset=state_v1:
+  - critic mean pooling baseline
+  - mean pooling + task stats
+  - concat global state
+  - concat global state + task stats
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -80,6 +86,52 @@ def build_reward_v1_specs():
         "--assignment_capacity_mode", "proportional",
         "--assign_w_load", "0.1",
         "--release_before_deadline_s", "1800",
+    ]
+
+
+def build_state_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    return [
+        {
+            "tag": "state_mean",
+            "extra_args": [*base_assignment, "--global_state_mode", "mean"],
+            "params": {
+                "state_variant": "mean",
+                "global_state_mode": "mean",
+                "global_state_task_stats": False,
+            },
+        },
+        {
+            "tag": "state_mean_task_stats",
+            "extra_args": [*base_assignment, "--global_state_mode", "mean", "--global_state_task_stats"],
+            "params": {
+                "state_variant": "mean_task_stats",
+                "global_state_mode": "mean",
+                "global_state_task_stats": True,
+            },
+        },
+        {
+            "tag": "state_concat",
+            "extra_args": [*base_assignment, "--global_state_mode", "concat"],
+            "params": {
+                "state_variant": "concat",
+                "global_state_mode": "concat",
+                "global_state_task_stats": False,
+            },
+        },
+        {
+            "tag": "state_concat_task_stats",
+            "extra_args": [*base_assignment, "--global_state_mode", "concat", "--global_state_task_stats"],
+            "params": {
+                "state_variant": "concat_task_stats",
+                "global_state_mode": "concat",
+                "global_state_task_stats": True,
+            },
+        },
     ]
     return [
         {
@@ -221,7 +273,7 @@ def parse_str_list(text):
 def main():
     parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
-                        choices=["assignment_v2", "reward_v1"])
+                        choices=["assignment_v2", "reward_v1", "state_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -254,8 +306,10 @@ def main():
             capacity_modes=parse_str_list(args.capacity_modes),
             include_no_assignment=not args.no_baseline,
         )
-    else:
+    elif args.preset == "reward_v1":
         specs = build_reward_v1_specs()
+    else:
+        specs = build_state_v1_specs()
 
     rows = []
     for idx, spec in enumerate(specs, start=1):

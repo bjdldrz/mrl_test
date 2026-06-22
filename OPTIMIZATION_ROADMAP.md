@@ -166,6 +166,9 @@ python run_ablation.py \
 | B5 负载均衡奖励 | ✅ 已实现(2026-06-22) | `load_balance_reward_coeff`;低负载星完成任务获 bonus |
 | I32 每星奖励归一化 | ✅ 已实现(2026-06-22) | `normalize_agent_rewards`;MAPPO 更新前按 agent rollout 归一化 |
 | reward_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset reward_v1` |
+| D14 拼接式全局状态 | ✅ 已实现(2026-06-22) | `global_state_mode=concat`;critic 看完整各星观测 |
+| D16 任务级全局统计 | ✅ 已实现(2026-06-22) | `global_state_task_stats`;追加任务/负载/重复率统计 |
+| state_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset state_v1` |
 
 **实现**:`reset()` 时综合每颗星对每个任务在全 24h 的窗口质量(最小 off-nadir),用「**最少候选优先 + 负载惩罚**」贪心广义指派算出 `task_owner`(每任务归属一颗星);通过**所有权掩码**让各星只在自己负责的任务上行动。动态任务到达时增量指派。仅 `coordinate=True` 生效;训练/评估都套用所有权掩码(纯掩码,不破坏信用分配)。
 
@@ -247,3 +250,34 @@ python run_ablation.py \
 - 验证输出: `runs/ablation_reward_smoke/ablation_summary.csv/json`。该冒烟仅验证 5 个 reward 组合链路,不作为效果结论。
 
 **下一步**:C11 互补覆盖奖励和 C12 势能塑形建议独立成 reward_v2,因为它们对"覆盖互补"和"剩余可行任务"的定义会显著影响实验解释。
+
+---
+
+### Critic 全局状态 v1(2026-06-22,D14 / D16)
+
+**目标**:旧 MAPPO critic 只看各星局部观测的 mean pooling,会丢失"哪颗星拥有哪些窗口/负载/任务归属"的信息。state_v1 先增强 centralized critic,不改 actor 执行期输入,保持 CTDE 部署假设。
+
+**实现**:
+- D14 `global_state_mode=concat`: critic 输入从 mean pooling 改为拼接所有卫星局部观测,信息无损但维度随卫星数增长。
+- D16 `global_state_task_stats`: 在 mean/concat 后追加任务级统计,包括 per-agent load fraction、已完成比例、待完成比例、动态待完成比例、已指派待完成比例、load CV、当前重复率。
+- `compare_methods.py` 使用 `env.global_state_dim` 初始化 critic,支持不同全局状态维度。
+- `run_ablation.py --preset state_v1`: 统一比较 `mean`、`mean_task_stats`、`concat`、`concat_task_stats`。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset state_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_state_v1 \
+  --device cpu
+```
+
+**注意**:concat 维度约为 `n_satellites × local_obs_dim`,会明显增加 critic 参数量和训练耗时;若正式实验中收益有限,后续优先发展 attention critic(D13)而不是继续堆 concat 维度。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall envs compare_methods.py run_ablation.py`。
+- dry-run: `python3 run_ablation.py --preset state_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_state_dry_run`。
+- 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --preset state_v1 --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_state_smoke --device cpu`。
+- 验证输出: `runs/ablation_state_smoke/ablation_summary.csv/json`。该冒烟仅验证 4 个 critic 状态组合链路,不作为效果结论。

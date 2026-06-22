@@ -201,6 +201,22 @@ python run_ablation.py \
 - `--team_completion_bonus 0.05`: 全队每新增完成一个任务时给全体小 bonus。
 - `--normalize_agent_rewards`: MAPPO 更新前对每颗卫星 rollout 奖励归一化。
 
+critic 全局状态消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset state_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_state_v1 \
+    --device cpu
+```
+
+`state_v1` 比较 `mean` pooling、`mean + task_stats`、`concat`、`concat + task_stats`。也可在单次运行中使用:
+- `--global_state_mode mean|concat`
+- `--global_state_task_stats`
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

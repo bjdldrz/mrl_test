@@ -192,7 +192,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               team_reward_mix=0.0,
               load_balance_reward_coeff=0.0,
               team_completion_bonus=0.0,
-              normalize_agent_rewards=False):
+              normalize_agent_rewards=False,
+              global_state_mode="mean",
+              global_state_task_stats=False):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -211,12 +213,14 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         team_reward_mix=team_reward_mix if coordinate else 0.0,
         load_balance_reward_coeff=load_balance_reward_coeff if coordinate else 0.0,
         team_completion_bonus=team_completion_bonus if coordinate else 0.0,
+        global_state_mode=global_state_mode if coordinate else "mean",
+        global_state_task_stats=(coordinate and global_state_task_stats),
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
     # 协同: 集中式 critic 用全局状态; 无协同: critic 仍存在但每星只用自己局部观测做全局态
     model = MAPPOActorCritic(
-        local_obs_dim=obs_dim, action_dim=act_dim, global_state_dim=obs_dim,
+        local_obs_dim=obs_dim, action_dim=act_dim, global_state_dim=env.global_state_dim,
         actor_hidden_dims=cfg.network.hidden_layers,
         critic_hidden_dims=cfg.mappo.critic_hidden_dims,
     ).to(device)
@@ -304,6 +308,11 @@ def main():
                         help="每新增完成 1 个团队任务时给全体的 bonus; 0 关闭")
     parser.add_argument("--normalize_agent_rewards", action="store_true",
                         help="MAPPO 更新前对每颗卫星 rollout 奖励做归一化")
+    parser.add_argument("--global_state_mode", type=str, default="mean",
+                        choices=["mean", "concat"],
+                        help="MAPPO critic 全局状态聚合: mean=旧实现, concat=拼接各星观测")
+    parser.add_argument("--global_state_task_stats", action="store_true",
+                        help="MAPPO critic 全局状态追加任务/负载统计")
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
@@ -341,7 +350,9 @@ def main():
                                  team_reward_mix=args.team_reward_mix,
                                  load_balance_reward_coeff=args.load_balance_reward_coeff,
                                  team_completion_bonus=args.team_completion_bonus,
-                                 normalize_agent_rewards=args.normalize_agent_rewards)
+                                 normalize_agent_rewards=args.normalize_agent_rewards,
+                                 global_state_mode=args.global_state_mode,
+                                 global_state_task_stats=args.global_state_task_stats)
 
     # 协同增益: MAPPO 完成数 / (N × 单星完成数)
     n_sat = args.n_satellites

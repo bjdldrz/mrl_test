@@ -54,6 +54,8 @@ class MultiSatelliteEnv:
         team_reward_mix: float = 0.0,
         load_balance_reward_coeff: float = 0.0,
         team_completion_bonus: float = 0.0,
+        global_state_mode: str = "mean",
+        global_state_task_stats: bool = False,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -90,6 +92,10 @@ class MultiSatelliteEnv:
         self.team_reward_mix = team_reward_mix
         self.load_balance_reward_coeff = load_balance_reward_coeff
         self.team_completion_bonus = team_completion_bonus
+        # --- 集中式 Critic 全局状态表示 (优化路线图 D14/D16) ---
+        # mean: 兼容旧实现; concat: 保留每颗星完整局部观测, 信息无损但维度随星数增长.
+        self.global_state_mode = global_state_mode
+        self.global_state_task_stats = global_state_task_stats
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -106,8 +112,12 @@ class MultiSatelliteEnv:
         sample_env = list(self.envs.values())[0]
         self.local_obs_dim = sample_env.observation_space.shape[0]
         self.action_dim = sample_env.action_space.n
-        # mean pooling：全局状态 = 所有卫星局部观测的均值，维度与单卫星观测相同
-        self.global_state_dim = self.local_obs_dim
+        if self.global_state_mode == "concat":
+            base_global_dim = self.local_obs_dim * self.n_agents
+        else:
+            base_global_dim = self.local_obs_dim
+        stats_dim = self.n_agents + 6 if self.global_state_task_stats else 0
+        self.global_state_dim = base_global_dim + stats_dim
 
         # 共享任务池 (在 reset 时初始化)
         self._shared_missions: List[Optional[Mission]] = []
@@ -581,14 +591,62 @@ class MultiSatelliteEnv:
         """
         构建全局状态向量 (给集中式 Critic)。
 
-        全局状态 = 所有卫星局部观测的均值 (mean pooling)。
-        维度 = local_obs_dim，与卫星数量无关，避免参数爆炸。
+        global_state_mode:
+          - mean: 所有卫星局部观测均值, 维度不随卫星数增长(旧实现).
+          - concat: 拼接所有卫星局部观测, 信息无损但维度随卫星数增长(D14).
+        global_state_task_stats=True 时追加任务/负载统计(D16).
         """
         local_obs_list = []
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
             local_obs_list.append(env._build_observation())
-        return np.mean(local_obs_list, axis=0)
+        if self.global_state_mode == "concat":
+            base = np.concatenate(local_obs_list, axis=0)
+        else:
+            base = np.mean(local_obs_list, axis=0)
+        if self.global_state_task_stats:
+            base = np.concatenate([base, self._global_task_stats()], axis=0)
+        return base.astype(np.float32)
+
+    def _global_task_stats(self) -> np.ndarray:
+        """
+        D16 任务级全局统计: 给 critic 补充局部观测 mean/concat 不容易表达的团队信息。
+
+        包含:
+          per-agent load fraction (n_agents)
+          observed/pending/dynamic_pending/assigned_owner_pending fractions
+          load CV
+          duplicate rate so far
+        """
+        first_env = list(self.envs.values())[0]
+        missions = [m for m in first_env.missions if m is not None]
+        total = max(len(missions), 1)
+        observed = sum(1 for m in missions if m.is_observed)
+        pending = sum(1 for m in missions if not m.is_observed)
+        dynamic_pending = sum(1 for m in missions if m.is_dynamic and not m.is_observed)
+        assigned_pending = sum(
+            1 for m in missions
+            if not m.is_observed and m.id in self.task_owner
+        )
+
+        loads = np.array([len(self.envs[aid].schedule_log) for aid in self.agent_ids], dtype=np.float32)
+        total_load = max(float(loads.sum()), 1.0)
+        load_fracs = loads / total_load
+        mean_load = float(loads.mean()) if loads.size else 0.0
+        load_cv = float(loads.std() / mean_load) if mean_load > 0 else 0.0
+        total_records = int(loads.sum())
+        unique_records = len(self._observed_mission_ids())
+        duplicate_rate = (total_records - unique_records) / max(total_records, 1)
+
+        stats = np.array([
+            observed / total,
+            pending / total,
+            dynamic_pending / total,
+            assigned_pending / total,
+            load_cv,
+            duplicate_rate,
+        ], dtype=np.float32)
+        return np.concatenate([load_fracs, stats], axis=0)
 
     # ===================================================================
     # 评估指标 (聚合所有卫星)
