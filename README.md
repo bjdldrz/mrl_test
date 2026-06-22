@@ -183,6 +183,24 @@ python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
 
 每次单独运行 `compare_methods.py` 也会额外写入 `manifest.json`,记录参数、git commit、dirty 状态、运行环境和输出文件路径。
 
+奖励塑形消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset reward_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_reward_v1 \
+    --device cpu
+```
+
+`reward_v1` 只影响 MAPPO 训练奖励,默认单次对比保持关闭。可单独打开:
+- `--team_reward_mix 0.25`: 个体奖励与团队平均奖励混合。
+- `--load_balance_reward_coeff 0.1`: 相对空闲卫星完成任务时给额外奖励。
+- `--team_completion_bonus 0.05`: 全队每新增完成一个任务时给全体小 bonus。
+- `--normalize_agent_rewards`: MAPPO 更新前对每颗卫星 rollout 奖励归一化。
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

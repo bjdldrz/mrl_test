@@ -51,6 +51,9 @@ class MultiSatelliteEnv:
         assign_w_load: float = 0.1,
         assignment_capacity_mode: str = "proportional",
         release_before_deadline_s: float = 1800.0,
+        team_reward_mix: float = 0.0,
+        load_balance_reward_coeff: float = 0.0,
+        team_completion_bonus: float = 0.0,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -82,6 +85,11 @@ class MultiSatelliteEnv:
         self.release_before_deadline_s = release_before_deadline_s
         self.task_owner: Dict[int, str] = {}        # mission_id → 负责的卫星 agent_id
         self._assign_load: Dict[str, int] = {}      # 各卫星已被指派的任务数
+        # --- 多智能体奖励塑形 (优化路线图 B5+C8) ---
+        # 默认全为 0, 保持论文/基线奖励不变.
+        self.team_reward_mix = team_reward_mix
+        self.load_balance_reward_coeff = load_balance_reward_coeff
+        self.team_completion_bonus = team_completion_bonus
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -166,6 +174,8 @@ class MultiSatelliteEnv:
         只允许第一颗执行，其余强制 idle（避免双重奖励）。
         """
         results = {}
+        prev_load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
+        prev_observed = self._observed_mission_ids() if self.coordinate else set()
 
         # 1) 冲突解决 (优化路线图 A1+A2/A3+B6): 负载感知的贪心拍卖 + 败者改派.
         #    协同模式下用边际价值竞价择优指派, 抢输者改派次优任务;
@@ -190,6 +200,10 @@ class MultiSatelliteEnv:
             if new_missions:
                 self._refresh_assignment_load()
                 self._assign_tasks(new_missions)
+
+        # 3.8) 多智能体奖励塑形 (仅协同模式): 团队奖励 + 负载均衡 + 团队完成 bonus.
+        if self.coordinate:
+            results = self._shape_multi_agent_rewards(results, prev_load, prev_observed)
 
         # 4) 用同步后的状态重新构建观测和掩码 (协同模式叠加所有权掩码)
         for agent_id, env in self.envs.items():
@@ -444,6 +458,58 @@ class MultiSatelliteEnv:
                 break
 
         return resolved
+
+    def _observed_mission_ids(self) -> set:
+        observed = set()
+        for env in self.envs.values():
+            for m in env.missions:
+                if m is not None and m.is_observed:
+                    observed.add(m.id)
+        return observed
+
+    def _shape_multi_agent_rewards(
+        self,
+        results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
+        prev_load: Dict[str, int],
+        prev_observed: set,
+    ) -> Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]]:
+        """
+        C8/B5 奖励塑形。
+
+        - team_reward_mix: 将个体奖励与全队平均奖励混合, 让每颗星感知团队收益。
+        - load_balance_reward_coeff: 完成任务时, 低于平均负载的卫星获 bonus, 高负载卫星受轻惩罚。
+        - team_completion_bonus: 本步新增完成任务时, 给全体一个小团队 bonus。
+        """
+        if (self.team_reward_mix <= 0
+                and self.load_balance_reward_coeff == 0
+                and self.team_completion_bonus == 0):
+            return results
+
+        raw_rewards = {aid: results[aid][1] for aid in self.agent_ids}
+        team_mean = float(np.mean(list(raw_rewards.values()))) if raw_rewards else 0.0
+        mean_prev_load = float(np.mean(list(prev_load.values()))) if prev_load else 0.0
+        new_completed = len(self._observed_mission_ids() - prev_observed)
+        completion_bonus = self.team_completion_bonus * new_completed
+
+        shaped = {}
+        mix = float(np.clip(self.team_reward_mix, 0.0, 1.0))
+        for aid in self.agent_ids:
+            obs, reward, term, trunc, info = results[aid]
+            r = (1.0 - mix) * reward + mix * team_mean
+
+            if self.load_balance_reward_coeff != 0 and reward > 0:
+                # 正值鼓励相对空闲的卫星承担任务; 负值抑制已经偏忙的卫星继续抢任务.
+                load_advantage = (mean_prev_load - prev_load.get(aid, 0)) / max(mean_prev_load, 1.0)
+                r += self.load_balance_reward_coeff * load_advantage
+
+            r += completion_bonus
+            shaped[aid] = (obs, float(r), term, trunc, {
+                **info,
+                "raw_reward": reward,
+                "team_mean_reward": team_mean,
+                "team_completion_bonus": completion_bonus,
+            })
+        return shaped
 
     def _obs_value(self, agent_id: str, action: int,
                    feasible: Dict[str, set]) -> Optional[float]:

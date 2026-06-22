@@ -107,6 +107,7 @@ class MAPPOTrainer:
         ppo_epochs: int = 4,
         batch_size: int = 128,
         device: str = "cpu",
+        normalize_agent_rewards: bool = False,
     ):
         self.model = mappo_model
         self.gamma = gamma
@@ -118,6 +119,7 @@ class MAPPOTrainer:
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
         self.device = torch.device(device)
+        self.normalize_agent_rewards = normalize_agent_rewards
 
         self.optimizer = optim.Adam(mappo_model.parameters(), lr=lr)
         self.model.to(self.device)
@@ -278,6 +280,8 @@ class MAPPOTrainer:
         for aid in agent_ids:
             rewards = np.array(buffer.rewards[aid], dtype=np.float32)
             dones = np.array(buffer.dones[aid], dtype=np.float32)
+            if self.normalize_agent_rewards and rewards.size > 1:
+                rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
             # 所有智能体共享同一 Critic 价值
             advantages, returns = self.compute_gae(rewards, values, dones, last_value)

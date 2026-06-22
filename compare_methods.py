@@ -188,7 +188,11 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device):
 def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               episode_assignment=True, assign_w_load=0.1,
               assignment_capacity_mode="proportional",
-              release_before_deadline_s=1800.0):
+              release_before_deadline_s=1800.0,
+              team_reward_mix=0.0,
+              load_balance_reward_coeff=0.0,
+              team_completion_bonus=0.0,
+              normalize_agent_rewards=False):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -204,6 +208,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         assign_w_load=assign_w_load,
         assignment_capacity_mode=assignment_capacity_mode,
         release_before_deadline_s=release_before_deadline_s,
+        team_reward_mix=team_reward_mix if coordinate else 0.0,
+        load_balance_reward_coeff=load_balance_reward_coeff if coordinate else 0.0,
+        team_completion_bonus=team_completion_bonus if coordinate else 0.0,
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -218,6 +225,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         gae_lambda=cfg.ppo.gae_lambda, clip_ratio=cfg.ppo.clip_ratio,
         entropy_coeff=cfg.ppo.entropy_coeff, value_loss_coeff=cfg.ppo.value_loss_coeff,
         ppo_epochs=cfg.ppo.ppo_epochs, batch_size=cfg.ppo.batch_size, device=str(device),
+        normalize_agent_rewards=(coordinate and normalize_agent_rewards),
     )
 
     for it in range(train_iters):
@@ -288,6 +296,14 @@ def main():
                         help="全局指派目标容量: proportional=按覆盖质量比例, equal=每星等额")
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
                         help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
+    parser.add_argument("--team_reward_mix", type=float, default=0.0,
+                        help="团队平均奖励混合比例; 0 保持个体奖励, 1 完全使用团队平均奖励")
+    parser.add_argument("--load_balance_reward_coeff", type=float, default=0.0,
+                        help="低负载卫星完成任务的奖励系数; 0 关闭")
+    parser.add_argument("--team_completion_bonus", type=float, default=0.0,
+                        help="每新增完成 1 个团队任务时给全体的 bonus; 0 关闭")
+    parser.add_argument("--normalize_agent_rewards", action="store_true",
+                        help="MAPPO 更新前对每颗卫星 rollout 奖励做归一化")
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
@@ -321,7 +337,11 @@ def main():
                                  coordinate=True, episode_assignment=args.episode_assignment,
                                  assign_w_load=args.assign_w_load,
                                  assignment_capacity_mode=args.assignment_capacity_mode,
-                                 release_before_deadline_s=args.release_before_deadline_s)
+                                 release_before_deadline_s=args.release_before_deadline_s,
+                                 team_reward_mix=args.team_reward_mix,
+                                 load_balance_reward_coeff=args.load_balance_reward_coeff,
+                                 team_completion_bonus=args.team_completion_bonus,
+                                 normalize_agent_rewards=args.normalize_agent_rewards)
 
     # 协同增益: MAPPO 完成数 / (N × 单星完成数)
     n_sat = args.n_satellites

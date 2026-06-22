@@ -9,6 +9,13 @@
   - release_before_deadline_s: 0 / 1800
   - assign_w_load: 0.05 / 0.1 / 0.2
 
+preset=reward_v1:
+  - reward_default
+  - team_reward_mix
+  - load_balance_reward
+  - team_completion_bonus
+  - combined reward shaping + reward normalization
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -66,6 +73,77 @@ def build_assignment_v2_specs(assign_w_loads, release_windows, capacity_modes, i
                     },
                 })
     return specs
+
+
+def build_reward_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    return [
+        {
+            "tag": "reward_default",
+            "extra_args": [*base_assignment],
+            "params": {
+                "reward_variant": "default",
+                "team_reward_mix": 0.0,
+                "load_balance_reward_coeff": 0.0,
+                "team_completion_bonus": 0.0,
+                "normalize_agent_rewards": False,
+            },
+        },
+        {
+            "tag": "reward_team_mix_0p25",
+            "extra_args": [*base_assignment, "--team_reward_mix", "0.25"],
+            "params": {
+                "reward_variant": "team_mix",
+                "team_reward_mix": 0.25,
+                "load_balance_reward_coeff": 0.0,
+                "team_completion_bonus": 0.0,
+                "normalize_agent_rewards": False,
+            },
+        },
+        {
+            "tag": "reward_load_balance_0p1",
+            "extra_args": [*base_assignment, "--load_balance_reward_coeff", "0.1"],
+            "params": {
+                "reward_variant": "load_balance",
+                "team_reward_mix": 0.0,
+                "load_balance_reward_coeff": 0.1,
+                "team_completion_bonus": 0.0,
+                "normalize_agent_rewards": False,
+            },
+        },
+        {
+            "tag": "reward_team_completion_0p05",
+            "extra_args": [*base_assignment, "--team_completion_bonus", "0.05"],
+            "params": {
+                "reward_variant": "team_completion",
+                "team_reward_mix": 0.0,
+                "load_balance_reward_coeff": 0.0,
+                "team_completion_bonus": 0.05,
+                "normalize_agent_rewards": False,
+            },
+        },
+        {
+            "tag": "reward_combined_norm",
+            "extra_args": [
+                *base_assignment,
+                "--team_reward_mix", "0.25",
+                "--load_balance_reward_coeff", "0.1",
+                "--team_completion_bonus", "0.05",
+                "--normalize_agent_rewards",
+            ],
+            "params": {
+                "reward_variant": "combined_norm",
+                "team_reward_mix": 0.25,
+                "load_balance_reward_coeff": 0.1,
+                "team_completion_bonus": 0.05,
+                "normalize_agent_rewards": True,
+            },
+        },
+    ]
 
 
 def load_json(path: Path):
@@ -143,7 +221,7 @@ def parse_str_list(text):
 def main():
     parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
-                        choices=["assignment_v2"])
+                        choices=["assignment_v2", "reward_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -169,12 +247,15 @@ def main():
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    specs = build_assignment_v2_specs(
-        assign_w_loads=parse_float_list(args.assign_w_loads),
-        release_windows=parse_float_list(args.release_windows),
-        capacity_modes=parse_str_list(args.capacity_modes),
-        include_no_assignment=not args.no_baseline,
-    )
+    if args.preset == "assignment_v2":
+        specs = build_assignment_v2_specs(
+            assign_w_loads=parse_float_list(args.assign_w_loads),
+            release_windows=parse_float_list(args.release_windows),
+            capacity_modes=parse_str_list(args.capacity_modes),
+            include_no_assignment=not args.no_baseline,
+        )
+    else:
+        specs = build_reward_v1_specs()
 
     rows = []
     for idx, spec in enumerate(specs, start=1):

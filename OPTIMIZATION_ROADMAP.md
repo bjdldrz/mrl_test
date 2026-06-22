@@ -162,6 +162,10 @@ python run_ablation.py \
 | 负载/吞吐权衡旋钮 | ✅ 已暴露 | `assign_w_load` + compare CLI `--assign_w_load/--no_episode_assignment` |
 | 容量比例指派 | ✅ 已实现(2026-06-22) | `assignment_capacity_mode=proportional`;按候选窗口质量估算各星目标份额 |
 | 截止前所有权释放 | ✅ 已实现(2026-06-22) | `release_before_deadline_s`;临近 deadline 或 owner 无未来窗口时允许非 owner 接手 |
+| C8 团队奖励混合 | ✅ 已实现(2026-06-22) | `team_reward_mix`;默认 0 关闭 |
+| B5 负载均衡奖励 | ✅ 已实现(2026-06-22) | `load_balance_reward_coeff`;低负载星完成任务获 bonus |
+| I32 每星奖励归一化 | ✅ 已实现(2026-06-22) | `normalize_agent_rewards`;MAPPO 更新前按 agent rollout 归一化 |
+| reward_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset reward_v1` |
 
 **实现**:`reset()` 时综合每颗星对每个任务在全 24h 的窗口质量(最小 off-nadir),用「**最少候选优先 + 负载惩罚**」贪心广义指派算出 `task_owner`(每任务归属一颗星);通过**所有权掩码**让各星只在自己负责的任务上行动。动态任务到达时增量指派。仅 `coordinate=True` 生效;训练/评估都套用所有权掩码(纯掩码,不破坏信用分配)。
 
@@ -209,3 +213,37 @@ python compare_methods.py \
 - 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall envs compare_methods.py`。
 - 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python compare_methods.py --n_satellites 2 --train_iters 0 --eval_episodes 1 --n_routine 12 --n_dynamic 2 --out_dir runs/compare_opt_smoke --device cpu`。
 - 结果文件: `runs/compare_opt_smoke/comparison_results.json`。该冒烟仅验证代码路径;因 `train_iters=0` 且样本极小,不作为算法效果结论。
+
+---
+
+### 奖励塑形 v1(2026-06-22,B5 / C8 / I32)
+
+**目标**:当前协同主要靠 mask/指派发生在环境层,策略本身仍以个体奖励学习。reward_v1 把协同信号显式放进训练奖励,但保持所有开关默认关闭,便于与原 MAPPO 做严格消融。
+
+**实现**:
+- C8 `team_reward_mix`: 将个体奖励与全队平均奖励混合,`0` 表示原个体奖励,`1` 表示完全团队平均奖励。为避免奖励尺度随卫星数线性放大,这里采用 team mean 而非 team sum。
+- B5 `load_balance_reward_coeff`: 若某星在本步完成任务,根据执行前负载与全队平均负载的差给 bonus/penalty,鼓励相对空闲卫星承担任务。
+- 团队完成 bonus `team_completion_bonus`: 本步每新增完成一个全局任务,给所有 agent 小额团队 bonus,作为轻量协作塑形信号。
+- I32 `normalize_agent_rewards`: 在 MAPPO update 前对每颗星 rollout 奖励做标准化,缓解异构轨道导致的奖励尺度差异。
+- `run_ablation.py --preset reward_v1`: 统一跑 default/team/load/completion/combined_norm 五个对照。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset reward_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_reward_v1 \
+  --device cpu
+```
+
+**注意**:`get_metrics()` 仍统计原环境完成奖励,不统计 shaped training reward;这样评估指标不被奖励塑形本身污染,只反映训练后策略行为变化。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall envs algo compare_methods.py run_ablation.py`。
+- dry-run: `python3 run_ablation.py --preset reward_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_reward_dry_run`。
+- 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --preset reward_v1 --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_reward_smoke --device cpu`。
+- 验证输出: `runs/ablation_reward_smoke/ablation_summary.csv/json`。该冒烟仅验证 5 个 reward 组合链路,不作为效果结论。
+
+**下一步**:C11 互补覆盖奖励和 C12 势能塑形建议独立成 reward_v2,因为它们对"覆盖互补"和"剩余可行任务"的定义会显著影响实验解释。
