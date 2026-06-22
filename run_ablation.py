@@ -32,6 +32,11 @@ preset=train_stability_v1:
   - joint exploration
   - curriculum + joint exploration
 
+preset=communication_v1:
+  - default assignment_v2
+  - intent broadcast
+  - intent broadcast + train stability
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -301,6 +306,59 @@ def build_train_stability_v1_specs():
     ]
 
 
+def build_communication_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    return [
+        {
+            "tag": "comm_default",
+            "extra_args": [*base_assignment],
+            "params": {
+                "communication_variant": "default",
+                "intent_broadcast": False,
+                "intent_replan_rounds": 0,
+            },
+        },
+        {
+            "tag": "comm_intent_broadcast",
+            "extra_args": [
+                *base_assignment,
+                "--intent_broadcast",
+                "--intent_replan_rounds", "1",
+            ],
+            "params": {
+                "communication_variant": "intent_broadcast",
+                "intent_broadcast": True,
+                "intent_replan_rounds": 1,
+            },
+        },
+        {
+            "tag": "comm_intent_train_stability",
+            "extra_args": [
+                *base_assignment,
+                "--intent_broadcast",
+                "--intent_replan_rounds", "1",
+                "--satellite_curriculum",
+                "--curriculum_min_satellites", "1",
+                "--curriculum_iters", "10",
+                "--joint_explore_prob", "0.05",
+            ],
+            "params": {
+                "communication_variant": "intent_train_stability",
+                "intent_broadcast": True,
+                "intent_replan_rounds": 1,
+                "satellite_curriculum": True,
+                "curriculum_min_satellites": 1,
+                "curriculum_iters": 10,
+                "joint_explore_prob": 0.05,
+            },
+        },
+    ]
+
+
 def load_json(path: Path):
     with open(path) as f:
         return json.load(f)
@@ -387,7 +445,7 @@ def main():
     parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
-                                 "train_stability_v1"])
+                                 "train_stability_v1", "communication_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -428,8 +486,10 @@ def main():
         specs = build_state_v1_specs()
     elif args.preset == "oracle_v1":
         specs = build_oracle_v1_specs()
-    else:
+    elif args.preset == "train_stability_v1":
         specs = build_train_stability_v1_specs()
+    else:
+        specs = build_communication_v1_specs()
 
     rows = []
     for idx, spec in enumerate(specs, start=1):

@@ -250,6 +250,21 @@ python run_ablation.py \
 - `--satellite_curriculum --curriculum_min_satellites 1 --curriculum_iters 10`
 - `--joint_explore_prob 0.05`
 
+执行期通信消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset communication_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_communication_v1 \
+    --device cpu
+```
+
+`communication_v1` 比较默认训练、意图广播、意图广播+训练稳定性。单次运行可用:
+- `--intent_broadcast --intent_replan_rounds 1`
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

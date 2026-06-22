@@ -174,6 +174,8 @@ python run_ablation.py \
 | I30 卫星数量课程 | ✅ 已实现(2026-06-22) | `satellite_curriculum`;训练期活跃卫星数线性增加 |
 | I31 轻量联合探索 | ✅ 已实现(2026-06-22) | `joint_explore_prob`;训练期随机选择互不重复可行动作 |
 | train_stability_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset train_stability_v1` |
+| E17 意图广播(规则版) | ✅ 已实现(2026-06-22) | `intent_broadcast`;冲突败者基于广播意图重采样 |
+| communication_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset communication_v1` |
 
 **实现**:`reset()` 时综合每颗星对每个任务在全 24h 的窗口质量(最小 off-nadir),用「**最少候选优先 + 负载惩罚**」贪心广义指派算出 `task_owner`(每任务归属一颗星);通过**所有权掩码**让各星只在自己负责的任务上行动。动态任务到达时增量指派。仅 `coordinate=True` 生效;训练/评估都套用所有权掩码(纯掩码,不破坏信用分配)。
 
@@ -351,3 +353,36 @@ python run_ablation.py \
 - train stability dry-run: `python3 run_ablation.py --preset train_stability_v1 --dry_run --train_iters 1 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_train_stability_dry_run`。
 - 训练路径冒烟: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python compare_methods.py --n_satellites 2 --train_iters 1 --eval_episodes 1 --n_routine 8 --n_dynamic 1 --out_dir runs/train_stability_smoke --device cpu --satellite_curriculum --curriculum_min_satellites 1 --curriculum_iters 2 --joint_explore_prob 1.0 --experiment_tag train_stability_smoke`。
 - 验证输出: `runs/train_stability_smoke/manifest.json`。该冒烟仅验证 active-agent curriculum 与 joint exploration 训练链路,不作为效果结论。
+
+---
+
+### 执行期通信 v1: 意图广播(2026-06-22,E17)
+
+**目标**:当前 MAPPO actor 独立采样动作,冲突主要由环境 `_resolve_actions()` 事后处理。communication_v1 在策略执行层加入轻量通信:先广播各星初选任务,发现同一任务冲突后,败者在屏蔽已声明任务的 mask 上重新采样。
+
+**实现**:
+- `MAPPOTrainer.sample_actions()` 统一训练/评估 action 采样逻辑。
+- `intent_broadcast=True`: 对同一非 idle 任务的多个意图,保留当前 policy log_prob 最高者,其余 agent 重采样。
+- `intent_replan_rounds`: 最多重采样轮数,默认 1。
+- 重采样后的 `action/log_prob/action_mask` 一起写入 buffer,保证 PPO 更新看到的是最终执行前策略动作。
+- `run_ablation.py --preset communication_v1`: 对比 default、intent_broadcast、intent_broadcast + train_stability。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset communication_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_communication_v1 \
+  --device cpu
+```
+
+**注意**:这是规则式意图广播,不是可学习通信。若有效,下一步可升级为 E18/E19:学习消息向量、注意力通信或 TarMAC/CommNet 风格模块。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall algo compare_methods.py run_ablation.py`。
+- train stability 回归 dry-run: `python3 run_ablation.py --preset train_stability_v1 --dry_run --train_iters 1 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_train_stability_dry_run`。
+- communication dry-run: `python3 run_ablation.py --preset communication_v1 --dry_run --train_iters 1 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_communication_dry_run`。
+- 通信路径冒烟: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python compare_methods.py --n_satellites 2 --train_iters 1 --eval_episodes 1 --n_routine 8 --n_dynamic 1 --out_dir runs/communication_smoke --device cpu --intent_broadcast --intent_replan_rounds 1 --experiment_tag communication_smoke`。
+- 验证输出: `runs/communication_smoke/manifest.json`。该冒烟仅验证训练/评估共用意图广播 action 采样链路,不作为效果结论。

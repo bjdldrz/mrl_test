@@ -136,6 +136,8 @@ class MAPPOTrainer:
         current_infos: Optional[Dict] = None,
         active_agent_ids: Optional[List[str]] = None,
         joint_explore_prob: float = 0.0,
+        intent_broadcast: bool = False,
+        intent_replan_rounds: int = 1,
     ) -> Tuple[Dict, Dict, float]:
         """
         从多星环境中并行采集经验。
@@ -159,49 +161,26 @@ class MAPPOTrainer:
                 gs_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)
                 value = self.model.get_values(gs_t).cpu().item()
 
-            obs_by_agent = {}
-            mask_by_agent = {}
+            actions_dict, log_probs, masks_used, obs_by_agent = self.sample_actions(
+                multi_env=multi_env,
+                current_obs=current_obs,
+                current_infos=current_infos,
+                agent_ids=agent_ids,
+                joint_explore_prob=joint_explore_prob,
+                intent_broadcast=intent_broadcast,
+                intent_replan_rounds=intent_replan_rounds,
+            )
+
+            # 先存入 buffer (reward 在 step 后补充). 非活跃卫星不进入 buffer/update.
             for aid in agent_ids:
-                obs_by_agent[aid] = current_obs[aid]
-                mask_by_agent[aid] = current_infos[aid].get(
-                    "action_mask", np.ones(multi_env.action_dim)
-                )
-
-            explore_actions = {}
-            if joint_explore_prob > 0 and np.random.rand() < joint_explore_prob:
-                explore_actions = self._joint_exploration_actions(
-                    mask_by_agent, multi_env.idle_action
-                )
-
-            # 每颗活跃卫星独立选择动作 (用共享 Actor); 非活跃卫星在 env.step 中视为 idle
-            actions_dict = {}
-            for aid in agent_ids:
-                obs = obs_by_agent[aid]
-                mask = mask_by_agent[aid]
-
-                with torch.no_grad():
-                    obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                    mask_t = torch.FloatTensor(mask).unsqueeze(0).to(self.device)
-                    forced_action = None
-                    if aid in explore_actions:
-                        forced_action = torch.LongTensor([explore_actions[aid]]).to(self.device)
-                    action, log_prob, _ = self.model.actor.get_action(
-                        obs_t, mask_t, forced_action
-                    )
-
-                action_np = action.cpu().item()
-                log_prob_np = log_prob.cpu().item()
-                actions_dict[aid] = action_np
-
-                # 先存入 buffer (reward 在 step 后补充)
                 buffer.add(
                     agent_id=aid,
-                    obs=obs,
-                    action=action_np,
-                    log_prob=log_prob_np,
+                    obs=obs_by_agent[aid],
+                    action=actions_dict[aid],
+                    log_prob=log_probs[aid],
                     reward=0.0,  # 占位，下面替换
                     done=False,
-                    mask=mask,
+                    mask=masks_used[aid],
                     global_state=global_state,
                     value=value,
                 )
@@ -227,6 +206,118 @@ class MAPPOTrainer:
                 break
 
         return current_obs, current_infos, total_reward
+
+    def sample_actions(
+        self,
+        multi_env,
+        current_obs: Dict,
+        current_infos: Dict,
+        agent_ids: Optional[List[str]] = None,
+        joint_explore_prob: float = 0.0,
+        intent_broadcast: bool = False,
+        intent_replan_rounds: int = 1,
+    ) -> Tuple[Dict[str, int], Dict[str, float], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """
+        采样一组多智能体动作。
+
+        E17 意图广播: 先采样各星初始意图; 若多星选择同一非 idle 任务,保留
+        log_prob 最高者,败者用屏蔽已声明任务后的 mask 重新采样。最终写入 buffer
+        的 action/log_prob/mask 三者保持一致。
+        """
+        agent_ids = agent_ids or multi_env.agent_ids
+        obs_by_agent = {}
+        masks_used = {}
+        actions = {}
+        log_probs = {}
+
+        for aid in agent_ids:
+            obs_by_agent[aid] = current_obs[aid]
+            masks_used[aid] = current_infos[aid].get(
+                "action_mask", np.ones(multi_env.action_dim)
+            ).copy()
+
+        explore_actions = {}
+        if joint_explore_prob > 0 and np.random.rand() < joint_explore_prob:
+            explore_actions = self._joint_exploration_actions(
+                masks_used, multi_env.idle_action
+            )
+
+        for aid in agent_ids:
+            forced_action = explore_actions.get(aid)
+            action_np, log_prob_np = self._sample_one_action(
+                obs_by_agent[aid], masks_used[aid], forced_action
+            )
+            actions[aid] = action_np
+            log_probs[aid] = log_prob_np
+
+        if intent_broadcast:
+            self._apply_intent_broadcast(
+                obs_by_agent=obs_by_agent,
+                masks_used=masks_used,
+                actions=actions,
+                log_probs=log_probs,
+                idle_action=multi_env.idle_action,
+                max_rounds=intent_replan_rounds,
+            )
+
+        return actions, log_probs, masks_used, obs_by_agent
+
+    def _sample_one_action(
+        self,
+        obs: np.ndarray,
+        mask: np.ndarray,
+        forced_action: Optional[int] = None,
+    ) -> Tuple[int, float]:
+        with torch.no_grad():
+            obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+            mask_t = torch.FloatTensor(mask).unsqueeze(0).to(self.device)
+            forced_t = None
+            if forced_action is not None:
+                forced_t = torch.LongTensor([forced_action]).to(self.device)
+            action, log_prob, _ = self.model.actor.get_action(obs_t, mask_t, forced_t)
+        return action.cpu().item(), log_prob.cpu().item()
+
+    def _apply_intent_broadcast(
+        self,
+        obs_by_agent: Dict[str, np.ndarray],
+        masks_used: Dict[str, np.ndarray],
+        actions: Dict[str, int],
+        log_probs: Dict[str, float],
+        idle_action: int,
+        max_rounds: int = 1,
+    ):
+        rounds = max(0, int(max_rounds))
+        for _ in range(rounds):
+            groups: Dict[int, List[str]] = {}
+            for aid, action in actions.items():
+                if action != idle_action:
+                    groups.setdefault(action, []).append(aid)
+
+            conflicts = {a: aids for a, aids in groups.items() if len(aids) > 1}
+            if not conflicts:
+                break
+
+            losers = []
+            for _, contenders in conflicts.items():
+                winner = max(contenders, key=lambda aid: log_probs.get(aid, float("-inf")))
+                losers.extend(aid for aid in contenders if aid != winner)
+
+            claimed = {
+                action for aid, action in actions.items()
+                if aid not in losers and action != idle_action
+            }
+            for aid in losers:
+                new_mask = masks_used[aid].copy()
+                for action in claimed:
+                    if 0 <= action < idle_action:
+                        new_mask[action] = 0.0
+                new_mask[idle_action] = 1.0
+                action_np, log_prob_np = self._sample_one_action(
+                    obs_by_agent[aid], new_mask
+                )
+                actions[aid] = action_np
+                log_probs[aid] = log_prob_np
+                masks_used[aid] = new_mask
 
     def _joint_exploration_actions(
         self,

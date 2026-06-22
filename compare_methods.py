@@ -198,7 +198,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               satellite_curriculum=False,
               curriculum_min_satellites=1,
               curriculum_iters=10,
-              joint_explore_prob=0.0):
+              joint_explore_prob=0.0,
+              intent_broadcast=False,
+              intent_replan_rounds=1):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -264,7 +266,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         cur_obs, cur_info, _ = trainer.collect_rollout(
             env, buf, cfg.meta.rollout_steps, cur_obs, cur_info,
             active_agent_ids=active_agent_ids,
-            joint_explore_prob=(joint_explore_prob if coordinate else 0.0))
+            joint_explore_prob=(joint_explore_prob if coordinate else 0.0),
+            intent_broadcast=(coordinate and intent_broadcast),
+            intent_replan_rounds=intent_replan_rounds)
         trainer.update(buf, env.get_global_state())
 
     # 评估
@@ -278,14 +282,13 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         cur_info = {a: r[1] for a, r in res.items()}
         max_steps = int(env.horizon_s / 10.0) + 100
         for _ in range(max_steps):
-            actions = {}
-            for aid in env.agent_ids:
-                mask = cur_info[aid].get("action_mask", np.ones(act_dim))
-                with torch.no_grad():
-                    a, _, _ = model.actor.get_action(
-                        torch.FloatTensor(cur_obs[aid]).unsqueeze(0).to(device),
-                        torch.FloatTensor(mask).unsqueeze(0).to(device))
-                actions[aid] = a.cpu().item()
+            actions, _, _, _ = trainer.sample_actions(
+                multi_env=env,
+                current_obs=cur_obs,
+                current_infos=cur_info,
+                intent_broadcast=(coordinate and intent_broadcast),
+                intent_replan_rounds=intent_replan_rounds,
+            )
             step_res = env.step(actions)
             for aid, (o, r, term, trunc, inf) in step_res.items():
                 cur_obs[aid] = o
@@ -422,6 +425,10 @@ def main():
                         help="多少个训练迭代内从 min 卫星线性增加到全部卫星")
     parser.add_argument("--joint_explore_prob", type=float, default=0.0,
                         help="训练期联合探索概率; 随机挑选互不重复的可行动作")
+    parser.add_argument("--intent_broadcast", action="store_true",
+                        help="启用 E17 意图广播: 冲突败者基于广播意图重采样")
+    parser.add_argument("--intent_replan_rounds", type=int, default=1,
+                        help="意图广播冲突后最多重采样轮数")
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
@@ -465,7 +472,9 @@ def main():
                                  satellite_curriculum=args.satellite_curriculum,
                                  curriculum_min_satellites=args.curriculum_min_satellites,
                                  curriculum_iters=args.curriculum_iters,
-                                 joint_explore_prob=args.joint_explore_prob)
+                                 joint_explore_prob=args.joint_explore_prob,
+                                 intent_broadcast=args.intent_broadcast,
+                                 intent_replan_rounds=args.intent_replan_rounds)
 
     if args.run_oracle:
         logger.info("=== [4/4] Greedy Oracle (集中式启发式参考) ===")
