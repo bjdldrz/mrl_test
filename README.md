@@ -158,6 +158,31 @@ python compare_methods.py \
 
 > 注意:`Indep-PPO` 的累积奖励可能虚高,因为重复观测在重复刷分——这恰好说明只看奖励/完成率会被误导,**必须看重复观测率**才能看出协同的真正价值。
 
+### 4.1 批量消融实验(推荐用于优化对比)
+
+`run_ablation.py` 会批量调用 `compare_methods.py`,每个子实验保存 `comparison_results.json` 和 `manifest.json`,并汇总成 `ablation_summary.csv/json`。
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset assignment_v2 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_assignment_v2 \
+    --device cpu
+
+# 快速检查命令组合,不真正运行:
+python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
+```
+
+默认 `assignment_v2` preset 会比较:
+- `--no_episode_assignment` baseline
+- `assignment_capacity_mode=equal/proportional`
+- `assign_w_load=0.05/0.1/0.2`
+- `release_before_deadline_s=0/1800`
+
+每次单独运行 `compare_methods.py` 也会额外写入 `manifest.json`,记录参数、git commit、dirty 状态、运行环境和输出文件路径。
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

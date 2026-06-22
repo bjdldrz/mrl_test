@@ -101,9 +101,40 @@
 
 | 方案 | 状态 | 备注 |
 |---|---|---|
+| 实验 manifest | ✅ 已实现(2026-06-22) | `compare_methods.py` 每次输出 `manifest.json` |
+| 批量消融 runner | ✅ 已实现(2026-06-22) | `run_ablation.py --preset assignment_v2` |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |
+
+### 实验框架落地(2026-06-22,v2_experiment_harness)
+
+**目标**:后续会逐步加入 reward/state/communication 等多个优化簇,如果只保存单个 `comparison_results.json`,很难追踪每个结果对应的代码版本、参数组合和运行环境。因此先把实验记录标准化。
+
+**实现**:
+- `compare_methods.py` 新增 `manifest.json`,记录 `args`、git commit/branch/dirty 状态、Python/NumPy/PyTorch 版本、输出路径和完整 results。
+- `compare_methods.py` 新增 `--experiment_tag`,供批量实验给每个 run 命名。
+- 新增 `run_ablation.py`,默认 `assignment_v2` preset 会运行 no-assignment baseline,以及 `assignment_capacity_mode × assign_w_load × release_before_deadline_s` 的网格消融。
+- `run_ablation.py` 每完成一个子实验就增量写出 `ablation_summary.json/csv`,避免长实验中断后丢失已完成结果。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset assignment_v2 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_assignment_v2 \
+  --device cpu
+```
+
+**后续所有优化版本约定**:每个新方案必须提供开关,并进入 `run_ablation.py` 或新增 preset 做消融;路线图记录方案、默认值、对照组、结果路径和结论。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall compare_methods.py run_ablation.py`。
+- dry-run: `python3 run_ablation.py --dry_run --train_iters 0 --eval_episodes 1 --n_routine 8 --n_dynamic 1 --assign_w_loads 0.1 --release_windows 0 --capacity_modes proportional --no_baseline --out_root runs/ablation_dry_run`。
+- 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --assign_w_loads 0.1 --release_windows 0 --capacity_modes proportional --no_baseline --out_root runs/ablation_harness_smoke --device cpu`。
+- 验证输出: `runs/ablation_harness_smoke/assign_proportional_w0p1_rel0/manifest.json` 和 `runs/ablation_harness_smoke/ablation_summary.csv/json`。
 
 ### 第一梯度落地复盘(2026-06-21)
 

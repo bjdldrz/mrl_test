@@ -29,6 +29,9 @@ import time
 import copy
 import argparse
 import logging
+import platform
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,6 +69,54 @@ def _avg_metrics(metrics_list):
         return {}
     keys = metrics_list[0].keys()
     return {k: float(np.mean([m.get(k, 0.0) for m in metrics_list])) for k in keys}
+
+
+def _run_git(args):
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=Path(__file__).resolve().parent,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _git_metadata():
+    status = _run_git(["status", "--short"])
+    return {
+        "commit": _run_git(["rev-parse", "--short", "HEAD"]),
+        "branch": _run_git(["branch", "--show-current"]),
+        "dirty": bool(status),
+        "status_short": status.splitlines(),
+    }
+
+
+def _write_manifest(out_dir: Path, args, results, elapsed_s: float):
+    manifest = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_s": elapsed_s,
+        "command": " ".join(sys.argv),
+        "args": vars(args),
+        "git": _git_metadata(),
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "numpy": np.__version__,
+            "torch": torch.__version__,
+        },
+        "outputs": {
+            "results_json": str(out_dir / "comparison_results.json"),
+            "manifest_json": str(out_dir / "manifest.json"),
+        },
+        "results": results,
+    }
+    with open(out_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 # =======================================================================
@@ -237,6 +288,8 @@ def main():
                         help="全局指派目标容量: proportional=按覆盖质量比例, equal=每星等额")
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
                         help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
+    parser.add_argument("--experiment_tag", type=str, default="single_compare",
+                        help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -282,6 +335,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "comparison_results.json", "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+    elapsed_s = time.time() - t0
+    _write_manifest(out_dir, args, results, elapsed_s)
 
     # 控制台摘要
     print("\n" + "=" * 78)
@@ -312,7 +367,8 @@ def main():
                 row += f"{v:>14.2f}"
         print(row)
     print("=" * 78)
-    print(f"总耗时: {time.time()-t0:.1f}s, 结果: {out_dir/'comparison_results.json'}")
+    print(f"总耗时: {elapsed_s:.1f}s, 结果: {out_dir/'comparison_results.json'}")
+    print(f"实验记录: {out_dir/'manifest.json'}")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,10 @@ build/
 # Checkpoints
 checkpoints/
 
+# Generated experiment outputs
+runs/ablation_*/
+runs/compare_opt_smoke/
+
 # Data files (uncomment if data is too large)
 # *.csv
 # *.json
