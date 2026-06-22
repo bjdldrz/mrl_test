@@ -278,6 +278,87 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
     return _avg_metrics(metrics_list)
 
 
+# =======================================================================
+# 方案 4: Greedy Oracle (集中式启发式上界参考, 不训练)
+# =======================================================================
+def _oracle_action_value(env, agent_id, action):
+    sub_env = env.envs[agent_id]
+    mission = sub_env.missions[action]
+    if mission is None or mission.is_observed:
+        return None
+
+    off_nadir = None
+    for vtw in sub_env.mission_vtw.get(mission.id, []):
+        if vtw.start_time <= sub_env.current_time_s <= vtw.end_time - mission.duration_s:
+            off_nadir = vtw.off_nadir_deg
+            break
+    if off_nadir is None:
+        return None
+
+    max_roll = max(sub_env.sat_config.max_roll_deg, 1e-6)
+    quality = 1.0 - min(off_nadir / max_roll, 1.0)
+    priority = mission.priority / 10.0
+    horizon_left = max(mission.deadline_s - mission.earliest_time_s, 1.0)
+    urgency = 1.0 - max(mission.deadline_s - sub_env.current_time_s, 0.0) / horizon_left
+    dynamic_bonus = 0.3 if mission.is_dynamic else 0.0
+    load_penalty = 0.03 * len(sub_env.schedule_log)
+    return priority + 0.5 * quality + 0.3 * urgency + dynamic_bonus - load_penalty
+
+
+def _greedy_oracle_actions(env):
+    idle = env.idle_action
+    candidates = []
+    for aid in env.agent_ids:
+        mask = env.envs[aid]._build_action_mask()
+        for action in np.nonzero(mask[:env.max_action_dim])[0].tolist():
+            value = _oracle_action_value(env, aid, action)
+            if value is not None:
+                candidates.append((value, aid, action))
+
+    actions = {aid: idle for aid in env.agent_ids}
+    claimed_agents = set()
+    claimed_actions = set()
+    for _, aid, action in sorted(candidates, reverse=True):
+        if aid in claimed_agents or action in claimed_actions:
+            continue
+        actions[aid] = action
+        claimed_agents.add(aid)
+        claimed_actions.add(action)
+    return actions
+
+
+def run_greedy_oracle(cfg, scenarios):
+    from envs.multi_satellite_env import MultiSatelliteEnv
+
+    n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
+    sat_cfgs = cfg.satellites[:n_sat]
+    env = MultiSatelliteEnv(
+        satellite_configs=sat_cfgs,
+        max_action_dim=cfg.mission.max_action_dim,
+        reward_config=cfg.reward,
+        vtw_time_step_s=cfg.train.vtw_time_step_s,
+        coordinate=True,
+        episode_assignment=False,
+        reassign_losers=False,
+    )
+
+    metrics_list = []
+    for routine, dynamic in scenarios:
+        opts = {
+            "routine_missions": copy.deepcopy(routine),
+            "dynamic_schedule": copy.deepcopy(dynamic),
+        }
+        env.reset(options=opts)
+        max_steps = int(env.horizon_s / 10.0) + 100
+        for _ in range(max_steps):
+            if env.is_done():
+                break
+            actions = _greedy_oracle_actions(env)
+            env.step(actions)
+        metrics_list.append(env.get_metrics())
+    return _avg_metrics(metrics_list)
+
+
 def main():
     parser = argparse.ArgumentParser(description="方案对比实验")
     parser.add_argument("--acled_path", type=str, default=None)
@@ -313,6 +394,8 @@ def main():
                         help="MAPPO critic 全局状态聚合: mean=旧实现, concat=拼接各星观测")
     parser.add_argument("--global_state_task_stats", action="store_true",
                         help="MAPPO critic 全局状态追加任务/负载统计")
+    parser.add_argument("--run_oracle", action="store_true",
+                        help="额外运行 Greedy-Oracle 集中式启发式参考")
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
@@ -354,6 +437,10 @@ def main():
                                  global_state_mode=args.global_state_mode,
                                  global_state_task_stats=args.global_state_task_stats)
 
+    if args.run_oracle:
+        logger.info("=== [4/4] Greedy Oracle (集中式启发式参考) ===")
+        results["Greedy-Oracle"] = run_greedy_oracle(cfg, scenarios)
+
     # 协同增益: MAPPO 完成数 / (N × 单星完成数)
     n_sat = args.n_satellites
     single_sched = results["Single-PPO"].get("n_scheduled", 0)
@@ -361,6 +448,13 @@ def main():
         multi_sched = results[name].get("n_scheduled", 0)
         gain = multi_sched / (n_sat * single_sched) if single_sched > 0 else 0.0
         results[name]["coordination_gain"] = gain
+    oracle_sched = results.get("Greedy-Oracle", {}).get("n_scheduled", 0)
+    if oracle_sched > 0:
+        for name in ["Indep-PPO", "MAPPO"]:
+            results[name]["oracle_relative_completion"] = (
+                results[name].get("n_scheduled", 0) / oracle_sched
+            )
+        results["Greedy-Oracle"]["oracle_relative_completion"] = 1.0
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -371,7 +465,10 @@ def main():
 
     # 控制台摘要
     print("\n" + "=" * 78)
-    print(f"{'指标':<32}{'Single-PPO':>14}{'Indep-PPO':>14}{'MAPPO':>14}")
+    method_names = ["Single-PPO", "Indep-PPO", "MAPPO"]
+    if "Greedy-Oracle" in results:
+        method_names.append("Greedy-Oracle")
+    print(f"{'指标':<32}" + "".join(f"{name:>14}" for name in method_names))
     print("-" * 78)
     show = [
         ("observation_success_rate", "观测成功率", "%"),
@@ -385,10 +482,11 @@ def main():
         ("avg_off_nadir_deg", "平均off-nadir", "°"),
         ("avg_dynamic_response_s", "动态响应延迟", "s"),
         ("coordination_gain", "协同增益", ""),
+        ("oracle_relative_completion", "Oracle相对完成率", "%"),
     ]
     for key, label, unit in show:
         row = f"{label:<32}"
-        for name in ["Single-PPO", "Indep-PPO", "MAPPO"]:
+        for name in method_names:
             v = results[name].get(key, None)
             if v is None:
                 row += f"{'—':>14}"

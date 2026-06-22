@@ -217,6 +217,23 @@ python run_ablation.py \
 - `--global_state_mode mean|concat`
 - `--global_state_task_stats`
 
+Greedy-Oracle 参考上界:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset oracle_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_oracle_v1 \
+    --device cpu
+
+# 或给任意 preset 加 oracle 参考:
+python run_ablation.py --preset assignment_v2 --run_oracle
+```
+
+`--run_oracle` 会额外运行 `Greedy-Oracle`:每一步由集中式启发式在所有卫星可行动作中选择非冲突任务,用于估计当前场景下的可达参考上界。它不是严格 ILP 最优,但能给出 `oracle_relative_completion` 和 `mappo_oracle_gap_n_scheduled`,用于判断 MAPPO 离强启发式还有多远。
+
 ### 5. 评估(论文泛化实验 Table 5/6)
 
 ```bash

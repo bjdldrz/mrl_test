@@ -169,6 +169,8 @@ python run_ablation.py \
 | D14 拼接式全局状态 | ✅ 已实现(2026-06-22) | `global_state_mode=concat`;critic 看完整各星观测 |
 | D16 任务级全局统计 | ✅ 已实现(2026-06-22) | `global_state_task_stats`;追加任务/负载/重复率统计 |
 | state_v1 消融 | ✅ 已实现(2026-06-22) | `run_ablation.py --preset state_v1` |
+| J33 Greedy-Oracle 参考 | ✅ 已实现(2026-06-22) | `--run_oracle`;集中式启发式参考上界 |
+| J34 Oracle 相对增益 | ✅ 已实现(2026-06-22) | `oracle_relative_completion` + `mappo_oracle_gap_n_scheduled` |
 
 **实现**:`reset()` 时综合每颗星对每个任务在全 24h 的窗口质量(最小 off-nadir),用「**最少候选优先 + 负载惩罚**」贪心广义指派算出 `task_owner`(每任务归属一颗星);通过**所有权掩码**让各星只在自己负责的任务上行动。动态任务到达时增量指派。仅 `coordinate=True` 生效;训练/评估都套用所有权掩码(纯掩码,不破坏信用分配)。
 
@@ -281,3 +283,36 @@ python run_ablation.py \
 - dry-run: `python3 run_ablation.py --preset state_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_state_dry_run`。
 - 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --preset state_v1 --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_state_smoke --device cpu`。
 - 验证输出: `runs/ablation_state_smoke/ablation_summary.csv/json`。该冒烟仅验证 4 个 critic 状态组合链路,不作为效果结论。
+
+---
+
+### Greedy-Oracle 参考上界 v1(2026-06-22,J33 / J34)
+
+**目标**:原 `coordination_gain = MAPPO / (N × Single-PPO)` 会受任务可见性重叠影响,不一定反映“离当前场景可达上界还有多远”。oracle_v1 加入集中式启发式参考,用于量化 MAPPO 相对强调度器的差距。
+
+**实现**:
+- `compare_methods.py --run_oracle` 新增 `Greedy-Oracle` 方法,不训练策略,在同一固定测试集上运行。
+- Oracle 每一步读取所有卫星当前动作掩码,按 `priority + quality + urgency + dynamic_bonus - load_penalty` 给候选动作打分,集中式贪心选择非冲突的星-任务匹配。
+- 输出 `oracle_relative_completion = method_n_scheduled / oracle_n_scheduled`。
+- `run_ablation.py --preset oracle_v1` 比较 `no_episode_assignment` 与默认 `assignment_v2`,并同时输出 oracle gap。
+- `run_ablation.py --run_oracle` 可给任意 preset 追加 Oracle 参考。
+
+**推荐正式运行**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset oracle_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_oracle_v1 \
+  --device cpu
+```
+
+**注意**:这是 Greedy 启发式参考,不是严格 ILP 最优。若论文需要“数学意义上的上界”,下一版应实现 ILP/最大权匹配滚动规划,或至少把 Greedy 明确称为 `heuristic upper reference`。
+
+**本地验证**:
+- 语法检查: `PYTHONPYCACHEPREFIX=/private/tmp/mrl_dms_pycache python3 -m compileall compare_methods.py run_ablation.py`。
+- 回归 dry-run: `python3 run_ablation.py --preset reward_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_reward_dry_run`。
+- oracle dry-run: `python3 run_ablation.py --preset oracle_v1 --dry_run --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_oracle_dry_run`。
+- 冒烟运行: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python --preset oracle_v1 --train_iters 0 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_oracle_smoke --device cpu`。
+- 验证输出: `runs/ablation_oracle_smoke/ablation_summary.csv/json`。该冒烟仅验证 Greedy-Oracle 与 oracle-relative 指标链路,不作为效果结论。

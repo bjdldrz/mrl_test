@@ -22,6 +22,10 @@ preset=state_v1:
   - concat global state
   - concat global state + task stats
 
+preset=oracle_v1:
+  - no episode assignment + Greedy-Oracle
+  - default assignment_v2 + Greedy-Oracle
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -86,52 +90,6 @@ def build_reward_v1_specs():
         "--assignment_capacity_mode", "proportional",
         "--assign_w_load", "0.1",
         "--release_before_deadline_s", "1800",
-    ]
-
-
-def build_state_v1_specs():
-    base_assignment = [
-        "--assignment_capacity_mode", "proportional",
-        "--assign_w_load", "0.1",
-        "--release_before_deadline_s", "1800",
-    ]
-    return [
-        {
-            "tag": "state_mean",
-            "extra_args": [*base_assignment, "--global_state_mode", "mean"],
-            "params": {
-                "state_variant": "mean",
-                "global_state_mode": "mean",
-                "global_state_task_stats": False,
-            },
-        },
-        {
-            "tag": "state_mean_task_stats",
-            "extra_args": [*base_assignment, "--global_state_mode", "mean", "--global_state_task_stats"],
-            "params": {
-                "state_variant": "mean_task_stats",
-                "global_state_mode": "mean",
-                "global_state_task_stats": True,
-            },
-        },
-        {
-            "tag": "state_concat",
-            "extra_args": [*base_assignment, "--global_state_mode", "concat"],
-            "params": {
-                "state_variant": "concat",
-                "global_state_mode": "concat",
-                "global_state_task_stats": False,
-            },
-        },
-        {
-            "tag": "state_concat_task_stats",
-            "extra_args": [*base_assignment, "--global_state_mode", "concat", "--global_state_task_stats"],
-            "params": {
-                "state_variant": "concat_task_stats",
-                "global_state_mode": "concat",
-                "global_state_task_stats": True,
-            },
-        },
     ]
     return [
         {
@@ -198,6 +156,81 @@ def build_state_v1_specs():
     ]
 
 
+def build_state_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+
+
+def build_oracle_v1_specs():
+    return [
+        {
+            "tag": "oracle_no_assignment",
+            "extra_args": ["--no_episode_assignment", "--run_oracle"],
+            "params": {
+                "oracle_variant": "no_assignment",
+                "episode_assignment": False,
+            },
+        },
+        {
+            "tag": "oracle_assignment_v2",
+            "extra_args": [
+                "--assignment_capacity_mode", "proportional",
+                "--assign_w_load", "0.1",
+                "--release_before_deadline_s", "1800",
+                "--run_oracle",
+            ],
+            "params": {
+                "oracle_variant": "assignment_v2",
+                "episode_assignment": True,
+                "assignment_capacity_mode": "proportional",
+                "assign_w_load": 0.1,
+                "release_before_deadline_s": 1800.0,
+            },
+        },
+    ]
+    return [
+        {
+            "tag": "state_mean",
+            "extra_args": [*base_assignment, "--global_state_mode", "mean"],
+            "params": {
+                "state_variant": "mean",
+                "global_state_mode": "mean",
+                "global_state_task_stats": False,
+            },
+        },
+        {
+            "tag": "state_mean_task_stats",
+            "extra_args": [*base_assignment, "--global_state_mode", "mean", "--global_state_task_stats"],
+            "params": {
+                "state_variant": "mean_task_stats",
+                "global_state_mode": "mean",
+                "global_state_task_stats": True,
+            },
+        },
+        {
+            "tag": "state_concat",
+            "extra_args": [*base_assignment, "--global_state_mode", "concat"],
+            "params": {
+                "state_variant": "concat",
+                "global_state_mode": "concat",
+                "global_state_task_stats": False,
+            },
+        },
+        {
+            "tag": "state_concat_task_stats",
+            "extra_args": [*base_assignment, "--global_state_mode", "concat", "--global_state_task_stats"],
+            "params": {
+                "state_variant": "concat_task_stats",
+                "global_state_mode": "concat",
+                "global_state_task_stats": True,
+            },
+        },
+    ]
+
+
 def load_json(path: Path):
     with open(path) as f:
         return json.load(f)
@@ -234,16 +267,22 @@ def summarize_run(tag, params, out_dir):
         "avg_off_nadir_deg",
         "avg_dynamic_response_s",
         "coordination_gain",
+        "oracle_relative_completion",
     ]
     for key in keys:
         row[f"mappo_{key}"] = metric(results, "MAPPO", key)
         row[f"indep_{key}"] = metric(results, "Indep-PPO", key)
+        if "Greedy-Oracle" in results:
+            row[f"oracle_{key}"] = metric(results, "Greedy-Oracle", key)
 
     row["delta_n_scheduled"] = row["mappo_n_scheduled"] - row["indep_n_scheduled"]
     row["delta_success_rate"] = row["mappo_observation_success_rate"] - row["indep_observation_success_rate"]
     row["delta_duplicate_rate"] = row["mappo_duplicate_rate"] - row["indep_duplicate_rate"]
     row["delta_load_balance_cv"] = row["mappo_load_balance_cv"] - row["indep_load_balance_cv"]
     row["delta_avg_off_nadir_deg"] = row["mappo_avg_off_nadir_deg"] - row["indep_avg_off_nadir_deg"]
+    if "Greedy-Oracle" in results:
+        row["mappo_oracle_gap_n_scheduled"] = row["oracle_n_scheduled"] - row["mappo_n_scheduled"]
+        row["mappo_oracle_relative_completion"] = metric(results, "MAPPO", "oracle_relative_completion")
     return row
 
 
@@ -254,9 +293,13 @@ def write_summary(rows, out_root):
         json.dump(rows, f, indent=2, ensure_ascii=False)
 
     if rows:
-        fieldnames = list(rows[0].keys())
+        fieldnames = []
+        for row in rows:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
         with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
     return json_path, csv_path
@@ -273,7 +316,7 @@ def parse_str_list(text):
 def main():
     parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
-                        choices=["assignment_v2", "reward_v1", "state_v1"])
+                        choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -294,6 +337,8 @@ def main():
                         help="若子实验已有 manifest.json 则跳过")
     parser.add_argument("--dry_run", action="store_true",
                         help="只打印命令, 不运行")
+    parser.add_argument("--run_oracle", action="store_true",
+                        help="给每个子实验额外运行 Greedy-Oracle")
     args = parser.parse_args()
 
     out_root = Path(args.out_root)
@@ -308,8 +353,10 @@ def main():
         )
     elif args.preset == "reward_v1":
         specs = build_reward_v1_specs()
-    else:
+    elif args.preset == "state_v1":
         specs = build_state_v1_specs()
+    else:
+        specs = build_oracle_v1_specs()
 
     rows = []
     for idx, spec in enumerate(specs, start=1):
@@ -330,6 +377,8 @@ def main():
             "--experiment_tag", tag,
             *spec["extra_args"],
         ]
+        if args.run_oracle and "--run_oracle" not in cmd:
+            cmd.append("--run_oracle")
         if args.acled_path:
             cmd.extend(["--acled_path", args.acled_path])
 
