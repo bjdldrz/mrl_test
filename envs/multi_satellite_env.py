@@ -56,6 +56,12 @@ class MultiSatelliteEnv:
         assignment_mlp_hidden_dim: int = 16,
         assignment_mlp_seed: int = 42,
         assignment_sequence_hidden_dim: int = 16,
+        assignment_replan_interval_s: float = 0.0,
+        assignment_replan_horizon_s: float = 0.0,
+        assignment_replan_trigger: str = "none",
+        assignment_switch_penalty: float = 0.05,
+        assignment_lock_window_s: float = 600.0,
+        assignment_max_switches_per_task: int = 2,
         team_reward_mix: float = 0.0,
         load_balance_reward_coeff: float = 0.0,
         team_completion_bonus: float = 0.0,
@@ -97,6 +103,24 @@ class MultiSatelliteEnv:
         self._assignment_sequence_context: Dict[int, np.ndarray] = {}
         self._assignment_sat_context: Dict[str, np.ndarray] = {}
         self._init_assignment_scorer()
+        # --- Rolling horizon / MPC 风格重分配 (assignment_rolling_v1) ---
+        # 默认关闭, 仅记录诊断指标; 通过 CLI/preset 显式开启周期或事件触发重分配。
+        self.assignment_replan_interval_s = max(0.0, float(assignment_replan_interval_s))
+        self.assignment_replan_horizon_s = max(0.0, float(assignment_replan_horizon_s))
+        self.assignment_replan_triggers = self._parse_replan_triggers(assignment_replan_trigger)
+        self.assignment_switch_penalty = max(0.0, float(assignment_switch_penalty))
+        self.assignment_lock_window_s = max(0.0, float(assignment_lock_window_s))
+        self.assignment_max_switches_per_task = max(0, int(assignment_max_switches_per_task))
+        self._last_replan_time_s = 0.0
+        self._owner_switch_counts: Dict[int, int] = {}
+        self._n_replans = 0
+        self._n_owner_switches = 0
+        self._n_replan_checks = 0
+        self._n_stale_owner_events = 0
+        self._released_mission_ids = set()
+        self._deadline_release_mission_ids = set()
+        self._rescued_mission_ids = set()
+        self._deadline_rescue_mission_ids = set()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
         # 回收硬所有权导致的吞吐损失. 设为 0 可关闭释放机制.
         self.release_before_deadline_s = release_before_deadline_s
@@ -165,6 +189,24 @@ class MultiSatelliteEnv:
             "w2": rng.normal(0.0, 0.15, size=(hidden, 1)).astype(np.float32),
             "b2": np.zeros(1, dtype=np.float32),
         }
+
+    @staticmethod
+    def _parse_replan_triggers(trigger_text: str) -> set:
+        """解析滚动重分配触发器列表。"""
+        if trigger_text is None:
+            return set()
+        normalized = str(trigger_text).strip().lower()
+        if normalized in {"", "none", "off", "false", "0"}:
+            return set()
+        triggers = {x.strip() for x in normalized.split(",") if x.strip()}
+        allowed = {"periodic", "dynamic", "stale_owner", "deadline", "imbalance"}
+        unknown = triggers - allowed
+        if unknown:
+            raise ValueError(
+                f"未知 assignment_replan_trigger={sorted(unknown)}; "
+                f"可选: {sorted(allowed)} 或 none"
+            )
+        return triggers
 
     def _init_assignment_sequence_scorer(self):
         """初始化确定性 LSTM/GRU 风格序列 scorer 权重。"""
@@ -276,6 +318,16 @@ class MultiSatelliteEnv:
         # 全局 episode 级指派: 为所有常规任务预分配归属卫星 (仅协同模式)
         self.task_owner = {}
         self._assign_load = {aid: 0 for aid in self.agent_ids}
+        self._last_replan_time_s = 0.0
+        self._owner_switch_counts = {}
+        self._n_replans = 0
+        self._n_owner_switches = 0
+        self._n_replan_checks = 0
+        self._n_stale_owner_events = 0
+        self._released_mission_ids = set()
+        self._deadline_release_mission_ids = set()
+        self._rescued_mission_ids = set()
+        self._deadline_rescue_mission_ids = set()
         if self.coordinate and self.episode_assignment:
             first_env = list(self.envs.values())[0]
             all_missions = [m for m in first_env.missions if m is not None]
@@ -306,6 +358,16 @@ class MultiSatelliteEnv:
         #    协同模式下用边际价值竞价择优指派, 抢输者改派次优任务;
         #    无协同 baseline 下原样返回各卫星动作 (不去冲突 → 可能重复观测).
         resolved_actions = self._resolve_actions(actions)
+        action_owner_before = {}
+        if self.coordinate and self.episode_assignment:
+            for agent_id, action in resolved_actions.items():
+                if 0 <= action < self.max_action_dim:
+                    mission = self.envs[agent_id].missions[action]
+                    if mission is not None:
+                        action_owner_before[agent_id] = (
+                            mission.id,
+                            self.task_owner.get(mission.id),
+                        )
 
         # 2) 每颗卫星执行（已去冲突的）动作
         for agent_id in self.agent_ids:
@@ -316,8 +378,10 @@ class MultiSatelliteEnv:
         # 3) 同步观测状态 (仅协同模式: 一颗星完成则全体知晓, 避免重复)
         if self.coordinate:
             self._sync_mission_status()
+            self._track_release_rescues(action_owner_before)
 
         # 3.5) 动态任务到达后做增量指派 (在当前负载基础上继续均衡)
+        new_missions = []
         if self.coordinate and self.episode_assignment:
             first_env = list(self.envs.values())[0]
             new_missions = [m for m in first_env.missions
@@ -325,6 +389,7 @@ class MultiSatelliteEnv:
             if new_missions:
                 self._refresh_assignment_load()
                 self._assign_tasks(new_missions)
+            self._maybe_reassign_tasks(dynamic_event=bool(new_missions))
 
         # 3.8) 多智能体奖励塑形 (仅协同模式): 团队奖励 + 负载均衡 + 团队完成 bonus.
         if self.coordinate:
@@ -418,6 +483,223 @@ class MultiSatelliteEnv:
             )[0]
             self.task_owner[mission.id] = best_aid
             self._assign_load[best_aid] += 1
+
+    def _maybe_reassign_tasks(self, dynamic_event: bool = False):
+        """
+        Rolling horizon 重分配入口。
+
+        默认无触发器且 interval=0 时完全关闭。开启后只重分配未完成任务,
+        保留已完成记录和当前 step 的动作执行结果, 因而影响的是下一步 action mask。
+        """
+        if not self.coordinate or not self.episode_assignment:
+            return
+        if self.assignment_replan_interval_s <= 0 and not self.assignment_replan_triggers:
+            self._update_stale_owner_diagnostics()
+            return
+
+        self._n_replan_checks += 1
+        first_env = list(self.envs.values())[0]
+        current_time = first_env.current_time_s
+        elapsed_since_replan = current_time - self._last_replan_time_s
+        periodic_enabled = (
+            self.assignment_replan_interval_s > 0
+            and (not self.assignment_replan_triggers or "periodic" in self.assignment_replan_triggers)
+        )
+        event_cooldown = (
+            self.assignment_replan_interval_s > 0
+            and elapsed_since_replan < self.assignment_replan_interval_s
+        )
+        reasons = []
+
+        if periodic_enabled and elapsed_since_replan >= self.assignment_replan_interval_s:
+            reasons.append("periodic")
+        if not event_cooldown:
+            if dynamic_event and "dynamic" in self.assignment_replan_triggers:
+                reasons.append("dynamic")
+            if "stale_owner" in self.assignment_replan_triggers and self._has_stale_owner():
+                reasons.append("stale_owner")
+            if "deadline" in self.assignment_replan_triggers and self._has_deadline_risk():
+                reasons.append("deadline")
+            if "imbalance" in self.assignment_replan_triggers and self._assignment_load_cv() > 0.5:
+                reasons.append("imbalance")
+
+        if not reasons:
+            self._update_stale_owner_diagnostics()
+            return
+
+        missions = self._eligible_replan_missions(current_time)
+        if not missions:
+            self._last_replan_time_s = current_time
+            self._update_stale_owner_diagnostics()
+            return
+
+        switched = self._reassign_tasks(missions)
+        self._last_replan_time_s = current_time
+        self._n_replans += 1
+        self._n_owner_switches += switched
+        self._update_stale_owner_diagnostics()
+
+    def _eligible_replan_missions(self, current_time: float) -> list:
+        """筛选允许滚动重分配的未完成任务。"""
+        first_env = list(self.envs.values())[0]
+        missions = []
+        for mission in first_env.missions:
+            if mission is None or mission.is_observed or mission.id not in self.task_owner:
+                continue
+            if current_time >= mission.deadline_s:
+                continue
+            if self.assignment_max_switches_per_task == 0:
+                continue
+            if self._owner_switch_counts.get(mission.id, 0) >= self.assignment_max_switches_per_task:
+                continue
+            if self._is_replan_locked(mission, current_time):
+                continue
+            missions.append(mission)
+        return missions
+
+    def _is_replan_locked(self, mission, current_time: float) -> bool:
+        """
+        防抖锁定: owner 的下一次可行窗口即将到来时不临门换人。
+        如果 owner 已无未来窗口, 不锁定, 交给 stale/deadline 机制救援。
+        """
+        if self.assignment_lock_window_s <= 0:
+            return False
+        owner = self.task_owner.get(mission.id)
+        if owner is None:
+            return False
+        next_start = self._next_feasible_window_start(owner, mission.id, current_time)
+        if next_start is None:
+            return False
+        return 0.0 <= next_start - current_time <= self.assignment_lock_window_s
+
+    def _next_feasible_window_start(self, agent_id: str, mission_id: int, from_t: float) -> Optional[float]:
+        """返回 agent 对任务从 from_t 起的下一次可完成窗口开始时间。"""
+        env = self.envs[agent_id]
+        mission = next((m for m in env.missions if m is not None and m.id == mission_id), None)
+        if mission is None or mission.is_observed:
+            return None
+        starts = []
+        for vtw in env.mission_vtw.get(mission.id, []):
+            obs_start = max(vtw.start_time, from_t, mission.earliest_time_s)
+            obs_end = obs_start + mission.duration_s
+            if obs_end <= min(vtw.end_time, mission.deadline_s):
+                starts.append(obs_start)
+        return min(starts) if starts else None
+
+    def _reassign_tasks(self, missions: list) -> int:
+        """对给定未完成任务重新选择 owner, 返回发生 owner 切换的数量。"""
+        self._refresh_assignment_load()
+        pending = []
+        for mission in missions:
+            cands = []
+            for aid in self.agent_ids:
+                q = self._task_quality_window(aid, mission)
+                if q is not None:
+                    cands.append((aid, q))
+            if cands:
+                pending.append((mission, cands))
+        pending.sort(key=lambda x: (len(x[1]), x[0].deadline_s, x[0].earliest_time_s, -x[0].priority))
+        if not pending:
+            return 0
+
+        for mission, _ in pending:
+            old_owner = self.task_owner.get(mission.id)
+            if old_owner in self._assign_load:
+                self._assign_load[old_owner] = max(0, self._assign_load.get(old_owner, 0) - 1)
+
+        self._prepare_assignment_sequence_context(pending)
+        targets = self._assignment_targets(pending)
+        switched = 0
+        for mission, cands in pending:
+            old_owner = self.task_owner.get(mission.id)
+            best_aid = max(
+                cands,
+                key=lambda c: (
+                    self._assignment_score(c[0], mission, c[1], targets, n_candidates=len(cands))
+                    - (self.assignment_switch_penalty if old_owner is not None and c[0] != old_owner else 0.0)
+                )
+            )[0]
+            if old_owner is None:
+                self.task_owner[mission.id] = best_aid
+                self._assign_load[best_aid] = self._assign_load.get(best_aid, 0) + 1
+            elif best_aid != old_owner:
+                self.task_owner[mission.id] = best_aid
+                self._assign_load[best_aid] = self._assign_load.get(best_aid, 0) + 1
+                self._owner_switch_counts[mission.id] = self._owner_switch_counts.get(mission.id, 0) + 1
+                switched += 1
+            else:
+                self._assign_load[best_aid] = self._assign_load.get(best_aid, 0) + 1
+        return switched
+
+    def _task_quality_window(self, agent_id: str, mission) -> Optional[float]:
+        """
+        从当前时刻起、可选未来 horizon 内的观测质量。
+        assignment_replan_horizon_s=0 表示看到任务 deadline/horizon 结束。
+        """
+        env = self.envs[agent_id]
+        from_t = max(env.current_time_s, mission.earliest_time_s)
+        horizon_end = self.horizon_s
+        if self.assignment_replan_horizon_s > 0:
+            horizon_end = min(horizon_end, env.current_time_s + self.assignment_replan_horizon_s)
+        best_off = None
+        for vtw in env.mission_vtw.get(mission.id, []):
+            obs_start = max(vtw.start_time, from_t)
+            obs_end = obs_start + mission.duration_s
+            latest_end = min(vtw.end_time, mission.deadline_s, horizon_end)
+            if obs_end <= latest_end:
+                if best_off is None or vtw.off_nadir_deg < best_off:
+                    best_off = vtw.off_nadir_deg
+        if best_off is None:
+            return None
+        max_roll = max(env.sat_config.max_roll_deg, 1e-6)
+        return 1.0 - min(best_off / max_roll, 1.0)
+
+    def _has_stale_owner(self) -> bool:
+        """是否存在 owner 已无未来可行窗口的未完成任务。"""
+        first_env = list(self.envs.values())[0]
+        for mission in first_env.missions:
+            if mission is None or mission.is_observed:
+                continue
+            owner = self.task_owner.get(mission.id)
+            if owner is not None and not self._has_future_feasible_window(owner, mission.id):
+                return True
+        return False
+
+    def _has_deadline_risk(self) -> bool:
+        """是否存在进入 release 窗口但尚未完成的任务。"""
+        if self.release_before_deadline_s <= 0:
+            return False
+        first_env = list(self.envs.values())[0]
+        current_time = first_env.current_time_s
+        for mission in first_env.missions:
+            if mission is None or mission.is_observed or mission.id not in self.task_owner:
+                continue
+            if current_time >= mission.deadline_s - self.release_before_deadline_s:
+                return True
+        return False
+
+    def _assignment_load_cv(self) -> float:
+        """当前各星已完成负载的变异系数。"""
+        loads = np.array([len(self.envs[aid].schedule_log) for aid in self.agent_ids], dtype=np.float32)
+        mean_load = float(loads.mean()) if loads.size else 0.0
+        return float(loads.std() / mean_load) if mean_load > 0 else 0.0
+
+    def _update_stale_owner_diagnostics(self):
+        """累计 stale owner 诊断事件, 不改变策略行为。"""
+        if self._has_stale_owner():
+            self._n_stale_owner_events += 1
+
+    def _track_release_rescues(self, action_owner_before: Dict[str, Tuple[int, Optional[str]]]):
+        """统计非 owner 通过释放机制完成任务的情况。"""
+        if not action_owner_before:
+            return
+        observed = self._observed_mission_ids()
+        for aid, (mission_id, owner_before) in action_owner_before.items():
+            if owner_before is None or owner_before == aid or mission_id not in observed:
+                continue
+            self._rescued_mission_ids.add(mission_id)
+            if mission_id in self._deadline_release_mission_ids:
+                self._deadline_rescue_mission_ids.add(mission_id)
 
     def _assignment_score(
         self,
@@ -744,7 +1026,12 @@ class MultiSatelliteEnv:
         env = self.envs[agent_id]
         near_deadline = env.current_time_s >= mission.deadline_s - self.release_before_deadline_s
         owner_has_future = self._has_future_feasible_window(owner, mission.id)
-        return near_deadline or not owner_has_future
+        released = near_deadline or not owner_has_future
+        if released:
+            self._released_mission_ids.add(mission.id)
+            if near_deadline:
+                self._deadline_release_mission_ids.add(mission.id)
+        return released
 
     def _has_future_feasible_window(self, agent_id: str, mission_id: int) -> bool:
         """owner 从当前时刻起是否仍有机会在 deadline 前完成该任务。"""
@@ -1088,6 +1375,21 @@ class MultiSatelliteEnv:
                     dyn_delays.append(r.obs_end_s - r.earliest_time_s)
         avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
 
+        pending_assigned = [
+            m for m in all_missions
+            if not m.is_observed and m.id in self.task_owner
+        ]
+        stale_owner_now = sum(
+            1 for m in pending_assigned
+            if not self._has_future_feasible_window(self.task_owner[m.id], m.id)
+        )
+        owner_churn_rate = self._n_owner_switches / max(len(self.task_owner), 1)
+        stale_owner_rate = stale_owner_now / max(len(pending_assigned), 1)
+        deadline_rescue_rate = (
+            len(self._deadline_rescue_mission_ids)
+            / max(len(self._deadline_release_mission_ids), 1)
+        )
+
         return {
             "total_reward": total_reward,
             # 论文 Table 4 口径: 分母 = feasible 任务
@@ -1116,6 +1418,19 @@ class MultiSatelliteEnv:
             "avg_off_nadir_deg": avg_off_nadir,     # 平均观测质量 (越小越好)
             "avg_dynamic_response_s": avg_dynamic_response_s,  # 动态响应延迟 (越小越快)
             "n_scheduled": observed_total,
+            # --- Rolling assignment 诊断指标 ---
+            "n_replans": self._n_replans,
+            "n_replan_checks": self._n_replan_checks,
+            "n_owner_switches": self._n_owner_switches,
+            "n_tasks_switched": len(self._owner_switch_counts),
+            "owner_churn_rate": owner_churn_rate,
+            "stale_owner_rate": stale_owner_rate,
+            "n_stale_owner_events": self._n_stale_owner_events,
+            "n_released_tasks": len(self._released_mission_ids),
+            "n_deadline_release_tasks": len(self._deadline_release_mission_ids),
+            "n_rescued_tasks": len(self._rescued_mission_ids),
+            "n_deadline_rescue_tasks": len(self._deadline_rescue_mission_ids),
+            "deadline_rescue_rate": deadline_rescue_rate,
         }
 
     def is_done(self) -> bool:

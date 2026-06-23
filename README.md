@@ -214,6 +214,34 @@ python run_ablation.py \
 
 `learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp/lstm/gru/transformer/set_transformer/gnn` 指派 scorer。当前版本仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,学习式 scorer 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
 
+滚动重分配消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset assignment_rolling_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_assignment_rolling_v1 \
+    --device cpu
+```
+
+`assignment_rolling_v1` 比较静态 episode 指派、1 小时周期重分配、事件触发重分配以及 2 小时 rolling horizon 重分配。重点看 `n_replans`、`n_owner_switches`、`owner_churn_rate`、`stale_owner_rate`、`deadline_rescue_rate`、`avg_dynamic_response_s` 和 `dynamic_completion_rate_raw`。单次 compare 也可以直接加:
+
+```bash
+python compare_methods.py \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --assignment_replan_interval_s 3600 \
+    --assignment_replan_horizon_s 7200 \
+    --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+    --assignment_switch_penalty 0.05 \
+    --assignment_lock_window_s 600 \
+    --assignment_max_switches_per_task 2 \
+    --out_dir runs/compare_assignment_rolling_v1 \
+    --device cpu
+```
+
 只对比序列式 LSTM/GRU 分配 scorer:
 
 ```bash
@@ -433,6 +461,11 @@ python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/pytho
 python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
   --preset learned_assignment_v1 --out_root runs/ablation_learned_assignment_v1 \
   --batch_name step8_learned_assignment --device cpu
+
+# Step 9: 滚动重分配/Rolling horizon 消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset assignment_rolling_v1 --out_root runs/ablation_assignment_rolling_v1 \
+  --batch_name step9_assignment_rolling --device cpu
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。

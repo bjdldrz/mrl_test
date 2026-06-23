@@ -107,6 +107,7 @@
 | 可视化与可观测任务统计 | ✅ 已实现(2026-06-22) | 输出 `*_viz_data.json`,支持任务分布图/调度甘特图/可观测任务数 |
 | 外循环编码器消融 | ✅ 已实现(2026-06-23) | `meta_encoder_v1`: LSTM/GRU/MLP/Transformer/Set Transformer + MAPPO-LSTM |
 | 学习式任务分配器 | ✅ 已实现(2026-06-23) | `learned_assignment_v1`: heuristic/MLP/LSTM/GRU/Transformer/Set Transformer/GNN scorer |
+| 滚动重分配 | ✅ 已实现(2026-06-23) | `assignment_rolling_v1`: static/periodic/event/2h rolling horizon |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |
@@ -227,6 +228,30 @@
 - 稳定性: `owner_churn_rate`、`n_owner_switches`、`stale_owner_rate`、`deadline_rescue_rate`。
 - 训练:MAPPO reward 方差、高层 entropy、高层 value loss、低层 invalid/idle 比例。
 - 消融结论必须区分三件事:重分配时机收益、解码器收益、高层学习收益。
+
+#### assignment_rolling_v1 落地记录(2026-06-23)
+
+**本次实现范围**:完成 R0/R1/R2,并提供 R3 的 rolling horizon 参数接口。默认配置保持关闭,不影响 `assignment_v2` 与 `learned_assignment_v1` 旧结果;显式打开后在每步动态任务同步之后、下一步 mask 构建之前调用 `_maybe_reassign_tasks()`。
+
+**代码改动**:
+- `MultiSatelliteEnv` 新增 `assignment_replan_interval_s`、`assignment_replan_horizon_s`、`assignment_replan_trigger`、`assignment_switch_penalty`、`assignment_lock_window_s`、`assignment_max_switches_per_task`。
+- 新增 `_maybe_reassign_tasks()`、`_eligible_replan_missions()`、`_reassign_tasks()`、`_task_quality_window()` 等方法,支持周期、动态任务到达、owner 失效、deadline 风险和负载不均触发。
+- `get_metrics()` 新增 `n_replans`、`n_owner_switches`、`n_tasks_switched`、`owner_churn_rate`、`stale_owner_rate`、`deadline_rescue_rate`、`n_rescued_tasks` 等诊断指标。
+- `compare_methods.py` 暴露 rolling CLI 参数并写入 manifest;控制台摘要显示 rolling 指标。
+- `run_ablation.py` 新增 `assignment_rolling_v1` preset,包含 `rolling_static`、`rolling_periodic_1h`、`rolling_event`、`rolling_mpc_2h` 四组。
+
+**推荐命令**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset assignment_rolling_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_assignment_rolling_v1 \
+  --device cpu
+```
+
+**下一步**:若 `rolling_mpc_2h` 能降低 stale owner 或动态响应延迟,再实现 H0/H1:提取 `get_assignment_state()` 图状态,用 rolling/MPC 结果训练监督式 Assignment Manager;否则优先回到 `assignment_decode_v1` 或 `assignment_reserve_v1`。
 
 ### 实验框架落地(2026-06-22,v2_experiment_harness)
 
