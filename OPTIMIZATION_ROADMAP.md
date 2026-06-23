@@ -146,6 +146,88 @@
 
 **版本与消融约定**:后续每个任务分配优化都必须提供独立 CLI 开关、`run_ablation.py` preset、唯一输出目录、`manifest.json` 记录和 README 命令。新增策略默认不能覆盖当前 `learned_assignment_v1` 结果,应以 `heuristic + greedy`、`best learned scorer + greedy`、`best learned scorer + new decoder` 三组作为最小对照。
 
+### 滚动重分配 + 层级 MAPPO 深化方案(2026-06-23)
+
+**核心判断**:滚动重分配和"高层分配策略 + 低层 MAPPO"不是两条互斥路线,而是同一条递进路线。先做规则/MPC 版滚动重分配,可以暴露稳定的环境 API、日志指标和对照组;之后再把这个高层控制器替换为可训练策略。这样能避免一开始就端到端训练导致难以定位收益来源。
+
+#### A. Rolling horizon / MPC 重分配路线
+
+**要解决的问题**:当前 `task_owner` 在 episode 初始确定,动态任务只做增量指派,临近 deadline 或 owner 无未来窗口时才释放。这比静态指派可靠,但仍可能出现三类失效:① owner 因策略行为错过早期窗口;② 动态任务到达后改变全局负载和稀缺窗口;③ 初始贪心分配没有考虑未来一段时间的真实执行状态。
+
+| 阶段 | 机制 | 难度 | 预期收益 | 主要风险 |
+|---|---|---:|---|---|
+| R0 诊断版 | 只记录 owner 失效、deadline rescue、owner backlog、任务被释放次数 | 低 | 判断重分配是否有足够空间 | 无直接性能收益 |
+| R1 周期重分配 | 每隔 `K` 秒对未完成任务重算 owner,加入 switch penalty 和 lock window 防抖 | 中 | 降低 stale owner,改善动态响应和吞吐 | mask 非平稳,训练波动 |
+| R2 事件触发重分配 | 动态任务到达、owner 无未来窗口、负载严重不均、deadline 风险时触发 | 中 | 比固定周期更少扰动,更像任务调度系统 | 触发阈值需要消融 |
+| R3 MPC 窗口重分配 | 只看未来 `H` 秒可执行窗口,优化优先级、质量、slack、负载和切换成本 | 中高 | 更贴近动态调度,可解释性强 | 计算量随任务/卫星增长 |
+| R4 学习式重分配门控 | 学习"保持 owner / 交换 owner / 释放 owner"的决策 | 高 | 为层级策略过渡 | 需要标签或稳定奖励 |
+
+**推荐实现接口**:
+- `--assignment_replan_interval_s`:周期重分配间隔;0 表示关闭。
+- `--assignment_replan_horizon_s`:MPC 只考虑未来窗口长度;0 表示看完整剩余 horizon。
+- `--assignment_replan_trigger`:可选 `periodic,dynamic,stale_owner,deadline,imbalance`。
+- `--assignment_switch_penalty`:切换 owner 的惩罚,抑制频繁改派。
+- `--assignment_lock_window_s`:任务在下一可行窗口前多少秒锁定 owner,避免临门换人。
+- `--assignment_max_switches_per_task`:每个任务最多改派次数。
+
+**建议代码落点**:
+- `MultiSatelliteEnv.step()` 在动态任务同步之后、构建下一步 mask 之前调用 `_maybe_reassign_tasks()`。
+- 新增 `_eligible_replan_missions()` 过滤已完成、锁定、不可达和切换次数超限任务。
+- 复用 `_assign_tasks()` 的 scorer,但在重分配时加入当前时间、未来窗口、旧 owner switch penalty 和 deadline pressure。
+- `get_metrics()` 增加 `n_replans`、`n_owner_switches`、`owner_churn_rate`、`stale_owner_rate`、`deadline_rescue_rate`、`rescued_tasks`。
+- `run_ablation.py` 新增 `assignment_rolling_v1` preset:静态 owner、周期重分配、事件触发、MPC horizon 四组对照。
+
+**最小消融矩阵**:
+1. `static_assignment`:当前默认 `assignment_v2/learned_assignment_v1`。
+2. `rolling_periodic_1h`:每 3600s 重分配,带 switch penalty。
+3. `rolling_event`:只在动态到达、owner 无未来窗口、deadline 风险时重分配。
+4. `rolling_mpc_2h`:未来 7200s 窗口 MPC,强调动态任务响应。
+
+#### B. 高层分配策略 + 低层 MAPPO 路线
+
+**基本框架**:把系统拆成两个时间尺度。高层 Assignment Manager 每隔若干步输出任务所有权、容量配额或局部重分配动作;低层 MAPPO 在高层给定的 owner mask/option 下选择具体观测动作。低层解决"当前窗口怎么排",高层解决"谁负责哪些任务和何时重分配"。
+
+| 阶段 | 高层动作 | 低层策略 | 训练方式 | 研究价值 |
+|---|---|---|---|---|
+| H0 规则 manager | 使用 R1/R2/R3 的滚动重分配规则 | 当前 MAPPO | 不训练高层 | 建立层级接口和强基线 |
+| H1 监督 manager | 预测 task-owner 边分数或 owner switch | 当前/冻结 MAPPO | 模仿 MPC/oracle 标签 | 证明学习式高层能复现强规则 |
+| H2 Bandit manager | 每个重分配 epoch 输出少量 owner switch 或容量 quota | 冻结 MAPPO | PPO/REINFORCE,奖励为下个区间团队收益 | 降低动作空间和训练难度 |
+| H3 Hierarchical PPO + MAPPO | 高层集中式策略输出 task-owner 矩阵/图匹配;低层 MAPPO 调度 | 先冻结后交替训练 | 双 buffer,高层用区间奖励,低层用步级奖励 | 最完整的层级 MARL 贡献 |
+
+**高层状态设计**:
+- 卫星侧:当前负载、未来 `H` 秒可见任务数、平均质量、动态任务 backlog、上次完成时间。
+- 任务侧:priority、duration、slack、dynamic flag、候选卫星数、当前 owner、已切换次数、最近释放状态。
+- 边特征:未来窗口最早开始时间、最佳 off-nadir、窗口数量、是否旧 owner、switch cost。
+- 全局统计:完成率、动态响应均值、load CV、重复率、owner churn。
+
+**高层动作设计优先级**:
+1. **最稳妥**:输出每颗卫星容量 quota 或负载目标,再由现有 `_assign_tasks()` 解码。
+2. **中等动作空间**:输出 top-K owner switch,每次只改少量最危险任务。
+3. **最强但最难**:输出完整 task-owner 图匹配,需要 Hungarian/min-cost flow/Sinkhorn 等解码。
+
+**训练建议**:
+1. 先冻结低层 MAPPO,用 R3/MPC 生成 `(state, assignment)` 标签训练高层 GNN/Transformer manager。
+2. 再用高层 PPO 做区间奖励微调,奖励定义为 `Δcompleted + dynamic_bonus + quality_bonus - churn_penalty - imbalance_penalty`。
+3. 最后交替训练:固定高层跑若干低层 MAPPO update,再固定低层跑若干高层 update。避免两个策略同时漂移。
+
+**需要新增模块**:
+- `models/assignment_manager.py`:GNN/Transformer 高层策略,输入卫星-任务二分图,输出边 logits 或 switch logits。
+- `algo/hier_mappo_trainer.py`:高层 rollout buffer + 区间奖励 PPO 更新。
+- `envs/multi_satellite_env.py`:暴露 `get_assignment_state()`、`set_task_owner()`、`replan_assignment()`。
+- `run_ablation.py`:新增 `assignment_rolling_v1` 和 `hier_assignment_v1` preset。
+
+**建议执行顺序**:
+1. **先实现 `assignment_rolling_v1` 的 R0/R1/R2**:改动小,能快速判断重分配是否值得。
+2. **补 R3 MPC**:作为强规则上界,同时给监督高层 manager 产标签。
+3. **实现 H0/H1**:先只训练高层 imitation,低层 MAPPO 不动。
+4. **实现 H2/H3**:再进入真正的高层策略 + 低层 MAPPO 联合训练。
+
+**关键评估指标**:
+- 性能: `n_scheduled`、`dynamic_completion_rate_raw`、`avg_dynamic_response_s`、`avg_off_nadir_deg`、`oracle_relative_completion`。
+- 稳定性: `owner_churn_rate`、`n_owner_switches`、`stale_owner_rate`、`deadline_rescue_rate`。
+- 训练:MAPPO reward 方差、高层 entropy、高层 value loss、低层 invalid/idle 比例。
+- 消融结论必须区分三件事:重分配时机收益、解码器收益、高层学习收益。
+
 ### 实验框架落地(2026-06-22,v2_experiment_harness)
 
 **目标**:后续会逐步加入 reward/state/communication 等多个优化簇,如果只保存单个 `comparison_results.json`,很难追踪每个结果对应的代码版本、参数组合和运行环境。因此先把实验记录标准化。
