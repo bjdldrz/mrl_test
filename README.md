@@ -12,6 +12,8 @@
 
 ## 一、目录结构
 
+数据集与实验场景说明见 [DATASET_DESCRIPTION.md](DATASET_DESCRIPTION.md)。
+
 ```
 mrl_dms/
 ├── config.py                   # 所有超参数 (对应论文 Table 2/3) + 6 颗 SSO 卫星定义
