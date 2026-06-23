@@ -95,6 +95,7 @@ class MultiSatelliteEnv:
         self._assignment_mlp = None
         self._assignment_sequence = None
         self._assignment_sequence_context: Dict[int, np.ndarray] = {}
+        self._assignment_sat_context: Dict[str, np.ndarray] = {}
         self._init_assignment_scorer()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
         # 回收硬所有权导致的吞吐损失. 设为 0 可关闭释放机制.
@@ -138,7 +139,7 @@ class MultiSatelliteEnv:
 
     def _init_assignment_scorer(self):
         """初始化 episode 级任务指派 scorer; 默认 heuristic 完全保持旧逻辑。"""
-        allowed = {"heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer"}
+        allowed = {"heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"}
         if self.assignment_scorer not in allowed:
             raise ValueError(
                 f"未知 assignment_scorer={self.assignment_scorer!r}; "
@@ -149,6 +150,8 @@ class MultiSatelliteEnv:
                 self._init_assignment_sequence_scorer()
             elif self.assignment_scorer in {"transformer", "set_transformer"}:
                 self._init_assignment_attention_scorer()
+            elif self.assignment_scorer == "gnn":
+                self._init_assignment_gnn_scorer()
             return
 
         rng = np.random.RandomState(self.assignment_mlp_seed)
@@ -212,6 +215,27 @@ class MultiSatelliteEnv:
         }
         if self.assignment_scorer == "transformer":
             self._assignment_sequence["pos_scale"] = init((hidden,), scale=0.04)
+
+    def _init_assignment_gnn_scorer(self):
+        """初始化确定性二分图 GNN 风格 scorer 权重。"""
+        rng = np.random.RandomState(self.assignment_mlp_seed)
+        task_in_dim = 7
+        sat_in_dim = 5
+        hidden = self.assignment_sequence_hidden_dim
+        out_dim = 8
+        def init(shape, scale=0.12):
+            return rng.normal(0.0, scale, size=shape).astype(np.float32)
+
+        self._assignment_sequence = {
+            "w_task": init((task_in_dim, hidden)),
+            "b_task": np.zeros(hidden, dtype=np.float32),
+            "w_sat": init((sat_in_dim, hidden)),
+            "b_sat": np.zeros(hidden, dtype=np.float32),
+            "w_edge_task": init((hidden, hidden)),
+            "w_edge_sat": init((hidden, hidden)),
+            "w_out": init((hidden, out_dim)),
+            "b_out": np.zeros(out_dim, dtype=np.float32),
+        }
 
     # ===================================================================
     # 核心接口
@@ -422,7 +446,12 @@ class MultiSatelliteEnv:
     def _prepare_assignment_sequence_context(self, pending: list):
         """为序列/集合 scorer 生成任务上下文; 其他 scorer 清空缓存。"""
         self._assignment_sequence_context = {}
-        if self.assignment_scorer not in {"lstm", "gru", "transformer", "set_transformer"} or self._assignment_sequence is None:
+        self._assignment_sat_context = {}
+        if self.assignment_scorer not in {"lstm", "gru", "transformer", "set_transformer", "gnn"} or self._assignment_sequence is None:
+            return
+
+        if self.assignment_scorer == "gnn":
+            self._prepare_assignment_gnn_context(pending)
             return
 
         if self.assignment_scorer in {"transformer", "set_transformer"}:
@@ -478,6 +507,56 @@ class MultiSatelliteEnv:
         contexts = np.tanh(hidden @ w["w_out"] + w["b_out"])
         for (mission, _), context in zip(pending, contexts):
             self._assignment_sequence_context[mission.id] = context.astype(np.float32)
+
+    def _prepare_assignment_gnn_context(self, pending: list):
+        """为 GNN scorer 生成卫星-任务二分图上下文。"""
+        if not pending:
+            return
+        w = self._assignment_sequence
+        task_base = {}
+        task_candidate_count = {}
+        sat_edges = {aid: [] for aid in self.agent_ids}
+
+        for mission, cands in pending:
+            task_feat = self._assignment_task_sequence_features(mission, cands)
+            task_base[mission.id] = np.tanh(task_feat @ w["w_task"] + w["b_task"])
+            task_candidate_count[mission.id] = len(cands)
+            for aid, quality in cands:
+                sat_edges.setdefault(aid, []).append((mission, quality))
+
+        sat_base = {}
+        for aid in self.agent_ids:
+            load_norm = np.clip(self._assign_load.get(aid, 0) / max(len(self.task_owner) + 1, 1), 0.0, 1.0)
+            qualities = [q for _, q in sat_edges.get(aid, [])]
+            n_edges = len(qualities)
+            sat_feat = np.array([
+                load_norm,
+                np.clip(n_edges / max(len(pending), 1), 0.0, 1.0),
+                max(qualities) if qualities else 0.0,
+                float(np.mean(qualities)) if qualities else 0.0,
+                float(np.std(qualities)) if len(qualities) > 1 else 0.0,
+            ], dtype=np.float32)
+            sat_base[aid] = np.tanh(sat_feat @ w["w_sat"] + w["b_sat"])
+
+        for mission, cands in pending:
+            sat_msg = np.zeros_like(next(iter(sat_base.values())))
+            for aid, quality in cands:
+                sat_msg += sat_base[aid] * max(quality, 1e-6)
+            sat_msg /= max(sum(max(q, 1e-6) for _, q in cands), 1e-6)
+            context = np.tanh(task_base[mission.id] + sat_msg @ w["w_edge_task"])
+            self._assignment_sequence_context[mission.id] = np.tanh(context @ w["w_out"] + w["b_out"]).astype(np.float32)
+
+        for aid in self.agent_ids:
+            edges = sat_edges.get(aid, [])
+            if edges:
+                task_msg = np.zeros_like(next(iter(task_base.values())))
+                for mission, quality in edges:
+                    scarcity = 1.0 / max(task_candidate_count.get(mission.id, 1), 1)
+                    task_msg += task_base[mission.id] * max(quality, 1e-6) * scarcity
+                task_msg /= max(sum(max(q, 1e-6) for _, q in edges), 1e-6)
+            else:
+                task_msg = np.zeros_like(next(iter(task_base.values())))
+            self._assignment_sat_context[aid] = np.tanh(sat_base[aid] + task_msg @ w["w_edge_sat"]).astype(np.float32)
 
     def _assignment_task_sequence_features(self, mission: Mission, cands: list) -> np.ndarray:
         """任务级序列特征, 不含具体卫星, 用于 LSTM/GRU 读入任务流。"""
@@ -537,6 +616,14 @@ class MultiSatelliteEnv:
             + context[3] * (1.0 - candidate_frac)
             - context[4] * load_pressure
         )
+        if self.assignment_scorer == "gnn":
+            sat_context = self._assignment_sat_context.get(agent_id)
+            if sat_context is not None:
+                context_term += (
+                    sat_context[0] * quality
+                    + sat_context[1] * (1.0 - load_pressure)
+                    + sat_context[2] * priority_norm
+                )
         return base - self.assign_w_load * load_pressure + 0.15 * float(context_term)
 
     def _assignment_mlp_score(

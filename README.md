@@ -206,11 +206,13 @@ python run_ablation.py \
     --assignment_sequence_mixes 0.25 \
     --assignment_attention_scorers transformer,set_transformer \
     --assignment_attention_mixes 0.25 \
+    --assignment_graph_scorers gnn \
+    --assignment_graph_mixes 0.25 \
     --out_root runs/ablation_learned_assignment_v1 \
     --device cpu
 ```
 
-`learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp/lstm/gru/transformer/set_transformer` 指派 scorer。当前版本仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,学习式 scorer 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
+`learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp/lstm/gru/transformer/set_transformer/gnn` 指派 scorer。当前版本仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,学习式 scorer 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
 
 只对比序列式 LSTM/GRU 分配 scorer:
 
@@ -240,6 +242,23 @@ python run_ablation.py \
     --assignment_attention_scorers transformer,set_transformer \
     --assignment_attention_mixes 0.25,0.5 \
     --out_root runs/ablation_assignment_attention_v1 \
+    --device cpu
+```
+
+只对比二分图 GNN 分配 scorer:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset learned_assignment_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --assignment_scorer_mixes "" \
+    --assignment_sequence_scorers "" \
+    --assignment_attention_scorers "" \
+    --assignment_graph_scorers gnn \
+    --assignment_graph_mixes 0.25,0.5 \
+    --out_root runs/ablation_assignment_gnn_v1 \
     --device cpu
 ```
 
