@@ -543,6 +543,8 @@ def main():
                         help="meta_encoder_v1 中 MAPPO+LSTM 外循环的卫星数量")
     parser.add_argument("--no_mappo_lstm", action="store_true",
                         help="meta_encoder_v1 不运行 MAPPO+LSTM 外循环分支")
+    parser.add_argument("--full_train", action="store_true",
+                        help="meta_encoder_v1 使用完整训练配置; 默认加 --fast 便于 smoke")
     args = parser.parse_args()
 
     if args.flat_out_root:
@@ -573,8 +575,16 @@ def main():
     elif args.preset == "communication_v1":
         specs = build_communication_v1_specs()
     else:
+        encoder_types = parse_str_list(args.meta_encoder_types)
+        allowed_encoders = {"lstm", "gru", "mlp", "transformer", "set_transformer"}
+        invalid = [e for e in encoder_types if e not in allowed_encoders]
+        if invalid:
+            raise ValueError(
+                f"未知 meta encoder: {invalid}; "
+                f"可选: {sorted(allowed_encoders)}"
+            )
         specs = build_meta_encoder_v1_specs(
-            encoder_types=parse_str_list(args.meta_encoder_types),
+            encoder_types=encoder_types,
             include_mappo_lstm=not args.no_mappo_lstm,
             mappo_n_satellites=args.meta_mappo_n_satellites,
         )
@@ -591,12 +601,13 @@ def main():
                 str(ROOT / "train.py"),
                 "--seed", str(args.seed),
                 "--device", args.device,
-                "--fast",
                 "--meta_iterations", str(args.meta_iterations),
                 "--log_dir", str(out_root),
                 "--exp_name", tag,
                 *spec["extra_args"],
             ]
+            if not args.full_train:
+                cmd.insert(6, "--fast")
             if args.acled_path:
                 cmd.extend(["--acled_path", args.acled_path])
         else:

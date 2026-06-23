@@ -294,6 +294,38 @@ python run_ablation.py \
 - `python train.py --method mrl_dms --meta_encoder_type gru --device cpu`
 - `python train.py --method mrl_dms --meta_encoder_type lstm --mappo_n_satellites 6 --device cpu`
 
+只对比 LSTM / GRU / Transformer 三种单星外循环编码器:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset meta_encoder_v1 \
+    --meta_encoder_types lstm,gru,transformer \
+    --out_root runs/ablation_meta_encoder_v1 \
+    --batch_name lstm_gru_transformer_compare \
+    --meta_iterations 20 \
+    --no_mappo_lstm \
+    --full_train \
+    --device cpu
+```
+
+同时加入 `MAPPO + LSTM 外循环` 多星对照:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset meta_encoder_v1 \
+    --meta_encoder_types lstm,gru,transformer \
+    --out_root runs/ablation_meta_encoder_v1 \
+    --batch_name lstm_gru_transformer_compare \
+    --meta_iterations 20 \
+    --meta_mappo_n_satellites 6 \
+    --full_train \
+    --device cpu
+```
+
+说明: `meta_encoder_v1` 默认会给训练命令加 `--fast`,适合 smoke;正式对比请保留上面的 `--full_train`。
+
 ### 4.2 优化步骤命令清单
 
 建议按下面顺序跑,每一步都会自动生成唯一结果目录,便于横向对比。

@@ -128,7 +128,7 @@ class MetaLearner(nn.Module):
         super().__init__()
         self.lstm_hidden_dim = lstm_hidden_dim
         self.encoder_type = encoder_type.lower()
-        self.max_history_len = max_history_len
+        self.max_history_len = max(1, int(max_history_len))
 
         # 嵌入网络 g_η
         self.feedback_encoder = FeedbackEncoder(feedback_dim, feedback_embed_dim)
@@ -174,7 +174,7 @@ class MetaLearner(nn.Module):
             self.sequence_pool = nn.Linear(feedback_embed_dim, lstm_hidden_dim)
             if self.encoder_type == "transformer":
                 self.pos_embedding = nn.Parameter(
-                    torch.zeros(1, max_history_len, feedback_embed_dim)
+                    torch.zeros(1, self.max_history_len, feedback_embed_dim)
                 )
                 nn.init.normal_(self.pos_embedding, std=0.02)
             else:
