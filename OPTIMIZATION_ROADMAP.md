@@ -123,6 +123,29 @@
 
 **消融指标**:重点看 `n_scheduled`、`n_feasible_tasks`、`duplicate_rate`、`load_balance_cv`、`avg_dynamic_response_s`、`avg_off_nadir_deg` 和 oracle gap。
 
+### 任务分配优化后续头脑风暴(2026-06-23)
+
+**当前结论**:任务分配的第一阶段已经完成,包括 episode 级全局指派、容量比例负载均衡、动态任务增量指派、以及 `heuristic/mlp/lstm/gru/transformer/set_transformer/gnn` 多种 scorer 消融接口。该阶段的核心价值是把原来的手写局部贪心拆成可替换模块,并提供稳定的实验记录。但从研究角度看,它仍主要是"固定参数 scorer + greedy/拍卖解码",还没有进入真正的可训练分配策略或强优化解码阶段。
+
+| 方向 | 难度 | 研究价值 | 与现有代码关系 | 建议版本名 |
+|---|---:|---:|---|---|
+| 更强解码器: Hungarian / min-cost flow / auction / ILP 小规模 oracle | 中 | 高 | 保留现有 scorer,替换或并列比较 `_assign_tasks()` 的 greedy 解码;可直接衡量 greedy gap | `assignment_decode_v1` |
+| 监督学习 scorer: 用 oracle/启发式最优标签训练 MLP/GNN/Transformer | 中 | 高 | 复用当前 scorer 接口,新增离线数据生成和训练脚本;先 imitation,再接 RL | `assignment_supervised_v1` |
+| Rolling horizon / MPC 动态重分配 | 中高 | 高 | 当前是 episode 初始分配 + 动态任务增量分配;可改成每隔 K 步重估未完成任务所有权 | `assignment_rolling_v1` |
+| 动态任务容量预留 | 低中 | 中高 | 在 `_assignment_targets()` 中为未来动态任务保留卫星容量,重点优化 `avg_dynamic_response_s` | `assignment_reserve_v1` |
+| Differentiable assignment: Sinkhorn / Gumbel-Sinkhorn | 高 | 高 | 把边分数转成软匹配矩阵,用于端到端训练;硬约束仍需后处理 | `assignment_sinkhorn_v1` |
+| 高层策略 + 低层 MAPPO 联合训练 | 高 | 很高 | 分配器作为 high-level policy,每颗卫星 PPO/MAPPO 作为 low-level scheduler | `assignment_hier_marl_v1` |
+| 后处理局部修复: swap/2-opt/late rescue | 低 | 中 | 在 greedy 指派后交换少量边,修复负载不均、临近 deadline 和低质量观测 | `assignment_repair_v1` |
+| 不确定性鲁棒分配 | 中高 | 中 | 对天气/姿态机动/任务取消等扰动做保守分配或重分配 | `assignment_robust_v1` |
+
+**推荐递进顺序**:
+1. **先做 `assignment_repair_v1` 或 `assignment_reserve_v1`**:改动小,能直接验证是否改善负载、动态响应和临近截止任务。
+2. **再做 `assignment_decode_v1`**:在同一 scorer 下比较 greedy、Hungarian/min-cost flow 和小规模 ILP/oracle,回答"当前瓶颈是打分还是解码"。
+3. **随后做 `assignment_supervised_v1`**:用 decode/oracle 生成标签,训练 MLP/GNN/Transformer scorer,把当前 deterministic scorer 推进为可学习分配器。
+4. **最后推进 `assignment_rolling_v1` 与 `assignment_hier_marl_v1`**:面向动态任务和协同决策,研究价值最高,但也最容易影响训练稳定性。
+
+**版本与消融约定**:后续每个任务分配优化都必须提供独立 CLI 开关、`run_ablation.py` preset、唯一输出目录、`manifest.json` 记录和 README 命令。新增策略默认不能覆盖当前 `learned_assignment_v1` 结果,应以 `heuristic + greedy`、`best learned scorer + greedy`、`best learned scorer + new decoder` 三组作为最小对照。
+
 ### 实验框架落地(2026-06-22,v2_experiment_harness)
 
 **目标**:后续会逐步加入 reward/state/communication 等多个优化簇,如果只保存单个 `comparison_results.json`,很难追踪每个结果对应的代码版本、参数组合和运行环境。因此先把实验记录标准化。
