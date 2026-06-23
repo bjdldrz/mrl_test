@@ -41,6 +41,10 @@ preset=meta_encoder_v1:
   - MRL-DMS outer-loop LSTM/GRU/MLP/Transformer/Set Transformer
   - MAPPO + LSTM outer loop
 
+preset=learned_assignment_v1:
+  - heuristic assignment scorer baseline
+  - deterministic MLP assignment scorer with different mix ratios
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -364,6 +368,46 @@ def build_communication_v1_specs():
     ]
 
 
+def build_learned_assignment_v1_specs(assignment_scorer_mixes):
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    specs = [
+        {
+            "tag": "assign_scorer_heuristic",
+            "extra_args": [
+                *base_assignment,
+                "--assignment_scorer", "heuristic",
+            ],
+            "params": {
+                "assignment_variant": "heuristic",
+                "assignment_scorer": "heuristic",
+                "assignment_scorer_mix": 0.0,
+            },
+        }
+    ]
+    for mix in assignment_scorer_mixes:
+        tag = f"assign_scorer_mlp_mix{_float_tag(mix)}"
+        specs.append({
+            "tag": tag,
+            "extra_args": [
+                *base_assignment,
+                "--assignment_scorer", "mlp",
+                "--assignment_scorer_mix", str(mix),
+                "--assignment_mlp_hidden_dim", "16",
+            ],
+            "params": {
+                "assignment_variant": "mlp",
+                "assignment_scorer": "mlp",
+                "assignment_scorer_mix": mix,
+                "assignment_mlp_hidden_dim": 16,
+            },
+        })
+    return specs
+
+
 def build_meta_encoder_v1_specs(encoder_types, include_mappo_lstm=True, mappo_n_satellites=2):
     specs = []
     for encoder in encoder_types:
@@ -507,7 +551,7 @@ def main():
     parser.add_argument("--preset", type=str, default="assignment_v2",
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
                                  "train_stability_v1", "communication_v1",
-                                 "meta_encoder_v1"])
+                                 "meta_encoder_v1", "learned_assignment_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -534,6 +578,8 @@ def main():
                         help="只打印命令, 不运行")
     parser.add_argument("--run_oracle", action="store_true",
                         help="给每个子实验额外运行 Greedy-Oracle")
+    parser.add_argument("--assignment_scorer_mixes", type=str, default="0.1,0.25,0.5",
+                        help="learned_assignment_v1 使用的 MLP scorer 混合比例列表")
     parser.add_argument("--meta_encoder_types", type=str,
                         default="lstm,gru,mlp,transformer,set_transformer",
                         help="meta_encoder_v1 使用的外循环编码器列表")
@@ -574,6 +620,10 @@ def main():
         specs = build_train_stability_v1_specs()
     elif args.preset == "communication_v1":
         specs = build_communication_v1_specs()
+    elif args.preset == "learned_assignment_v1":
+        specs = build_learned_assignment_v1_specs(
+            assignment_scorer_mixes=parse_float_list(args.assignment_scorer_mixes),
+        )
     else:
         encoder_types = parse_str_list(args.meta_encoder_types)
         allowed_encoders = {"lstm", "gru", "mlp", "transformer", "set_transformer"}

@@ -258,6 +258,10 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               episode_assignment=True, assign_w_load=0.1,
               assignment_capacity_mode="proportional",
               release_before_deadline_s=1800.0,
+              assignment_scorer="heuristic",
+              assignment_scorer_mix=0.25,
+              assignment_mlp_hidden_dim=16,
+              assignment_mlp_seed=42,
               team_reward_mix=0.0,
               load_balance_reward_coeff=0.0,
               team_completion_bonus=0.0,
@@ -287,6 +291,10 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         assign_w_load=assign_w_load,
         assignment_capacity_mode=assignment_capacity_mode,
         release_before_deadline_s=release_before_deadline_s,
+        assignment_scorer=assignment_scorer if coordinate else "heuristic",
+        assignment_scorer_mix=assignment_scorer_mix,
+        assignment_mlp_hidden_dim=assignment_mlp_hidden_dim,
+        assignment_mlp_seed=assignment_mlp_seed,
         team_reward_mix=team_reward_mix if coordinate else 0.0,
         load_balance_reward_coeff=load_balance_reward_coeff if coordinate else 0.0,
         team_completion_bonus=team_completion_bonus if coordinate else 0.0,
@@ -481,6 +489,15 @@ def main():
                         help="全局指派目标容量: proportional=按覆盖质量比例, equal=每星等额")
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
                         help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
+    parser.add_argument("--assignment_scorer", type=str, default="heuristic",
+                        choices=["heuristic", "mlp"],
+                        help="episode 级任务指派打分器: heuristic=旧手写分数, mlp=轻量 MLP scorer")
+    parser.add_argument("--assignment_scorer_mix", type=float, default=0.25,
+                        help="MLP scorer 与旧启发式分数的混合比例; 0 等价 heuristic, 1 完全使用 MLP 分数")
+    parser.add_argument("--assignment_mlp_hidden_dim", type=int, default=16,
+                        help="assignment_scorer=mlp 时的隐藏层维度")
+    parser.add_argument("--assignment_mlp_seed", type=int, default=42,
+                        help="assignment_scorer=mlp 时的确定性初始化种子")
     parser.add_argument("--team_reward_mix", type=float, default=0.0,
                         help="团队平均奖励混合比例; 0 保持个体奖励, 1 完全使用团队平均奖励")
     parser.add_argument("--load_balance_reward_coeff", type=float, default=0.0,
@@ -557,6 +574,10 @@ def main():
                                  assign_w_load=args.assign_w_load,
                                  assignment_capacity_mode=args.assignment_capacity_mode,
                                  release_before_deadline_s=args.release_before_deadline_s,
+                                 assignment_scorer=args.assignment_scorer,
+                                 assignment_scorer_mix=args.assignment_scorer_mix,
+                                 assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
+                                 assignment_mlp_seed=args.assignment_mlp_seed,
                                  team_reward_mix=args.team_reward_mix,
                                  load_balance_reward_coeff=args.load_balance_reward_coeff,
                                  team_completion_bonus=args.team_completion_bonus,

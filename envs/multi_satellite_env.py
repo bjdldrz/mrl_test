@@ -51,6 +51,10 @@ class MultiSatelliteEnv:
         assign_w_load: float = 0.1,
         assignment_capacity_mode: str = "proportional",
         release_before_deadline_s: float = 1800.0,
+        assignment_scorer: str = "heuristic",
+        assignment_scorer_mix: float = 0.25,
+        assignment_mlp_hidden_dim: int = 16,
+        assignment_mlp_seed: int = 42,
         team_reward_mix: float = 0.0,
         load_balance_reward_coeff: float = 0.0,
         team_completion_bonus: float = 0.0,
@@ -82,6 +86,12 @@ class MultiSatelliteEnv:
         self.episode_assignment = episode_assignment
         self.assign_w_load = assign_w_load          # 指派时的负载均衡权重 (越大越均衡)
         self.assignment_capacity_mode = assignment_capacity_mode
+        self.assignment_scorer = assignment_scorer
+        self.assignment_scorer_mix = float(np.clip(assignment_scorer_mix, 0.0, 1.0))
+        self.assignment_mlp_hidden_dim = max(1, int(assignment_mlp_hidden_dim))
+        self.assignment_mlp_seed = int(assignment_mlp_seed)
+        self._assignment_mlp = None
+        self._init_assignment_scorer()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
         # 回收硬所有权导致的吞吐损失. 设为 0 可关闭释放机制.
         self.release_before_deadline_s = release_before_deadline_s
@@ -121,6 +131,29 @@ class MultiSatelliteEnv:
 
         # 共享任务池 (在 reset 时初始化)
         self._shared_missions: List[Optional[Mission]] = []
+
+    def _init_assignment_scorer(self):
+        """初始化 episode 级任务指派 scorer; 默认 heuristic 完全保持旧逻辑。"""
+        allowed = {"heuristic", "mlp"}
+        if self.assignment_scorer not in allowed:
+            raise ValueError(
+                f"未知 assignment_scorer={self.assignment_scorer!r}; "
+                f"可选: {sorted(allowed)}"
+            )
+        if self.assignment_scorer != "mlp":
+            return
+
+        rng = np.random.RandomState(self.assignment_mlp_seed)
+        in_dim = 8
+        hidden = self.assignment_mlp_hidden_dim
+        # 小初始化 + 启发式友好的输出偏置: 第一版只做可复现 scorer 消融,
+        # 后续可把这组权重替换为监督/强化训练得到的参数。
+        self._assignment_mlp = {
+            "w1": rng.normal(0.0, 0.15, size=(in_dim, hidden)).astype(np.float32),
+            "b1": np.zeros(hidden, dtype=np.float32),
+            "w2": rng.normal(0.0, 0.15, size=(hidden, 1)).astype(np.float32),
+            "b2": np.zeros(1, dtype=np.float32),
+        }
 
     # ===================================================================
     # 核心接口
@@ -285,16 +318,76 @@ class MultiSatelliteEnv:
                 if q is not None:
                     cands.append((aid, q))
             if cands:
-                pending.append((m.id, cands))
+                pending.append((m, cands))
         # 最少候选优先 (先指派受约束最强的任务)
         pending.sort(key=lambda x: len(x[1]))
         targets = self._assignment_targets(pending)
-        for mid, cands in pending:
+        for mission, cands in pending:
             best_aid = max(
-                cands, key=lambda c: c[1] - self.assign_w_load * self._load_pressure(c[0], targets)
+                cands,
+                key=lambda c: self._assignment_score(
+                    c[0], mission, c[1], targets, n_candidates=len(cands)
+                )
             )[0]
-            self.task_owner[mid] = best_aid
+            self.task_owner[mission.id] = best_aid
             self._assign_load[best_aid] += 1
+
+    def _assignment_score(
+        self,
+        agent_id: str,
+        mission: Mission,
+        quality: float,
+        targets: Dict[str, float],
+        n_candidates: int,
+    ) -> float:
+        """候选边 (satellite, task) 的指派分数。"""
+        load_pressure = self._load_pressure(agent_id, targets)
+        heuristic = quality - self.assign_w_load * load_pressure
+        if self.assignment_scorer == "heuristic":
+            return heuristic
+
+        mlp_score = self._assignment_mlp_score(
+            agent_id, mission, quality, load_pressure, n_candidates
+        )
+        return (1.0 - self.assignment_scorer_mix) * heuristic + self.assignment_scorer_mix * mlp_score
+
+    def _assignment_mlp_score(
+        self,
+        agent_id: str,
+        mission: Mission,
+        quality: float,
+        load_pressure: float,
+        n_candidates: int,
+    ) -> float:
+        """轻量 MLP scorer: 第一版用于建立学习式分配器消融接口。"""
+        if self._assignment_mlp is None:
+            return quality - self.assign_w_load * load_pressure
+
+        env = self.envs[agent_id]
+        priority_norm = np.clip(mission.priority / 10.0, 0.0, 1.0)
+        duration_norm = np.clip(mission.duration_s / 60.0, 0.0, 1.0)
+        slack_s = max(mission.deadline_s - max(env.current_time_s, mission.earliest_time_s), 0.0)
+        slack_norm = np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        candidate_frac = np.clip(n_candidates / max(self.n_agents, 1), 0.0, 1.0)
+        load_norm = np.clip(self._assign_load.get(agent_id, 0) / max(len(self.task_owner) + 1, 1), 0.0, 1.0)
+        dynamic = 1.0 if mission.is_dynamic else 0.0
+        late_pressure = 1.0 - slack_norm
+        x = np.array([
+            quality,
+            priority_norm,
+            duration_norm,
+            slack_norm,
+            dynamic,
+            candidate_frac,
+            load_pressure,
+            load_norm,
+        ], dtype=np.float32)
+        w = self._assignment_mlp
+        h = np.tanh(x @ w["w1"] + w["b1"])
+        neural = float(np.tanh((h @ w["w2"] + w["b2"])[0]))
+        # 加入一个显式可解释残差, 让未训练 MLP 不至于完全随机化分配。
+        residual = quality + 0.2 * priority_norm + 0.1 * dynamic + 0.1 * late_pressure - self.assign_w_load * load_pressure
+        return residual + 0.25 * neural
 
     def _assignment_targets(self, pending: list) -> Dict[str, float]:
         """

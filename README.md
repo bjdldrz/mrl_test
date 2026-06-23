@@ -193,6 +193,21 @@ python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
 - `assign_w_load=0.05/0.1/0.2`
 - `release_before_deadline_s=0/1800`
 
+学习式任务分配 scorer 消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset learned_assignment_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --assignment_scorer_mixes 0.1,0.25,0.5 \
+    --out_root runs/ablation_learned_assignment_v1 \
+    --device cpu
+```
+
+`learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp` 指派 scorer。第一版仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,MLP 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
+
 每次单独运行 `compare_methods.py` 也会额外写入 `manifest.json`,记录参数、git commit、dirty 状态、运行环境和输出文件路径。
 
 奖励塑形消融:
@@ -359,6 +374,11 @@ python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/pytho
 python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
   --preset meta_encoder_v1 --out_root runs/ablation_meta_encoder_v1 --batch_name step7_meta_encoder \
   --meta_iterations 2 --meta_mappo_n_satellites 2 --device cpu
+
+# Step 8: 学习式任务分配 scorer 消融
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset learned_assignment_v1 --out_root runs/ablation_learned_assignment_v1 \
+  --batch_name step8_learned_assignment --device cpu
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。
