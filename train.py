@@ -53,11 +53,12 @@ logging.basicConfig(
 logger = logging.getLogger("train")
 
 
-def train_mrl_dms(config: Config, acled_df=None, exp_name: str = None):
+def train_mrl_dms(config: Config, acled_df=None, exp_name: str = None,
+                  total_meta_iterations: int = None):
     """MRL-DMS 元训练"""
     trainer = MRLDMSTrainer(config)
     trainer.setup_data(acled_df)
-    trainer.train(exp_name=exp_name)
+    trainer.train(total_meta_iterations=total_meta_iterations, exp_name=exp_name)
     return trainer
 
 
@@ -210,19 +211,46 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cpu", "cuda", "mps"],
-                        help="计算设备; 本地 Mac 请用 cpu (MPS 的 LSTM backward 有 bug 会崩溃)")
+                        help="计算设备; 本地 Mac 请用 cpu (MPS 的 recurrent backward 有 bug 会崩溃)")
+    parser.add_argument("--meta_encoder_type", type=str, default=None,
+                        choices=["lstm", "gru", "mlp", "transformer", "set_transformer"],
+                        help="MRL-DMS 外循环反馈编码器, 默认使用配置中的 lstm")
+    parser.add_argument("--meta_history_len", type=int, default=None,
+                        help="Transformer/Set Transformer 外循环保留的反馈历史长度")
+    parser.add_argument("--meta_transformer_heads", type=int, default=None,
+                        help="Transformer/Set Transformer 注意力头数")
+    parser.add_argument("--meta_transformer_layers", type=int, default=None,
+                        help="Transformer/Set Transformer 层数")
+    parser.add_argument("--mappo_n_satellites", type=int, default=None,
+                        help="MRL-DMS 使用 MAPPO 内循环时的卫星数量; >1 启用多星 MAPPO")
     parser.add_argument("--exp_name", type=str, default=None,
                         help="实验名称, 用于命名日志目录 runs/<exp_name>/")
     parser.add_argument("--run_tag", type=str, default=None,
                         help="实验标签; 未指定 exp_name 时用于生成 runs/<method>_<tag>_<timestamp>/")
     parser.add_argument("--append_timestamp", action="store_true",
                         help="给显式指定的 exp_name 也追加时间戳, 避免覆盖同名目录")
+    parser.add_argument("--log_dir", type=str, default=None,
+                        help="训练日志根目录, 默认使用配置中的 runs/")
+    parser.add_argument("--meta_iterations", type=int, default=None,
+                        help="覆盖 MRL-DMS 外循环迭代次数, 便于消融 smoke")
     args = parser.parse_args()
 
     # 加载配置
     config = get_default_config()
     config.train.seed = args.seed
     config.train.device = args.device
+    if args.meta_encoder_type is not None:
+        config.network.meta_encoder_type = args.meta_encoder_type
+    if args.meta_history_len is not None:
+        config.network.meta_history_len = args.meta_history_len
+    if args.meta_transformer_heads is not None:
+        config.network.meta_transformer_heads = args.meta_transformer_heads
+    if args.meta_transformer_layers is not None:
+        config.network.meta_transformer_layers = args.meta_transformer_layers
+    if args.mappo_n_satellites is not None:
+        config.mappo.n_satellites = args.mappo_n_satellites
+    if args.log_dir is not None:
+        config.train.log_dir = args.log_dir
 
     if args.fast:
         config.train.total_training_steps = 5000
@@ -232,7 +260,8 @@ def main():
         config.mission.routine_pool_sizes = [20]
         config.mission.dynamic_pool_sizes = [5]
         config.mission.max_action_dim = 50
-        config.mappo.n_satellites = 1          # 单星模式, 省去 5 颗卫星的 VTW 计算
+        if args.mappo_n_satellites is None:
+            config.mappo.n_satellites = 1      # 单星模式, 省去 5 颗卫星的 VTW 计算
         config.train.vtw_time_step_s = 60.0    # 步长 60s: LEO 过境快, 300s 会漏采窗口
         config.train.log_interval = 1
         config.train.eval_interval = 5
@@ -261,7 +290,12 @@ def main():
 
     # 训练
     if args.method == "mrl_dms":
-        train_mrl_dms(config, acled_df, exp_name=exp_name)
+        train_mrl_dms(
+            config,
+            acled_df,
+            exp_name=exp_name,
+            total_meta_iterations=args.meta_iterations,
+        )
     elif args.method == "ppo":
         train_ppo_baseline(config, acled_df, exp_name=exp_name)
     else:

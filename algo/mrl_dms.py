@@ -81,6 +81,10 @@ class MRLDMSTrainer:
             feedback_dim=feedback_dim,
             lstm_hidden_dim=config.network.lstm_hidden_dim,
             feedback_embed_dim=config.meta.feedback_dim,
+            encoder_type=config.network.meta_encoder_type,
+            transformer_heads=config.network.meta_transformer_heads,
+            transformer_layers=config.network.meta_transformer_layers,
+            max_history_len=config.network.meta_history_len,
         ).to(self.device)
 
         # 将调制头绑定到 Actor-Critic
@@ -347,6 +351,9 @@ class MRLDMSTrainer:
             "total_iters": total_iters,
             "global_step": self.global_step,
             "best_reward": self.best_reward,
+            "meta_encoder_type": self.cfg.network.meta_encoder_type,
+            "mappo_n_satellites": self.cfg.mappo.n_satellites,
+            "multi_agent": self.multi_agent,
             "train_log": str(train_log_path),
             "eval_log": str(eval_log_path),
         }
@@ -395,7 +402,10 @@ class MRLDMSTrainer:
             task_init_states.append(copy.deepcopy(base_model.state_dict()))
         serial_s = time.perf_counter() - t_serial
         if not self.multi_agent:
-            tqdm.write(f"[iter {self.meta_iteration}] LSTM调制串行准备={serial_s:.2f}s")
+            tqdm.write(
+                f"[iter {self.meta_iteration}] "
+                f"{self.cfg.network.meta_encoder_type}外循环调制串行准备={serial_s:.2f}s"
+            )
 
         if self.multi_agent:
             results = self._meta_update_mappo(tasks, task_init_states, base_model, base_state)

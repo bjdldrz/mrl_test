@@ -1,11 +1,14 @@
 """
-LSTM 元学习器 (外循环)
+可切换元学习器 (外循环)
 =======================
 实现论文 Section 3.5.3:
-  - LSTM 接收任务反馈向量 x_t (Eq.24)
+  - 历史反馈编码器接收任务反馈向量 x_t (Eq.24)
   - 嵌入网络 g_η 压缩高维反馈 (Eq.25)
   - 两个调制头 H_θ 和 H_ϕ 微调 Actor-Critic 参数 (Eq.26)
   - 元目标 L_meta 跨任务优化初始化参数 (Eq.27-29)
+
+默认 encoder_type="lstm" 严格保留原论文复现口径; GRU/MLP/Transformer/
+Set Transformer 用于外循环结构消融。
 """
 
 import torch
@@ -36,18 +39,18 @@ class FeedbackEncoder(nn.Module):
 class ModulationHead(nn.Module):
     """
     参数调制头 H_θ 或 H_ϕ (论文 Eq.26)。
-    将 LSTM 隐状态映射为 Actor/Critic 网络的参数偏移量。
+    将外循环隐状态映射为 Actor/Critic 网络的参数偏移量。
 
     采用 FiLM (Feature-wise Linear Modulation) 风格:
       θ_t^(0) = θ_base ⊕ H_θ(h_t)
     其中 ⊕ 表示逐层组合 (scale + shift)。
     """
-    def __init__(self, lstm_hidden_dim: int, target_param_shapes: List[Tuple[str, int]]):
+    def __init__(self, hidden_dim: int, target_param_shapes: List[Tuple[str, int]]):
         """
         参数
         ----
-        lstm_hidden_dim : int
-            LSTM 隐藏层维度
+        hidden_dim : int
+            外循环编码器输出维度
         target_param_shapes : List[Tuple[str, int]]
             要调制的参数列表: [(参数名, 参数元素总数), ...]
         """
@@ -62,13 +65,13 @@ class ModulationHead(nn.Module):
             safe_name = name.replace('.', '_')
             # 只调制偏置项, 大幅减少参数量
             self.scale_heads[safe_name] = nn.Sequential(
-                nn.Linear(lstm_hidden_dim, 64),
+                nn.Linear(hidden_dim, 64),
                 nn.ReLU(),
                 nn.Linear(64, n_params),
                 nn.Sigmoid(),  # scale ∈ (0, 1), 中心化后 ∈ (0.5, 1.5)
             )
             self.shift_heads[safe_name] = nn.Sequential(
-                nn.Linear(lstm_hidden_dim, 64),
+                nn.Linear(hidden_dim, 64),
                 nn.ReLU(),
                 nn.Linear(64, n_params),
                 nn.Tanh(),  # shift ∈ (-1, 1), 缩放后幅度可控
@@ -89,10 +92,10 @@ class ModulationHead(nn.Module):
 
 class MetaLearner(nn.Module):
     """
-    完整的 LSTM 元学习器 (论文 Section 3.5.3, Algorithm 1)。
+    完整的元学习器 (论文 Section 3.5.3, Algorithm 1)。
 
     职责:
-    1. 维护跨任务的递归记忆 (h_t, c_t)
+    1. 维护跨任务反馈历史或递归记忆
     2. 根据任务反馈调制 Actor-Critic 的初始化参数
     3. 计算元损失 L_meta
     """
@@ -103,6 +106,10 @@ class MetaLearner(nn.Module):
         lstm_hidden_dim: int = 128,
         feedback_embed_dim: int = 64,
         actor_critic_config: Optional[Dict] = None,
+        encoder_type: str = "lstm",
+        transformer_heads: int = 4,
+        transformer_layers: int = 1,
+        max_history_len: int = 32,
     ):
         """
         参数
@@ -115,34 +122,85 @@ class MetaLearner(nn.Module):
             g_η 嵌入后的维度
         actor_critic_config : dict
             Actor-Critic 网络配置, 用于确定需要调制哪些参数
+        encoder_type : str
+            外循环历史反馈编码器: lstm/gru/mlp/transformer/set_transformer
         """
         super().__init__()
         self.lstm_hidden_dim = lstm_hidden_dim
+        self.encoder_type = encoder_type.lower()
+        self.max_history_len = max_history_len
 
         # 嵌入网络 g_η
         self.feedback_encoder = FeedbackEncoder(feedback_dim, feedback_embed_dim)
 
-        # LSTM (论文 Eq.25)
-        self.lstm = nn.LSTM(
-            input_size=feedback_embed_dim,
-            hidden_size=lstm_hidden_dim,
-            num_layers=1,
-            batch_first=True,
-        )
+        if self.encoder_type == "lstm":
+            # LSTM (论文 Eq.25)
+            self.sequence_encoder = nn.LSTM(
+                input_size=feedback_embed_dim,
+                hidden_size=lstm_hidden_dim,
+                num_layers=1,
+                batch_first=True,
+            )
+        elif self.encoder_type == "gru":
+            self.sequence_encoder = nn.GRU(
+                input_size=feedback_embed_dim,
+                hidden_size=lstm_hidden_dim,
+                num_layers=1,
+                batch_first=True,
+            )
+        elif self.encoder_type == "mlp":
+            self.sequence_encoder = nn.Sequential(
+                nn.Linear(feedback_embed_dim, lstm_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(lstm_hidden_dim, lstm_hidden_dim),
+                nn.ReLU(),
+            )
+        elif self.encoder_type in {"transformer", "set_transformer"}:
+            n_heads = max(1, min(transformer_heads, feedback_embed_dim))
+            while feedback_embed_dim % n_heads != 0 and n_heads > 1:
+                n_heads -= 1
+            layer = nn.TransformerEncoderLayer(
+                d_model=feedback_embed_dim,
+                nhead=n_heads,
+                dim_feedforward=max(lstm_hidden_dim * 2, feedback_embed_dim * 2),
+                dropout=0.0,
+                batch_first=True,
+                activation="relu",
+            )
+            self.sequence_encoder = nn.TransformerEncoder(
+                layer,
+                num_layers=max(1, transformer_layers),
+            )
+            self.sequence_pool = nn.Linear(feedback_embed_dim, lstm_hidden_dim)
+            if self.encoder_type == "transformer":
+                self.pos_embedding = nn.Parameter(
+                    torch.zeros(1, max_history_len, feedback_embed_dim)
+                )
+                nn.init.normal_(self.pos_embedding, std=0.02)
+            else:
+                self.pos_embedding = None
+        else:
+            raise ValueError(
+                f"未知 meta encoder_type={encoder_type!r}; "
+                "可选: lstm/gru/mlp/transformer/set_transformer"
+            )
 
         # 调制头的参数规格将在 attach_to_actor_critic 中动态确定
         self.actor_modulation = None
         self.critic_modulation = None
 
-        # LSTM 状态
+        # 外循环状态
         self._hidden = None
         self._cell = None
+        self._history = None
 
     def attach_to_actor_critic(self, actor_critic: nn.Module):
         """
         根据实际的 Actor-Critic 网络结构, 初始化调制头。
         只调制偏置项 (bias) 以减少参数量。
         """
+        self.actor_modulation = None
+        self.critic_modulation = None
         actor_params = []
         critic_params = []
 
@@ -174,14 +232,20 @@ class MetaLearner(nn.Module):
             self.critic_modulation.to(target_device)
 
     def reset_hidden(self, batch_size: int = 1, device: torch.device = None):
-        """重置 LSTM 隐状态 (论文 Algorithm 1, line 4)"""
+        """重置外循环状态 (论文 Algorithm 1, line 4)"""
         device = device or next(self.parameters()).device
-        self._hidden = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
-        self._cell = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
+        self._hidden = None
+        self._cell = None
+        self._history = None
+        if self.encoder_type == "lstm":
+            self._hidden = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
+            self._cell = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
+        elif self.encoder_type == "gru":
+            self._hidden = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
 
     def forward(self, feedback: torch.Tensor) -> torch.Tensor:
         """
-        处理一步任务反馈, 更新 LSTM 状态, 返回隐状态 h_t。
+        处理一步任务反馈, 更新外循环状态, 返回隐状态 h_t。
 
         参数
         ----
@@ -190,22 +254,44 @@ class MetaLearner(nn.Module):
 
         返回
         ----
-        h_t : Tensor [batch, lstm_hidden_dim]
+        h_t : Tensor [batch, hidden_dim]
         """
         # g_η(x_t)
         z = self.feedback_encoder(feedback)  # [batch, embed_dim]
-        z = z.unsqueeze(1)  # [batch, 1, embed_dim] for LSTM
+        if self.encoder_type == "mlp":
+            return self.sequence_encoder(z)
 
-        # LSTM 更新 (Eq.25)
-        if self._hidden is None:
-            self.reset_hidden(feedback.size(0), feedback.device)
+        z_seq = z.unsqueeze(1)  # [batch, 1, embed_dim]
+        if self.encoder_type == "lstm":
+            if self._hidden is None:
+                self.reset_hidden(feedback.size(0), feedback.device)
+            _, (self._hidden, self._cell) = self.sequence_encoder(
+                z_seq, (self._hidden, self._cell)
+            )
+            return self._hidden.squeeze(0)
 
-        lstm_out, (self._hidden, self._cell) = self.lstm(
-            z, (self._hidden, self._cell)
-        )
+        if self.encoder_type == "gru":
+            if self._hidden is None:
+                self.reset_hidden(feedback.size(0), feedback.device)
+            _, self._hidden = self.sequence_encoder(z_seq, self._hidden)
+            return self._hidden.squeeze(0)
 
-        h_t = self._hidden.squeeze(0)  # [batch, lstm_hidden_dim]
-        return h_t
+        if self._history is None:
+            self._history = z_seq
+        else:
+            self._history = torch.cat([self._history, z_seq], dim=1)
+            if self._history.size(1) > self.max_history_len:
+                self._history = self._history[:, -self.max_history_len:, :]
+
+        hist = self._history
+        if self.encoder_type == "transformer":
+            hist = hist + self.pos_embedding[:, :hist.size(1), :]
+            encoded = self.sequence_encoder(hist)
+            pooled = encoded[:, -1, :]  # 带位置编码, 取最近反馈的上下文表示
+        else:
+            encoded = self.sequence_encoder(hist)
+            pooled = encoded.mean(dim=1)  # Set Transformer 消融: 无位置编码, 集合池化
+        return self.sequence_pool(pooled)
 
     def get_modulations(
         self, h_t: torch.Tensor

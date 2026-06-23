@@ -37,6 +37,10 @@ preset=communication_v1:
   - intent broadcast
   - intent broadcast + train stability
 
+preset=meta_encoder_v1:
+  - MRL-DMS outer-loop LSTM/GRU/MLP/Transformer/Set Transformer
+  - MAPPO + LSTM outer loop
+
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
   <out_root>/<tag>/manifest.json
@@ -360,6 +364,45 @@ def build_communication_v1_specs():
     ]
 
 
+def build_meta_encoder_v1_specs(encoder_types, include_mappo_lstm=True, mappo_n_satellites=2):
+    specs = []
+    for encoder in encoder_types:
+        tag = f"meta_single_{encoder}"
+        specs.append({
+            "tag": tag,
+            "script": "train",
+            "extra_args": [
+                "--method", "mrl_dms",
+                "--meta_encoder_type", encoder,
+                "--mappo_n_satellites", "1",
+            ],
+            "params": {
+                "meta_variant": tag,
+                "meta_encoder_type": encoder,
+                "mappo_n_satellites": 1,
+                "multi_agent": False,
+            },
+        })
+    if include_mappo_lstm:
+        tag = f"meta_mappo_lstm_sat{mappo_n_satellites}"
+        specs.append({
+            "tag": tag,
+            "script": "train",
+            "extra_args": [
+                "--method", "mrl_dms",
+                "--meta_encoder_type", "lstm",
+                "--mappo_n_satellites", str(mappo_n_satellites),
+            ],
+            "params": {
+                "meta_variant": tag,
+                "meta_encoder_type": "lstm",
+                "mappo_n_satellites": mappo_n_satellites,
+                "multi_agent": True,
+            },
+        })
+    return specs
+
+
 def load_json(path: Path):
     with open(path) as f:
         return json.load(f)
@@ -415,6 +458,23 @@ def summarize_run(tag, params, out_dir):
     return row
 
 
+def summarize_train_run(tag, params, out_dir):
+    summary_path = out_dir / "summary.json"
+    summary = load_json(summary_path)
+    row = {
+        "tag": tag,
+        "out_dir": str(out_dir),
+        **params,
+        "best_reward": summary.get("best_reward", 0.0),
+        "global_step": summary.get("global_step", 0),
+        "total_iters": summary.get("total_iters", 0),
+        "train_log": summary.get("train_log", ""),
+        "eval_log": summary.get("eval_log", ""),
+        "summary_json": str(summary_path),
+    }
+    return row
+
+
 def write_summary(rows, out_root):
     json_path = out_root / "ablation_summary.json"
     csv_path = out_root / "ablation_summary.csv"
@@ -443,10 +503,11 @@ def parse_str_list(text):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="批量运行 compare_methods.py 消融实验")
+    parser = argparse.ArgumentParser(description="批量运行 MRL-DMS/compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
-                                 "train_stability_v1", "communication_v1"])
+                                 "train_stability_v1", "communication_v1",
+                                 "meta_encoder_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
     parser.add_argument("--out_root", type=str, default="runs/ablation_assignment_v2")
@@ -473,6 +534,15 @@ def main():
                         help="只打印命令, 不运行")
     parser.add_argument("--run_oracle", action="store_true",
                         help="给每个子实验额外运行 Greedy-Oracle")
+    parser.add_argument("--meta_encoder_types", type=str,
+                        default="lstm,gru,mlp,transformer,set_transformer",
+                        help="meta_encoder_v1 使用的外循环编码器列表")
+    parser.add_argument("--meta_iterations", type=int, default=2,
+                        help="meta_encoder_v1 每个子实验的外循环迭代次数")
+    parser.add_argument("--meta_mappo_n_satellites", type=int, default=2,
+                        help="meta_encoder_v1 中 MAPPO+LSTM 外循环的卫星数量")
+    parser.add_argument("--no_mappo_lstm", action="store_true",
+                        help="meta_encoder_v1 不运行 MAPPO+LSTM 外循环分支")
     args = parser.parse_args()
 
     if args.flat_out_root:
@@ -500,33 +570,55 @@ def main():
         specs = build_oracle_v1_specs()
     elif args.preset == "train_stability_v1":
         specs = build_train_stability_v1_specs()
-    else:
+    elif args.preset == "communication_v1":
         specs = build_communication_v1_specs()
+    else:
+        specs = build_meta_encoder_v1_specs(
+            encoder_types=parse_str_list(args.meta_encoder_types),
+            include_mappo_lstm=not args.no_mappo_lstm,
+            mappo_n_satellites=args.meta_mappo_n_satellites,
+        )
 
     rows = []
     for idx, spec in enumerate(specs, start=1):
         tag = spec["tag"]
         out_dir = out_root / tag
         manifest_path = out_dir / "manifest.json"
-        cmd = [
-            args.python,
-            str(ROOT / "compare_methods.py"),
-            "--n_satellites", str(args.n_satellites),
-            "--train_iters", str(args.train_iters),
-            "--eval_episodes", str(args.eval_episodes),
-            "--n_routine", str(args.n_routine),
-            "--n_dynamic", str(args.n_dynamic),
-            "--seed", str(args.seed),
-            "--out_dir", str(out_dir),
-            "--device", args.device,
-            "--experiment_tag", tag,
-            "--flat_out_dir",
-            *spec["extra_args"],
-        ]
-        if args.run_oracle and "--run_oracle" not in cmd:
-            cmd.append("--run_oracle")
-        if args.acled_path:
-            cmd.extend(["--acled_path", args.acled_path])
+        if spec.get("script") == "train":
+            manifest_path = out_dir / "summary.json"
+            cmd = [
+                args.python,
+                str(ROOT / "train.py"),
+                "--seed", str(args.seed),
+                "--device", args.device,
+                "--fast",
+                "--meta_iterations", str(args.meta_iterations),
+                "--log_dir", str(out_root),
+                "--exp_name", tag,
+                *spec["extra_args"],
+            ]
+            if args.acled_path:
+                cmd.extend(["--acled_path", args.acled_path])
+        else:
+            cmd = [
+                args.python,
+                str(ROOT / "compare_methods.py"),
+                "--n_satellites", str(args.n_satellites),
+                "--train_iters", str(args.train_iters),
+                "--eval_episodes", str(args.eval_episodes),
+                "--n_routine", str(args.n_routine),
+                "--n_dynamic", str(args.n_dynamic),
+                "--seed", str(args.seed),
+                "--out_dir", str(out_dir),
+                "--device", args.device,
+                "--experiment_tag", tag,
+                "--flat_out_dir",
+                *spec["extra_args"],
+            ]
+            if args.run_oracle and "--run_oracle" not in cmd:
+                cmd.append("--run_oracle")
+            if args.acled_path:
+                cmd.extend(["--acled_path", args.acled_path])
 
         print(f"[{idx}/{len(specs)}] {tag}")
         print(" ".join(cmd))
@@ -536,7 +628,10 @@ def main():
             print(f"skip existing: {manifest_path}")
         else:
             subprocess.run(cmd, cwd=ROOT, check=True)
-        rows.append(summarize_run(tag, spec["params"], out_dir))
+        if spec.get("script") == "train":
+            rows.append(summarize_train_run(tag, spec["params"], out_dir))
+        else:
+            rows.append(summarize_run(tag, spec["params"], out_dir))
         write_summary(rows, out_root)
 
     if args.dry_run:

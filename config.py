@@ -91,6 +91,10 @@ class NetworkConfig:
         default_factory=lambda: [256, 256, 256]  # 3×256
     )
     lstm_hidden_dim: int = 128               # LSTM 隐藏层维度
+    meta_encoder_type: str = "lstm"          # 外循环编码器: lstm/gru/mlp/transformer/set_transformer
+    meta_transformer_heads: int = 4          # Transformer/Set Transformer 注意力头数
+    meta_transformer_layers: int = 1         # Transformer/Set Transformer 层数
+    meta_history_len: int = 32               # Transformer 类编码器保留的跨任务反馈历史长度
     activation: str = "relu"
 
 

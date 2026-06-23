@@ -30,7 +30,7 @@ mrl_dms/
 │
 ├── models/                     # 网络层
 │   ├── actor_critic.py         # 单星 Actor-Critic + 动作掩码 (Eq.14)
-│   ├── meta_learner.py         # LSTM 元学习器: 参数调制 (Section 3.5.3, Eq.24-29)
+│   ├── meta_learner.py         # 可切换外循环元学习器: LSTM/GRU/MLP/Transformer/Set Transformer
 │   └── mappo.py                # 多星 MAPPO: 分布式 Actor + 集中式 Critic
 │
 ├── algo/                       # 算法层
@@ -51,7 +51,7 @@ mrl_dms/
 
 - **MDP 建模**(Section 3.4):状态 = 任务信息编码 `s_I` × 卫星状态 `s_Sat`;动作 = 选择某个任务观测或 idle;奖励 = 优先级 `R_p` + 时效 `R_t` + 动态响应 `R_d`。
 - **动作掩码**(Eq.13-14):用 `Valid()` 过滤不可行任务(无 VTW、机动时间不足、任务冲突等约束 5-10),Softmax 后逐元素相乘。
-- **元学习**(Section 3.5):FOMAML 外循环采样一批任务分布,每个任务用 PPO 做内循环适应;LSTM 元学习器读取内循环反馈,输出对 Actor/Critic 参数的**调制量**(scale/shift)。元目标用 **REINFORCE** 优化(必须 `.sample()` 而非 `.rsample()`,否则 log_prob 对均值梯度为 0)。
+- **元学习**(Section 3.5):FOMAML 外循环采样一批任务分布,每个任务用 PPO 做内循环适应;默认 LSTM 元学习器读取内循环反馈,输出对 Actor/Critic 参数的**调制量**(scale/shift)。为研究外循环结构,也可切换为 GRU/MLP/Transformer/Set Transformer。元目标用 **REINFORCE** 优化(必须 `.sample()` 而非 `.rsample()`,否则 log_prob 对均值梯度为 0)。
 
 ### 2.2 多星 MAPPO 协同(优化扩展)
 
@@ -275,6 +275,23 @@ python run_ablation.py \
 `communication_v1` 比较默认训练、意图广播、意图广播+训练稳定性。单次运行可用:
 - `--intent_broadcast --intent_replan_rounds 1`
 
+外循环编码器消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset meta_encoder_v1 \
+    --out_root runs/ablation_meta_encoder_v1 \
+    --batch_name meta_encoder_v1 \
+    --meta_iterations 2 \
+    --meta_mappo_n_satellites 2 \
+    --device cpu
+```
+
+`meta_encoder_v1` 比较单星 MRL-DMS 外循环的 `lstm/gru/mlp/transformer/set_transformer`,并额外运行 `MAPPO + LSTM 外循环`。正式实验可调大 `--meta_iterations`,以及用 `--meta_mappo_n_satellites 6` 做完整多星版本。单次训练可用:
+- `python train.py --method mrl_dms --meta_encoder_type gru --device cpu`
+- `python train.py --method mrl_dms --meta_encoder_type lstm --mappo_n_satellites 6 --device cpu`
+
 ### 4.2 优化步骤命令清单
 
 建议按下面顺序跑,每一步都会自动生成唯一结果目录,便于横向对比。
@@ -303,9 +320,15 @@ python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/pytho
 # Step 6: 规则式意图广播通信消融
 python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
   --preset communication_v1 --out_root runs/ablation_communication_v1 --batch_name step6_communication --device cpu
+
+# Step 7: MRL-DMS 外循环编码器结构消融 + MAPPO-LSTM 外循环
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset meta_encoder_v1 --out_root runs/ablation_meta_encoder_v1 --batch_name step7_meta_encoder \
+  --meta_iterations 2 --meta_mappo_n_satellites 2 --device cpu
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。
+`meta_encoder_v1` 属于训练型消融,每个子目录输出 `summary.json/train_log.csv/eval_log.csv`,批次根目录输出 `ablation_summary.json/csv`。
 
 可视化某次 compare/ablation 子实验:
 
