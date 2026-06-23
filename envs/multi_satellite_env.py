@@ -55,6 +55,7 @@ class MultiSatelliteEnv:
         assignment_scorer_mix: float = 0.25,
         assignment_mlp_hidden_dim: int = 16,
         assignment_mlp_seed: int = 42,
+        assignment_sequence_hidden_dim: int = 16,
         team_reward_mix: float = 0.0,
         load_balance_reward_coeff: float = 0.0,
         team_completion_bonus: float = 0.0,
@@ -90,7 +91,10 @@ class MultiSatelliteEnv:
         self.assignment_scorer_mix = float(np.clip(assignment_scorer_mix, 0.0, 1.0))
         self.assignment_mlp_hidden_dim = max(1, int(assignment_mlp_hidden_dim))
         self.assignment_mlp_seed = int(assignment_mlp_seed)
+        self.assignment_sequence_hidden_dim = max(1, int(assignment_sequence_hidden_dim))
         self._assignment_mlp = None
+        self._assignment_sequence = None
+        self._assignment_sequence_context: Dict[int, np.ndarray] = {}
         self._init_assignment_scorer()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
         # 回收硬所有权导致的吞吐损失. 设为 0 可关闭释放机制.
@@ -134,13 +138,15 @@ class MultiSatelliteEnv:
 
     def _init_assignment_scorer(self):
         """初始化 episode 级任务指派 scorer; 默认 heuristic 完全保持旧逻辑。"""
-        allowed = {"heuristic", "mlp"}
+        allowed = {"heuristic", "mlp", "lstm", "gru"}
         if self.assignment_scorer not in allowed:
             raise ValueError(
                 f"未知 assignment_scorer={self.assignment_scorer!r}; "
                 f"可选: {sorted(allowed)}"
             )
         if self.assignment_scorer != "mlp":
+            if self.assignment_scorer in {"lstm", "gru"}:
+                self._init_assignment_sequence_scorer()
             return
 
         rng = np.random.RandomState(self.assignment_mlp_seed)
@@ -154,6 +160,33 @@ class MultiSatelliteEnv:
             "w2": rng.normal(0.0, 0.15, size=(hidden, 1)).astype(np.float32),
             "b2": np.zeros(1, dtype=np.float32),
         }
+
+    def _init_assignment_sequence_scorer(self):
+        """初始化确定性 LSTM/GRU 风格序列 scorer 权重。"""
+        rng = np.random.RandomState(self.assignment_mlp_seed)
+        in_dim = 7
+        hidden = self.assignment_sequence_hidden_dim
+        out_dim = 8
+        def init(shape, scale=0.12):
+            return rng.normal(0.0, scale, size=shape).astype(np.float32)
+
+        self._assignment_sequence = {
+            "w_out": init((hidden, out_dim)),
+            "b_out": np.zeros(out_dim, dtype=np.float32),
+        }
+        if self.assignment_scorer == "lstm":
+            self._assignment_sequence.update({
+                "w_ix": init((in_dim, hidden)), "w_ih": init((hidden, hidden)), "b_i": np.zeros(hidden, dtype=np.float32),
+                "w_fx": init((in_dim, hidden)), "w_fh": init((hidden, hidden)), "b_f": np.ones(hidden, dtype=np.float32),
+                "w_ox": init((in_dim, hidden)), "w_oh": init((hidden, hidden)), "b_o": np.zeros(hidden, dtype=np.float32),
+                "w_gx": init((in_dim, hidden)), "w_gh": init((hidden, hidden)), "b_g": np.zeros(hidden, dtype=np.float32),
+            })
+        else:
+            self._assignment_sequence.update({
+                "w_zx": init((in_dim, hidden)), "w_zh": init((hidden, hidden)), "b_z": np.zeros(hidden, dtype=np.float32),
+                "w_rx": init((in_dim, hidden)), "w_rh": init((hidden, hidden)), "b_r": np.zeros(hidden, dtype=np.float32),
+                "w_nx": init((in_dim, hidden)), "w_nh": init((hidden, hidden)), "b_n": np.zeros(hidden, dtype=np.float32),
+            })
 
     # ===================================================================
     # 核心接口
@@ -319,8 +352,13 @@ class MultiSatelliteEnv:
                     cands.append((aid, q))
             if cands:
                 pending.append((m, cands))
-        # 最少候选优先 (先指派受约束最强的任务)
-        pending.sort(key=lambda x: len(x[1]))
+        if self.assignment_scorer in {"lstm", "gru"}:
+            # 最少候选 + 最早截止优先: 让序列 scorer 先看到最受约束/最紧迫的任务。
+            pending.sort(key=lambda x: (len(x[1]), x[0].deadline_s, x[0].earliest_time_s, -x[0].priority))
+        else:
+            # 保持 heuristic/MLP 旧行为, 维护历史实验可比性。
+            pending.sort(key=lambda x: len(x[1]))
+        self._prepare_assignment_sequence_context(pending)
         targets = self._assignment_targets(pending)
         for mission, cands in pending:
             best_aid = max(
@@ -346,10 +384,96 @@ class MultiSatelliteEnv:
         if self.assignment_scorer == "heuristic":
             return heuristic
 
-        mlp_score = self._assignment_mlp_score(
-            agent_id, mission, quality, load_pressure, n_candidates
+        if self.assignment_scorer == "mlp":
+            learned_score = self._assignment_mlp_score(
+                agent_id, mission, quality, load_pressure, n_candidates
+            )
+        else:
+            learned_score = self._assignment_sequence_score(
+                agent_id, mission, quality, load_pressure, n_candidates
+            )
+        return (1.0 - self.assignment_scorer_mix) * heuristic + self.assignment_scorer_mix * learned_score
+
+    def _prepare_assignment_sequence_context(self, pending: list):
+        """为 LSTM/GRU scorer 按任务排序生成上下文; 其他 scorer 清空缓存。"""
+        self._assignment_sequence_context = {}
+        if self.assignment_scorer not in {"lstm", "gru"} or self._assignment_sequence is None:
+            return
+
+        w = self._assignment_sequence
+        hidden = self.assignment_sequence_hidden_dim
+        h = np.zeros(hidden, dtype=np.float32)
+        c = np.zeros(hidden, dtype=np.float32)
+        for mission, cands in pending:
+            x = self._assignment_task_sequence_features(mission, cands)
+            if self.assignment_scorer == "lstm":
+                i = self._sigmoid(x @ w["w_ix"] + h @ w["w_ih"] + w["b_i"])
+                f = self._sigmoid(x @ w["w_fx"] + h @ w["w_fh"] + w["b_f"])
+                o = self._sigmoid(x @ w["w_ox"] + h @ w["w_oh"] + w["b_o"])
+                g = np.tanh(x @ w["w_gx"] + h @ w["w_gh"] + w["b_g"])
+                c = f * c + i * g
+                h = o * np.tanh(c)
+            else:
+                z = self._sigmoid(x @ w["w_zx"] + h @ w["w_zh"] + w["b_z"])
+                r = self._sigmoid(x @ w["w_rx"] + h @ w["w_rh"] + w["b_r"])
+                n = np.tanh(x @ w["w_nx"] + (r * h) @ w["w_nh"] + w["b_n"])
+                h = (1.0 - z) * h + z * n
+            context = np.tanh(h @ w["w_out"] + w["b_out"])
+            self._assignment_sequence_context[mission.id] = context.astype(np.float32)
+
+    def _assignment_task_sequence_features(self, mission: Mission, cands: list) -> np.ndarray:
+        """任务级序列特征, 不含具体卫星, 用于 LSTM/GRU 读入任务流。"""
+        qualities = [q for _, q in cands]
+        priority_norm = np.clip(mission.priority / 10.0, 0.0, 1.0)
+        duration_norm = np.clip(mission.duration_s / 60.0, 0.0, 1.0)
+        slack_s = max(mission.deadline_s - mission.earliest_time_s, 0.0)
+        slack_norm = np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        dynamic = 1.0 if mission.is_dynamic else 0.0
+        candidate_frac = np.clip(len(cands) / max(self.n_agents, 1), 0.0, 1.0)
+        best_quality = max(qualities) if qualities else 0.0
+        mean_quality = float(np.mean(qualities)) if qualities else 0.0
+        return np.array([
+            priority_norm,
+            duration_norm,
+            slack_norm,
+            dynamic,
+            candidate_frac,
+            best_quality,
+            mean_quality,
+        ], dtype=np.float32)
+
+    @staticmethod
+    def _sigmoid(x):
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+
+    def _assignment_sequence_score(
+        self,
+        agent_id: str,
+        mission: Mission,
+        quality: float,
+        load_pressure: float,
+        n_candidates: int,
+    ) -> float:
+        """LSTM/GRU scorer: 任务序列上下文 + 当前候选边特征。"""
+        context = self._assignment_sequence_context.get(mission.id)
+        if context is None:
+            return self._assignment_mlp_score(agent_id, mission, quality, load_pressure, n_candidates)
+
+        env = self.envs[agent_id]
+        priority_norm = np.clip(mission.priority / 10.0, 0.0, 1.0)
+        slack_s = max(mission.deadline_s - max(env.current_time_s, mission.earliest_time_s), 0.0)
+        slack_norm = np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        dynamic = 1.0 if mission.is_dynamic else 0.0
+        candidate_frac = np.clip(n_candidates / max(self.n_agents, 1), 0.0, 1.0)
+        base = quality + 0.2 * priority_norm + 0.1 * dynamic + 0.1 * (1.0 - slack_norm)
+        context_term = (
+            context[0] * quality
+            + context[1] * priority_norm
+            + context[2] * dynamic
+            + context[3] * (1.0 - candidate_frac)
+            - context[4] * load_pressure
         )
-        return (1.0 - self.assignment_scorer_mix) * heuristic + self.assignment_scorer_mix * mlp_score
+        return base - self.assign_w_load * load_pressure + 0.15 * float(context_term)
 
     def _assignment_mlp_score(
         self,

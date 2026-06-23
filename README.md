@@ -202,11 +202,28 @@ python run_ablation.py \
     --n_satellites 6 --train_iters 30 --eval_episodes 5 \
     --n_routine 200 --n_dynamic 50 \
     --assignment_scorer_mixes 0.1,0.25,0.5 \
+    --assignment_sequence_scorers lstm,gru \
+    --assignment_sequence_mixes 0.25 \
     --out_root runs/ablation_learned_assignment_v1 \
     --device cpu
 ```
 
-`learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp` 指派 scorer。第一版仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,MLP 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
+`learned_assignment_v1` 比较旧的 `heuristic` 指派分数与 `mlp/lstm/gru` 指派 scorer。当前版本仍保留候选可见性、容量比例、截止释放和所有权掩码等硬约束,学习式 scorer 只参与候选边打分,通过 `--assignment_scorer_mix` 控制与旧启发式的混合比例。
+
+只对比序列式 LSTM/GRU 分配 scorer:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset learned_assignment_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --assignment_scorer_mixes "" \
+    --assignment_sequence_scorers lstm,gru \
+    --assignment_sequence_mixes 0.25,0.5 \
+    --out_root runs/ablation_assignment_sequence_v1 \
+    --device cpu
+```
 
 每次单独运行 `compare_methods.py` 也会额外写入 `manifest.json`,记录参数、git commit、dirty 状态、运行环境和输出文件路径。
 

@@ -106,7 +106,7 @@
 | 结果目录隔离 | ✅ 已实现(2026-06-22) | compare/ablation/train 默认自动创建唯一输出目录 |
 | 可视化与可观测任务统计 | ✅ 已实现(2026-06-22) | 输出 `*_viz_data.json`,支持任务分布图/调度甘特图/可观测任务数 |
 | 外循环编码器消融 | ✅ 已实现(2026-06-23) | `meta_encoder_v1`: LSTM/GRU/MLP/Transformer/Set Transformer + MAPPO-LSTM |
-| 学习式任务分配器 | 🟡 分步实现中(2026-06-23) | `learned_assignment_v1`: heuristic vs MLP scorer,后续扩展序列/集合/GNN 分配器 |
+| 学习式任务分配器 | 🟡 分步实现中(2026-06-23) | `learned_assignment_v1`: heuristic/MLP/LSTM/GRU scorer,后续扩展集合/GNN 分配器 |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |
@@ -116,9 +116,9 @@
 **动机**:当前 episode 级任务指派 `_assign_tasks()` 依赖手写启发式分数 `quality - assign_w_load * load_pressure`。它稳定、可解释,但只做局部贪心,无法学习不同轨道重叠、任务密度、动态任务预留和负载权衡之间的复杂关系。
 
 **递进实现顺序**:
-1. **L0 接口化 + MLP scorer(低风险)**:保留当前所有硬约束、候选可见性、所有权掩码和贪心/拍卖解码,只把候选边 `(satellite, task)` 的分数抽象为 `assignment_scorer`。先支持 `heuristic` 与 `mlp`,并用 `assignment_scorer_mix` 控制 MLP 分数与旧启发式的混合比例。
-2. **L1 序列分配器消融**:在同一接口下加入 `lstm/gru` scorer,把按 deadline/候选数排序后的任务序列作为输入,验证“任务序列记忆”是否优于无记忆 MLP。
-3. **L2 集合/注意力分配器**:加入 `transformer/set_transformer` scorer,把任务集与卫星集作为集合建模,减少 LSTM 对人工排序的依赖。
+1. **L0 接口化 + MLP scorer(已实现)**:保留当前所有硬约束、候选可见性、所有权掩码和贪心/拍卖解码,只把候选边 `(satellite, task)` 的分数抽象为 `assignment_scorer`。支持 `heuristic` 与 `mlp`,并用 `assignment_scorer_mix` 控制 MLP 分数与旧启发式的混合比例。
+2. **L1 序列分配器消融(已实现)**:在同一接口下加入 `lstm/gru` scorer,把按候选数/任务约束排序后的任务序列作为输入,验证“任务序列记忆”是否优于无记忆 MLP。
+3. **L2 集合/注意力分配器(下一步)**:加入 `transformer/set_transformer` scorer,把任务集与卫星集作为集合建模,减少 LSTM 对人工排序的依赖。
 4. **L3 图匹配分配器(研究级)**:把卫星-任务可见关系建成二分图,用 GNN 或 cross-attention 输出边权,再用 Hungarian/auction/greedy 解码,保持硬约束不被神经网络破坏。
 
 **消融指标**:重点看 `n_scheduled`、`n_feasible_tasks`、`duplicate_rate`、`load_balance_cv`、`avg_dynamic_response_s`、`avg_off_nadir_deg` 和 oracle gap。

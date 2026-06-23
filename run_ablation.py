@@ -44,6 +44,7 @@ preset=meta_encoder_v1:
 preset=learned_assignment_v1:
   - heuristic assignment scorer baseline
   - deterministic MLP assignment scorer with different mix ratios
+  - deterministic LSTM/GRU sequence assignment scorer
 
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
@@ -368,7 +369,11 @@ def build_communication_v1_specs():
     ]
 
 
-def build_learned_assignment_v1_specs(assignment_scorer_mixes):
+def build_learned_assignment_v1_specs(
+    assignment_scorer_mixes,
+    assignment_sequence_scorers,
+    assignment_sequence_mixes,
+):
     base_assignment = [
         "--assignment_capacity_mode", "proportional",
         "--assign_w_load", "0.1",
@@ -405,6 +410,24 @@ def build_learned_assignment_v1_specs(assignment_scorer_mixes):
                 "assignment_mlp_hidden_dim": 16,
             },
         })
+    for scorer in assignment_sequence_scorers:
+        for mix in assignment_sequence_mixes:
+            tag = f"assign_scorer_{scorer}_mix{_float_tag(mix)}"
+            specs.append({
+                "tag": tag,
+                "extra_args": [
+                    *base_assignment,
+                    "--assignment_scorer", scorer,
+                    "--assignment_scorer_mix", str(mix),
+                    "--assignment_sequence_hidden_dim", "16",
+                ],
+                "params": {
+                    "assignment_variant": scorer,
+                    "assignment_scorer": scorer,
+                    "assignment_scorer_mix": mix,
+                    "assignment_sequence_hidden_dim": 16,
+                },
+            })
     return specs
 
 
@@ -580,6 +603,10 @@ def main():
                         help="给每个子实验额外运行 Greedy-Oracle")
     parser.add_argument("--assignment_scorer_mixes", type=str, default="0.1,0.25,0.5",
                         help="learned_assignment_v1 使用的 MLP scorer 混合比例列表")
+    parser.add_argument("--assignment_sequence_scorers", type=str, default="lstm,gru",
+                        help="learned_assignment_v1 使用的序列 scorer 列表: lstm,gru")
+    parser.add_argument("--assignment_sequence_mixes", type=str, default="0.25",
+                        help="learned_assignment_v1 使用的序列 scorer 混合比例列表")
     parser.add_argument("--meta_encoder_types", type=str,
                         default="lstm,gru,mlp,transformer,set_transformer",
                         help="meta_encoder_v1 使用的外循环编码器列表")
@@ -621,8 +648,18 @@ def main():
     elif args.preset == "communication_v1":
         specs = build_communication_v1_specs()
     elif args.preset == "learned_assignment_v1":
+        seq_scorers = parse_str_list(args.assignment_sequence_scorers)
+        allowed_seq_scorers = {"lstm", "gru"}
+        invalid_seq = [s for s in seq_scorers if s not in allowed_seq_scorers]
+        if invalid_seq:
+            raise ValueError(
+                f"未知 assignment sequence scorer: {invalid_seq}; "
+                f"可选: {sorted(allowed_seq_scorers)}"
+            )
         specs = build_learned_assignment_v1_specs(
             assignment_scorer_mixes=parse_float_list(args.assignment_scorer_mixes),
+            assignment_sequence_scorers=seq_scorers,
+            assignment_sequence_mixes=parse_float_list(args.assignment_sequence_mixes),
         )
     else:
         encoder_types = parse_str_list(args.meta_encoder_types)
