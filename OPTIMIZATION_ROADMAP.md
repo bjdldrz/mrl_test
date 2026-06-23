@@ -108,6 +108,7 @@
 | 外循环编码器消融 | ✅ 已实现(2026-06-23) | `meta_encoder_v1`: LSTM/GRU/MLP/Transformer/Set Transformer + MAPPO-LSTM |
 | 学习式任务分配器 | ✅ 已实现(2026-06-23) | `learned_assignment_v1`: heuristic/MLP/LSTM/GRU/Transformer/Set Transformer/GNN scorer |
 | 滚动重分配 | ✅ 已实现(2026-06-23) | `assignment_rolling_v1`: static/periodic/event/2h rolling horizon |
+| 层级任务分配接口 | ✅ 已实现(2026-06-23) | `hier_assignment_v1`: RuleBasedAssignmentManager + 低层 MAPPO |
 | A1 败者改派 | ✅ 已实现(评估期) | `_resolve_actions` + `eval_mode`;训练期关闭以保信用分配 |
 | A2/A3 择优指派 | ✅ 已实现 | 边际价值竞价(优先级+off-nadir 质量),胜者得 |
 | B6 负载均衡 tie-break | ✅ 已实现 | 竞价含负载惩罚 `coord_w_load` |
@@ -252,6 +253,31 @@ python run_ablation.py \
 ```
 
 **下一步**:若 `rolling_mpc_2h` 能降低 stale owner 或动态响应延迟,再实现 H0/H1:提取 `get_assignment_state()` 图状态,用 rolling/MPC 结果训练监督式 Assignment Manager;否则优先回到 `assignment_decode_v1` 或 `assignment_reserve_v1`。
+
+#### hier_assignment_v1 H0 落地记录(2026-06-23)
+
+**本次实现范围**:完成层级任务分配的 H0 接口版。高层 manager 暂时采用规则策略,低层仍是当前 MAPPO actor/critic;目标是先把高层状态、owner 建议、硬约束校验和消融入口稳定下来。
+
+**代码改动**:
+- 新增 `models/assignment_manager.py`,提供 `RuleBasedAssignmentManager.select_owners(assignment_state)`。
+- `MultiSatelliteEnv` 新增 `assignment_manager_mode=none/rule`。
+- `MultiSatelliteEnv.get_assignment_state()` 导出框架无关的卫星-任务图状态:卫星负载/目标、任务 slack/dynamic/owner stale、候选边 quality/load pressure/score。
+- `MultiSatelliteEnv.set_task_owner()` 与 `replan_assignment()` 作为未来可训练高层策略的稳定环境 API。
+- `_reassign_tasks()` 优先采用 manager proposal,再回退到原 scorer,并继续由环境校验可见性、切换次数和锁定窗口。
+- `run_ablation.py --preset hier_assignment_v1` 对比 `hier_no_manager` 与 `hier_rule_manager`。
+
+**推荐命令**:
+```bash
+python run_ablation.py \
+  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset hier_assignment_v1 \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 \
+  --out_root runs/ablation_hier_assignment_v1 \
+  --device cpu
+```
+
+**下一步**:实现 H1 supervised manager。用 `rolling_mpc_2h` 或 Greedy-Oracle 生成 `(assignment_state, owner)` 标签,训练 GNN/Transformer manager 替换 `RuleBasedAssignmentManager`,并保留 `hier_no_manager/rule_manager/supervised_manager` 三组对照。
 
 ### 实验框架落地(2026-06-22,v2_experiment_harness)
 

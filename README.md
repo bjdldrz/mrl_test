@@ -242,6 +242,20 @@ python compare_methods.py \
     --device cpu
 ```
 
+规则式高层 Assignment Manager 消融:
+
+```bash
+python run_ablation.py \
+    --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+    --preset hier_assignment_v1 \
+    --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+    --n_routine 200 --n_dynamic 50 \
+    --out_root runs/ablation_hier_assignment_v1 \
+    --device cpu
+```
+
+`hier_assignment_v1` 是层级 MAPPO 的 H0 接口版:高层 `RuleBasedAssignmentManager` 读取 `MultiSatelliteEnv.get_assignment_state()` 导出的卫星-任务图状态并提出 owner 建议,环境仍负责硬约束校验和低层 MAPPO 调度。该 preset 对比 `hier_no_manager` 与 `hier_rule_manager`,为后续监督式/GNN/Transformer 高层 manager 提供稳定替换点。
+
 只对比序列式 LSTM/GRU 分配 scorer:
 
 ```bash
@@ -466,6 +480,11 @@ python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/pytho
 python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
   --preset assignment_rolling_v1 --out_root runs/ablation_assignment_rolling_v1 \
   --batch_name step9_assignment_rolling --device cpu
+
+# Step 10: 规则式高层 Assignment Manager + 低层 MAPPO
+python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+  --preset hier_assignment_v1 --out_root runs/ablation_hier_assignment_v1 \
+  --batch_name step10_hier_assignment --device cpu
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。

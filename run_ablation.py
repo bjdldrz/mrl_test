@@ -43,6 +43,10 @@ preset=assignment_rolling_v1:
   - event-triggered reassignment
   - 2h rolling horizon reassignment
 
+preset=hier_assignment_v1:
+  - rolling horizon without manager
+  - rule-based high-level assignment manager
+
 preset=meta_encoder_v1:
   - MRL-DMS outer-loop LSTM/GRU/MLP/Transformer/Set Transformer
   - MAPPO + LSTM outer loop
@@ -458,6 +462,40 @@ def build_assignment_rolling_v1_specs():
     ]
 
 
+def build_hier_assignment_v1_specs():
+    base_rolling = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+        "--assignment_replan_interval_s", "3600",
+        "--assignment_replan_horizon_s", "7200",
+        "--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline",
+        "--assignment_switch_penalty", "0.05",
+        "--assignment_lock_window_s", "600",
+        "--assignment_max_switches_per_task", "2",
+    ]
+    return [
+        {
+            "tag": "hier_no_manager",
+            "extra_args": [*base_rolling, "--assignment_manager_mode", "none"],
+            "params": {
+                "hier_variant": "no_manager",
+                "assignment_manager_mode": "none",
+                "assignment_replan_horizon_s": 7200.0,
+            },
+        },
+        {
+            "tag": "hier_rule_manager",
+            "extra_args": [*base_rolling, "--assignment_manager_mode", "rule"],
+            "params": {
+                "hier_variant": "rule_manager",
+                "assignment_manager_mode": "rule",
+                "assignment_replan_horizon_s": 7200.0,
+            },
+        },
+    ]
+
+
 def build_learned_assignment_v1_specs(
     assignment_scorer_mixes,
     assignment_sequence_scorers,
@@ -708,7 +746,7 @@ def main():
     parser.add_argument("--preset", type=str, default="assignment_v2",
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
                                  "train_stability_v1", "communication_v1",
-                                 "assignment_rolling_v1",
+                                 "assignment_rolling_v1", "hier_assignment_v1",
                                  "meta_encoder_v1", "learned_assignment_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
@@ -792,6 +830,8 @@ def main():
         specs = build_communication_v1_specs()
     elif args.preset == "assignment_rolling_v1":
         specs = build_assignment_rolling_v1_specs()
+    elif args.preset == "hier_assignment_v1":
+        specs = build_hier_assignment_v1_specs()
     elif args.preset == "learned_assignment_v1":
         seq_scorers = parse_str_list(args.assignment_sequence_scorers)
         allowed_seq_scorers = {"lstm", "gru"}

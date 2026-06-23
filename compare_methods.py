@@ -269,6 +269,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               assignment_switch_penalty=0.05,
               assignment_lock_window_s=600.0,
               assignment_max_switches_per_task=2,
+              assignment_manager_mode="none",
               team_reward_mix=0.0,
               load_balance_reward_coeff=0.0,
               team_completion_bonus=0.0,
@@ -309,6 +310,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         assignment_switch_penalty=assignment_switch_penalty,
         assignment_lock_window_s=assignment_lock_window_s,
         assignment_max_switches_per_task=assignment_max_switches_per_task,
+        assignment_manager_mode=assignment_manager_mode if coordinate else "none",
         team_reward_mix=team_reward_mix if coordinate else 0.0,
         load_balance_reward_coeff=load_balance_reward_coeff if coordinate else 0.0,
         team_completion_bonus=team_completion_bonus if coordinate else 0.0,
@@ -526,6 +528,9 @@ def main():
                         help="owner 下一可行窗口前多少秒锁定任务, 避免临门换人")
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2,
                         help="每个任务最多允许 owner 切换次数; 0 表示不允许切换")
+    parser.add_argument("--assignment_manager_mode", type=str, default="none",
+                        choices=["none", "rule"],
+                        help="高层任务分配 manager: none=使用环境内 scorer, rule=规则式高层 manager")
     parser.add_argument("--team_reward_mix", type=float, default=0.0,
                         help="团队平均奖励混合比例; 0 保持个体奖励, 1 完全使用团队平均奖励")
     parser.add_argument("--load_balance_reward_coeff", type=float, default=0.0,
@@ -613,6 +618,7 @@ def main():
                                  assignment_switch_penalty=args.assignment_switch_penalty,
                                  assignment_lock_window_s=args.assignment_lock_window_s,
                                  assignment_max_switches_per_task=args.assignment_max_switches_per_task,
+                                 assignment_manager_mode=args.assignment_manager_mode,
                                  team_reward_mix=args.team_reward_mix,
                                  load_balance_reward_coeff=args.load_balance_reward_coeff,
                                  team_completion_bonus=args.team_completion_bonus,

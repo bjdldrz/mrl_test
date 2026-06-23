@@ -62,6 +62,7 @@ class MultiSatelliteEnv:
         assignment_switch_penalty: float = 0.05,
         assignment_lock_window_s: float = 600.0,
         assignment_max_switches_per_task: int = 2,
+        assignment_manager_mode: str = "none",
         team_reward_mix: float = 0.0,
         load_balance_reward_coeff: float = 0.0,
         team_completion_bonus: float = 0.0,
@@ -121,6 +122,8 @@ class MultiSatelliteEnv:
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
+        self.assignment_manager_mode = self._validate_assignment_manager_mode(assignment_manager_mode)
+        self._assignment_manager = self._init_assignment_manager()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
         # 回收硬所有权导致的吞吐损失. 设为 0 可关闭释放机制.
         self.release_before_deadline_s = release_before_deadline_s
@@ -207,6 +210,22 @@ class MultiSatelliteEnv:
                 f"可选: {sorted(allowed)} 或 none"
             )
         return triggers
+
+    @staticmethod
+    def _validate_assignment_manager_mode(mode: str) -> str:
+        normalized = str(mode or "none").strip().lower()
+        allowed = {"none", "rule"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"未知 assignment_manager_mode={mode!r}; 可选: {sorted(allowed)}"
+            )
+        return normalized
+
+    def _init_assignment_manager(self):
+        if self.assignment_manager_mode == "none":
+            return None
+        from models.assignment_manager import RuleBasedAssignmentManager
+        return RuleBasedAssignmentManager()
 
     def _init_assignment_sequence_scorer(self):
         """初始化确定性 LSTM/GRU 风格序列 scorer 权重。"""
@@ -539,6 +558,145 @@ class MultiSatelliteEnv:
         self._n_owner_switches += switched
         self._update_stale_owner_diagnostics()
 
+    def replan_assignment(self, mission_ids: Optional[List[int]] = None, reason: str = "external") -> int:
+        """
+        Public high-level replan API for assignment managers.
+
+        Returns the number of owner switches. This is the stable entry point for
+        future trainable high-level policies; default behavior remains unchanged
+        unless a caller invokes it or rolling triggers are enabled.
+        """
+        if not self.coordinate or not self.episode_assignment:
+            return 0
+        first_env = list(self.envs.values())[0]
+        current_time = first_env.current_time_s
+        missions = self._eligible_replan_missions(current_time)
+        if mission_ids is not None:
+            allowed_ids = set(mission_ids)
+            missions = [m for m in missions if m.id in allowed_ids]
+        if not missions:
+            return 0
+        switched = self._reassign_tasks(missions)
+        self._last_replan_time_s = current_time
+        self._n_replans += 1
+        self._n_owner_switches += switched
+        return switched
+
+    def set_task_owner(self, mission_id: int, agent_id: str, count_switch: bool = True) -> bool:
+        """
+        Set one task owner after validating the satellite is a feasible candidate.
+        Returns True if ownership changed or was newly assigned.
+        """
+        if agent_id not in self.agent_ids:
+            raise ValueError(f"未知 agent_id={agent_id!r}; 可选: {self.agent_ids}")
+        first_env = list(self.envs.values())[0]
+        mission = next((m for m in first_env.missions if m is not None and m.id == mission_id), None)
+        if mission is None or mission.is_observed:
+            return False
+        if self._task_quality_window(agent_id, mission) is None:
+            return False
+        old_owner = self.task_owner.get(mission_id)
+        if old_owner == agent_id:
+            return False
+        self.task_owner[mission_id] = agent_id
+        if count_switch and old_owner is not None:
+            self._owner_switch_counts[mission_id] = self._owner_switch_counts.get(mission_id, 0) + 1
+        self._refresh_assignment_load()
+        return True
+
+    def get_assignment_state(
+        self,
+        missions: Optional[list] = None,
+        pending: Optional[list] = None,
+        targets: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Export a structured high-level assignment graph state.
+
+        The state is JSON-like and intentionally framework-neutral, so it can be
+        consumed by a rule manager today and by a trainable manager later.
+        """
+        first_env = list(self.envs.values())[0]
+        current_time = first_env.current_time_s
+        if pending is None:
+            if missions is None:
+                missions = [
+                    m for m in first_env.missions
+                    if m is not None and not m.is_observed and m.id in self.task_owner
+                ]
+            pending = []
+            for mission in missions:
+                cands = []
+                for aid in self.agent_ids:
+                    q = self._task_quality_window(aid, mission)
+                    if q is not None:
+                        cands.append((aid, q))
+                if cands:
+                    pending.append((mission, cands))
+        if targets is None:
+            targets = self._assignment_targets(pending)
+
+        loads = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
+        total_load = max(sum(loads.values()), 1)
+        satellites = []
+        for aid in self.agent_ids:
+            env = self.envs[aid]
+            pending_owned = sum(
+                1 for mission, _ in pending
+                if self.task_owner.get(mission.id) == aid
+            )
+            satellites.append({
+                "agent_id": aid,
+                "load": loads[aid],
+                "load_frac": loads[aid] / total_load,
+                "target": float(targets.get(aid, 0.0)),
+                "pending_owned": pending_owned,
+                "current_time_s": float(env.current_time_s),
+            })
+
+        tasks = []
+        edges = []
+        for mission, cands in pending:
+            old_owner = self.task_owner.get(mission.id)
+            owner_stale = old_owner is not None and not self._has_future_feasible_window(old_owner, mission.id)
+            slack_s = max(mission.deadline_s - max(current_time, mission.earliest_time_s), 0.0)
+            deadline_pressure = 1.0 - np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+            candidate_frac = np.clip(len(cands) / max(self.n_agents, 1), 0.0, 1.0)
+            tasks.append({
+                "mission_id": int(mission.id),
+                "priority": float(mission.priority),
+                "duration_s": float(mission.duration_s),
+                "slack_s": float(slack_s),
+                "deadline_pressure": float(deadline_pressure),
+                "is_dynamic": bool(mission.is_dynamic),
+                "candidate_frac": float(candidate_frac),
+                "owner": old_owner,
+                "owner_stale": bool(owner_stale),
+                "switch_count": int(self._owner_switch_counts.get(mission.id, 0)),
+            })
+            for aid, quality in cands:
+                load_pressure = self._load_pressure(aid, targets)
+                score = self._assignment_score(aid, mission, quality, targets, n_candidates=len(cands))
+                if old_owner is not None and aid != old_owner:
+                    score -= self.assignment_switch_penalty
+                edges.append({
+                    "mission_id": int(mission.id),
+                    "agent_id": aid,
+                    "quality": float(quality),
+                    "load_pressure": float(load_pressure),
+                    "score": float(score),
+                    "is_current_owner": aid == old_owner,
+                })
+
+        return {
+            "current_time_s": float(current_time),
+            "horizon_s": float(self.horizon_s),
+            "manager_mode": self.assignment_manager_mode,
+            "satellites": satellites,
+            "tasks": tasks,
+            "edges": edges,
+        }
+
     def _eligible_replan_missions(self, current_time: float) -> list:
         """筛选允许滚动重分配的未完成任务。"""
         first_env = list(self.envs.values())[0]
@@ -609,16 +767,22 @@ class MultiSatelliteEnv:
 
         self._prepare_assignment_sequence_context(pending)
         targets = self._assignment_targets(pending)
+        manager_proposals = self._assignment_manager_proposals(pending, targets)
         switched = 0
         for mission, cands in pending:
             old_owner = self.task_owner.get(mission.id)
-            best_aid = max(
-                cands,
-                key=lambda c: (
-                    self._assignment_score(c[0], mission, c[1], targets, n_candidates=len(cands))
-                    - (self.assignment_switch_penalty if old_owner is not None and c[0] != old_owner else 0.0)
-                )
-            )[0]
+            cand_ids = {aid for aid, _ in cands}
+            proposed = manager_proposals.get(mission.id)
+            if proposed in cand_ids:
+                best_aid = proposed
+            else:
+                best_aid = max(
+                    cands,
+                    key=lambda c: (
+                        self._assignment_score(c[0], mission, c[1], targets, n_candidates=len(cands))
+                        - (self.assignment_switch_penalty if old_owner is not None and c[0] != old_owner else 0.0)
+                    )
+                )[0]
             if old_owner is None:
                 self.task_owner[mission.id] = best_aid
                 self._assign_load[best_aid] = self._assign_load.get(best_aid, 0) + 1
@@ -630,6 +794,13 @@ class MultiSatelliteEnv:
             else:
                 self._assign_load[best_aid] = self._assign_load.get(best_aid, 0) + 1
         return switched
+
+    def _assignment_manager_proposals(self, pending: list, targets: Dict[str, float]) -> Dict[int, str]:
+        """Ask the optional high-level assignment manager for owner proposals."""
+        if self._assignment_manager is None:
+            return {}
+        state = self.get_assignment_state(pending=pending, targets=targets)
+        return self._assignment_manager.select_owners(state)
 
     def _task_quality_window(self, agent_id: str, mission) -> Optional[float]:
         """
