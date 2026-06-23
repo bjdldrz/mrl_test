@@ -45,6 +45,7 @@ preset=learned_assignment_v1:
   - heuristic assignment scorer baseline
   - deterministic MLP assignment scorer with different mix ratios
   - deterministic LSTM/GRU sequence assignment scorer
+  - deterministic Transformer/Set Transformer assignment scorer
 
 每个子实验输出:
   <out_root>/<tag>/comparison_results.json
@@ -373,6 +374,8 @@ def build_learned_assignment_v1_specs(
     assignment_scorer_mixes,
     assignment_sequence_scorers,
     assignment_sequence_mixes,
+    assignment_attention_scorers,
+    assignment_attention_mixes,
 ):
     base_assignment = [
         "--assignment_capacity_mode", "proportional",
@@ -426,6 +429,24 @@ def build_learned_assignment_v1_specs(
                     "assignment_scorer": scorer,
                     "assignment_scorer_mix": mix,
                     "assignment_sequence_hidden_dim": 16,
+                },
+            })
+    for scorer in assignment_attention_scorers:
+        for mix in assignment_attention_mixes:
+            tag = f"assign_scorer_{scorer}_mix{_float_tag(mix)}"
+            specs.append({
+                "tag": tag,
+                "extra_args": [
+                    *base_assignment,
+                    "--assignment_scorer", scorer,
+                    "--assignment_scorer_mix", str(mix),
+                    "--assignment_sequence_hidden_dim", "16",
+                ],
+                "params": {
+                    "assignment_variant": scorer,
+                    "assignment_scorer": scorer,
+                    "assignment_scorer_mix": mix,
+                    "assignment_context_hidden_dim": 16,
                 },
             })
     return specs
@@ -607,6 +628,10 @@ def main():
                         help="learned_assignment_v1 使用的序列 scorer 列表: lstm,gru")
     parser.add_argument("--assignment_sequence_mixes", type=str, default="0.25",
                         help="learned_assignment_v1 使用的序列 scorer 混合比例列表")
+    parser.add_argument("--assignment_attention_scorers", type=str, default="transformer,set_transformer",
+                        help="learned_assignment_v1 使用的集合/注意力 scorer 列表")
+    parser.add_argument("--assignment_attention_mixes", type=str, default="0.25",
+                        help="learned_assignment_v1 使用的集合/注意力 scorer 混合比例列表")
     parser.add_argument("--meta_encoder_types", type=str,
                         default="lstm,gru,mlp,transformer,set_transformer",
                         help="meta_encoder_v1 使用的外循环编码器列表")
@@ -656,10 +681,20 @@ def main():
                 f"未知 assignment sequence scorer: {invalid_seq}; "
                 f"可选: {sorted(allowed_seq_scorers)}"
             )
+        attention_scorers = parse_str_list(args.assignment_attention_scorers)
+        allowed_attention_scorers = {"transformer", "set_transformer"}
+        invalid_attention = [s for s in attention_scorers if s not in allowed_attention_scorers]
+        if invalid_attention:
+            raise ValueError(
+                f"未知 assignment attention scorer: {invalid_attention}; "
+                f"可选: {sorted(allowed_attention_scorers)}"
+            )
         specs = build_learned_assignment_v1_specs(
             assignment_scorer_mixes=parse_float_list(args.assignment_scorer_mixes),
             assignment_sequence_scorers=seq_scorers,
             assignment_sequence_mixes=parse_float_list(args.assignment_sequence_mixes),
+            assignment_attention_scorers=attention_scorers,
+            assignment_attention_mixes=parse_float_list(args.assignment_attention_mixes),
         )
     else:
         encoder_types = parse_str_list(args.meta_encoder_types)

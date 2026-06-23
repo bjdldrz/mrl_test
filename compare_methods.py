@@ -492,16 +492,16 @@ def main():
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
                         help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
     parser.add_argument("--assignment_scorer", type=str, default="heuristic",
-                        choices=["heuristic", "mlp", "lstm", "gru"],
-                        help="episode 级任务指派打分器: heuristic/mlp/lstm/gru")
+                        choices=["heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer"],
+                        help="episode 级任务指派打分器: heuristic/mlp/lstm/gru/transformer/set_transformer")
     parser.add_argument("--assignment_scorer_mix", type=float, default=0.25,
-                        help="MLP scorer 与旧启发式分数的混合比例; 0 等价 heuristic, 1 完全使用 MLP 分数")
+                        help="学习式 scorer 与旧启发式分数的混合比例; 0 等价 heuristic, 1 完全使用学习式分数")
     parser.add_argument("--assignment_mlp_hidden_dim", type=int, default=16,
                         help="assignment_scorer=mlp 时的隐藏层维度")
     parser.add_argument("--assignment_mlp_seed", type=int, default=42,
                         help="assignment_scorer=mlp 时的确定性初始化种子")
     parser.add_argument("--assignment_sequence_hidden_dim", type=int, default=16,
-                        help="assignment_scorer=lstm/gru 时的序列隐藏维度")
+                        help="assignment_scorer=lstm/gru/transformer/set_transformer 时的上下文隐藏维度")
     parser.add_argument("--team_reward_mix", type=float, default=0.0,
                         help="团队平均奖励混合比例; 0 保持个体奖励, 1 完全使用团队平均奖励")
     parser.add_argument("--load_balance_reward_coeff", type=float, default=0.0,

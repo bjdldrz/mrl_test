@@ -138,7 +138,7 @@ class MultiSatelliteEnv:
 
     def _init_assignment_scorer(self):
         """初始化 episode 级任务指派 scorer; 默认 heuristic 完全保持旧逻辑。"""
-        allowed = {"heuristic", "mlp", "lstm", "gru"}
+        allowed = {"heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer"}
         if self.assignment_scorer not in allowed:
             raise ValueError(
                 f"未知 assignment_scorer={self.assignment_scorer!r}; "
@@ -147,6 +147,8 @@ class MultiSatelliteEnv:
         if self.assignment_scorer != "mlp":
             if self.assignment_scorer in {"lstm", "gru"}:
                 self._init_assignment_sequence_scorer()
+            elif self.assignment_scorer in {"transformer", "set_transformer"}:
+                self._init_assignment_attention_scorer()
             return
 
         rng = np.random.RandomState(self.assignment_mlp_seed)
@@ -187,6 +189,29 @@ class MultiSatelliteEnv:
                 "w_rx": init((in_dim, hidden)), "w_rh": init((hidden, hidden)), "b_r": np.zeros(hidden, dtype=np.float32),
                 "w_nx": init((in_dim, hidden)), "w_nh": init((hidden, hidden)), "b_n": np.zeros(hidden, dtype=np.float32),
             })
+
+    def _init_assignment_attention_scorer(self):
+        """初始化确定性 Transformer/Set Transformer 风格 scorer 权重。"""
+        rng = np.random.RandomState(self.assignment_mlp_seed)
+        in_dim = 7
+        hidden = self.assignment_sequence_hidden_dim
+        out_dim = 8
+        def init(shape, scale=0.12):
+            return rng.normal(0.0, scale, size=shape).astype(np.float32)
+
+        self._assignment_sequence = {
+            "w_embed": init((in_dim, hidden)),
+            "b_embed": np.zeros(hidden, dtype=np.float32),
+            "w_q": init((hidden, hidden)),
+            "w_k": init((hidden, hidden)),
+            "w_v": init((hidden, hidden)),
+            "w_ff": init((hidden, hidden)),
+            "b_ff": np.zeros(hidden, dtype=np.float32),
+            "w_out": init((hidden, out_dim)),
+            "b_out": np.zeros(out_dim, dtype=np.float32),
+        }
+        if self.assignment_scorer == "transformer":
+            self._assignment_sequence["pos_scale"] = init((hidden,), scale=0.04)
 
     # ===================================================================
     # 核心接口
@@ -389,15 +414,19 @@ class MultiSatelliteEnv:
                 agent_id, mission, quality, load_pressure, n_candidates
             )
         else:
-            learned_score = self._assignment_sequence_score(
+            learned_score = self._assignment_context_score(
                 agent_id, mission, quality, load_pressure, n_candidates
             )
         return (1.0 - self.assignment_scorer_mix) * heuristic + self.assignment_scorer_mix * learned_score
 
     def _prepare_assignment_sequence_context(self, pending: list):
-        """为 LSTM/GRU scorer 按任务排序生成上下文; 其他 scorer 清空缓存。"""
+        """为序列/集合 scorer 生成任务上下文; 其他 scorer 清空缓存。"""
         self._assignment_sequence_context = {}
-        if self.assignment_scorer not in {"lstm", "gru"} or self._assignment_sequence is None:
+        if self.assignment_scorer not in {"lstm", "gru", "transformer", "set_transformer"} or self._assignment_sequence is None:
+            return
+
+        if self.assignment_scorer in {"transformer", "set_transformer"}:
+            self._prepare_assignment_attention_context(pending)
             return
 
         w = self._assignment_sequence
@@ -419,6 +448,35 @@ class MultiSatelliteEnv:
                 n = np.tanh(x @ w["w_nx"] + (r * h) @ w["w_nh"] + w["b_n"])
                 h = (1.0 - z) * h + z * n
             context = np.tanh(h @ w["w_out"] + w["b_out"])
+            self._assignment_sequence_context[mission.id] = context.astype(np.float32)
+
+    def _prepare_assignment_attention_context(self, pending: list):
+        """为 Transformer/Set Transformer scorer 生成集合上下文。"""
+        if not pending:
+            return
+        w = self._assignment_sequence
+        feats = np.stack([
+            self._assignment_task_sequence_features(mission, cands)
+            for mission, cands in pending
+        ]).astype(np.float32)
+        x = np.tanh(feats @ w["w_embed"] + w["b_embed"])
+        if self.assignment_scorer == "transformer":
+            positions = np.linspace(0.0, 1.0, num=x.shape[0], dtype=np.float32).reshape(-1, 1)
+            x = x + positions * w["pos_scale"].reshape(1, -1)
+
+        q = x @ w["w_q"]
+        k = x @ w["w_k"]
+        v = x @ w["w_v"]
+        scale = max(np.sqrt(float(q.shape[-1])), 1.0)
+        attn_logits = (q @ k.T) / scale
+        attn = self._softmax(attn_logits, axis=1)
+        attended = attn @ v
+        if self.assignment_scorer == "set_transformer":
+            pooled = attended.mean(axis=0, keepdims=True)
+            attended = attended + pooled
+        hidden = np.tanh(attended + np.tanh(attended @ w["w_ff"] + w["b_ff"]))
+        contexts = np.tanh(hidden @ w["w_out"] + w["b_out"])
+        for (mission, _), context in zip(pending, contexts):
             self._assignment_sequence_context[mission.id] = context.astype(np.float32)
 
     def _assignment_task_sequence_features(self, mission: Mission, cands: list) -> np.ndarray:
@@ -446,7 +504,13 @@ class MultiSatelliteEnv:
     def _sigmoid(x):
         return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
 
-    def _assignment_sequence_score(
+    @staticmethod
+    def _softmax(x, axis=-1):
+        x = x - np.max(x, axis=axis, keepdims=True)
+        exp_x = np.exp(np.clip(x, -30.0, 30.0))
+        return exp_x / np.maximum(exp_x.sum(axis=axis, keepdims=True), 1e-8)
+
+    def _assignment_context_score(
         self,
         agent_id: str,
         mission: Mission,
@@ -454,7 +518,7 @@ class MultiSatelliteEnv:
         load_pressure: float,
         n_candidates: int,
     ) -> float:
-        """LSTM/GRU scorer: 任务序列上下文 + 当前候选边特征。"""
+        """上下文 scorer: 任务序列/集合上下文 + 当前候选边特征。"""
         context = self._assignment_sequence_context.get(mission.id)
         if context is None:
             return self._assignment_mlp_score(agent_id, mission, quality, load_pressure, n_candidates)
