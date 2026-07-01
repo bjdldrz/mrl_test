@@ -30,21 +30,7 @@
 
 ## 2. 通用运行参数
 
-本地 Mac 推荐:
-
-```bash
-PY=/Users/zhouzidie/miniconda3/envs/myenv/bin/python
-DEVICE=cpu
-```
-
-服务器/AutoDL 可按实际环境替换:
-
-```bash
-PY=python
-DEVICE=cpu
-```
-
-真实 ACLED 数据路径:
+服务器/AutoDL 推荐先设置真实 ACLED 数据路径:
 
 ```bash
 ACLED=./DynamicMission/DynamicMission.shp
@@ -59,21 +45,31 @@ ACLED=./DynamicMission/DynamicMission.shp
 --n_routine 200 \
 --n_dynamic 50 \
 --seed 42 \
---device $DEVICE
+--device cuda:0
 ```
 
 快速检查命令是否正确,不真正运行:
 
 ```bash
-$PY run_ablation.py --preset assignment_v2 --dry_run --train_iters 0 --eval_episodes 1
+python run_ablation.py \
+  --python python \
+  --preset assignment_v2 \
+  --dry_run \
+  --train_iters 0 \
+  --eval_episodes 1 \
+  --device cuda:0
 ```
 
 断点续跑:
 
 ```bash
-$PY run_ablation.py \
+python run_ablation.py \
+  --python python \
   --preset learned_assignment_v1 \
+  --acled_path "$ACLED" \
+  --methods mappo \
   --out_root runs/ablation_learned_assignment_v1 \
+  --device cuda:0 \
   --resume_latest \
   --skip_existing
 ```
@@ -87,13 +83,13 @@ $PY run_ablation.py \
 目的:先确认代码、依赖、目录输出和最小训练流程正常。
 
 ```bash
-$PY train.py --method mrl_dms --fast --device $DEVICE
+python train.py --method mrl_dms --fast --device cuda:0
 ```
 
 MAPPO-only 对比 smoke:
 
 ```bash
-$PY compare_methods.py \
+python compare_methods.py \
   --methods mappo \
   --train_iters 0 \
   --eval_episodes 1 \
@@ -102,7 +98,7 @@ $PY compare_methods.py \
   --n_dynamic 1 \
   --out_dir runs/smoke_mappo_only \
   --flat_out_dir \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 通过标准:
@@ -118,8 +114,8 @@ $PY compare_methods.py \
 目的:建立后续所有消融的共同参照。
 
 ```bash
-$PY compare_methods.py \
-  --acled_path $ACLED \
+python compare_methods.py \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -127,7 +123,7 @@ $PY compare_methods.py \
   --n_dynamic 50 \
   --methods single,indep,mappo \
   --out_dir runs/compare_baseline \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 重点对比:
@@ -158,10 +154,10 @@ $PY compare_methods.py \
 目的:比较是否启用 episode 级指派、容量模式、负载权重和截止释放窗口。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset assignment_v2 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -169,19 +165,19 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_assignment_v2 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 若要完整三方案对比:
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset assignment_v2 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --methods single,indep,mappo \
   --out_root runs/ablation_assignment_v2_full \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 比较目的:
@@ -196,10 +192,10 @@ $PY run_ablation.py \
 目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset learned_assignment_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -214,7 +210,7 @@ $PY run_ablation.py \
   --assignment_graph_scorers gnn \
   --assignment_graph_mixes 0.25 \
   --out_root runs/ablation_learned_assignment_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 建议先看:
@@ -231,10 +227,10 @@ $PY run_ablation.py \
 目的:比较静态 owner、周期重分配、事件触发重分配、MPC 窗口重分配。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset assignment_rolling_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -242,7 +238,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 重点新增指标:
@@ -258,10 +254,10 @@ $PY run_ablation.py \
 目的:验证规则式高层 manager 是否优于普通滚动重分配,为后续学习式高层策略铺接口。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset hier_assignment_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -269,7 +265,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_hier_assignment_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 比较目的:
@@ -286,10 +282,10 @@ $PY run_ablation.py \
 目的:判断团队奖励、负载奖励、团队完成 bonus 和奖励归一化是否改善协同。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset reward_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -297,7 +293,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_reward_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 重点看:
@@ -312,10 +308,10 @@ $PY run_ablation.py \
 目的:比较 mean pooling、追加任务统计、concat 全局状态等 critic 输入方式。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset state_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -323,7 +319,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_state_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 比较目的:
@@ -337,10 +333,10 @@ $PY run_ablation.py \
 目的:比较卫星数量 curriculum、联合探索、组合策略对 MAPPO 训练稳定性的影响。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset train_stability_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -348,7 +344,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_train_stability_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 ### 6.4 执行期通信消融
@@ -356,10 +352,10 @@ $PY run_ablation.py \
 目的:比较无通信、意图广播、意图广播 + 稳定训练策略。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset communication_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -367,7 +363,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_communication_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 重点看:
@@ -383,16 +379,16 @@ $PY run_ablation.py \
 目的:比较原论文 LSTM 外循环与 GRU、MLP、Transformer、Set Transformer,并验证 MAPPO + LSTM 外循环分支。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset meta_encoder_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --seed 42 \
   --meta_iterations 2 \
   --meta_encoder_types lstm,gru,mlp,transformer,set_transformer \
   --meta_mappo_n_satellites 2 \
   --out_root runs/ablation_meta_encoder_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 说明:
@@ -409,10 +405,10 @@ $PY run_ablation.py \
 目的:估计 MAPPO 与集中式启发式上界的距离。
 
 ```bash
-$PY run_ablation.py \
-  --python $PY \
+python run_ablation.py \
+  --python python \
   --preset oracle_v1 \
-  --acled_path $ACLED \
+  --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -420,7 +416,7 @@ $PY run_ablation.py \
   --n_dynamic 50 \
   --methods mappo,oracle \
   --out_root runs/ablation_oracle_v1 \
-  --device $DEVICE
+  --device cuda:0
 ```
 
 重点指标:
@@ -474,19 +470,19 @@ MAPPO-only 消融的 summary 只会包含 `mappo_*` 字段。只有运行了 `--
 方案对比图:
 
 ```bash
-$PY visualize.py --compare_json runs/compare_baseline/<run_name>/comparison_results.json
+python visualize.py --compare_json runs/compare_baseline/<run_name>/comparison_results.json
 ```
 
 训练曲线:
 
 ```bash
-$PY visualize.py --run_dir runs/<train_run_dir>
+python visualize.py --run_dir runs/<train_run_dir>
 ```
 
 多次训练对比:
 
 ```bash
-$PY visualize.py \
+python visualize.py \
   --run_dirs runs/exp_a runs/exp_b \
   --labels LSTM GRU
 ```
@@ -527,40 +523,40 @@ $PY visualize.py \
 
 ```bash
 # 1. 完整 baseline
-$PY compare_methods.py --acled_path $ACLED --methods single,indep,mappo \
+python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 --out_dir runs/compare_baseline --device $DEVICE
+  --n_routine 200 --n_dynamic 50 --out_dir runs/compare_baseline --device cuda:0
 
 # 2. 全局任务指派
-$PY run_ablation.py --python $PY --preset assignment_v2 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_assignment_v2 --device $DEVICE
+python run_ablation.py --python python --preset assignment_v2 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_assignment_v2 --device cuda:0
 
 # 3. 学习式任务分配 scorer
-$PY run_ablation.py --python $PY --preset learned_assignment_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_learned_assignment_v1 --device $DEVICE
+python run_ablation.py --python python --preset learned_assignment_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_learned_assignment_v1 --device cuda:0
 
 # 4. 滚动重分配 + 层级 manager
-$PY run_ablation.py --python $PY --preset assignment_rolling_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_assignment_rolling_v1 --device $DEVICE
-$PY run_ablation.py --python $PY --preset hier_assignment_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_hier_assignment_v1 --device $DEVICE
+python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_assignment_rolling_v1 --device cuda:0
+python run_ablation.py --python python --preset hier_assignment_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_hier_assignment_v1 --device cuda:0
 
 # 5. Oracle gap
-$PY run_ablation.py --python $PY --preset oracle_v1 --acled_path $ACLED \
-  --methods mappo,oracle --out_root runs/ablation_oracle_v1 --device $DEVICE
+python run_ablation.py --python python --preset oracle_v1 --acled_path "$ACLED" \
+  --methods mappo,oracle --out_root runs/ablation_oracle_v1 --device cuda:0
 ```
 
 如果需要论文复现完整性,再补:
 
 ```bash
-$PY run_ablation.py --python $PY --preset reward_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_reward_v1 --device $DEVICE
-$PY run_ablation.py --python $PY --preset state_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_state_v1 --device $DEVICE
-$PY run_ablation.py --python $PY --preset communication_v1 --acled_path $ACLED \
-  --methods mappo --out_root runs/ablation_communication_v1 --device $DEVICE
-$PY run_ablation.py --python $PY --preset meta_encoder_v1 --acled_path $ACLED \
-  --out_root runs/ablation_meta_encoder_v1 --device $DEVICE
+python run_ablation.py --python python --preset reward_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_reward_v1 --device cuda:0
+python run_ablation.py --python python --preset state_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_state_v1 --device cuda:0
+python run_ablation.py --python python --preset communication_v1 --acled_path "$ACLED" \
+  --methods mappo --out_root runs/ablation_communication_v1 --device cuda:0
+python run_ablation.py --python python --preset meta_encoder_v1 --acled_path "$ACLED" \
+  --out_root runs/ablation_meta_encoder_v1 --device cuda:0
 ```
 
 ---

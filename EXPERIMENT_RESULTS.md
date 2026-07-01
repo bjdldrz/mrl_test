@@ -86,12 +86,14 @@
 
 ```bash
 python run_ablation.py \
+  --python python \
   --preset assignment_rolling_v1 \
+  --acled_path "$ACLED" \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 200 --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1 \
-  --device cpu \
+  --device cuda:0 \
   --resume_latest \
   --skip_existing
 ```
@@ -102,12 +104,14 @@ python run_ablation.py \
 
 ```bash
 python run_ablation.py \
+  --python python \
   --preset hier_assignment_v1 \
+  --acled_path "$ACLED" \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 200 --n_dynamic 50 \
   --methods mappo \
   --out_root runs/ablation_hier_assignment_v1 \
-  --device cpu \
+  --device cuda:0 \
   --resume_latest \
   --skip_existing
 ```
@@ -118,12 +122,14 @@ python run_ablation.py \
 
 ```bash
 python run_ablation.py \
+  --python python \
   --preset oracle_v1 \
+  --acled_path "$ACLED" \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 200 --n_dynamic 50 \
   --methods mappo,oracle \
   --out_root runs/ablation_oracle_v1 \
-  --device cpu \
+  --device cuda:0 \
   --resume_latest \
   --skip_existing
 ```
