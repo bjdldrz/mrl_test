@@ -210,6 +210,8 @@ python compare_methods.py \
 - `avg_dynamic_response_s`:动态任务更多时 MAPPO 响应是否改善。
 - `load_balance_cv` / `avg_off_nadir_deg`:MAPPO 是否仍保持负载和观测质量优势。
 
+压力测试需要 `600 + 3×150 = 1050` 个任务槽位。`compare_methods.py` 会按任务规模自动扩容 `max_action_dim`,避免动态任务因默认 800 槽位不足而被丢弃;如需手动指定,可追加 `--max_action_dim 1200`。
+
 ### 5.3 学习式任务分配 scorer 消融
 
 目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。

@@ -51,14 +51,15 @@ logger = logging.getLogger("compare")
 # =======================================================================
 # 固定测试集: 三种方案在同一批场景上评估, 保证公平
 # =======================================================================
-def make_test_scenarios(mission_gen, n_episodes, n_routine, n_dynamic, seed=123):
+def make_test_scenarios(mission_gen, n_episodes, n_routine, n_dynamic,
+                        n_insertions=3, seed=123):
     rng = np.random.RandomState(seed)
     scenarios = []
     for _ in range(n_episodes):
         strat = "hotspot" if rng.rand() < 0.5 else "uniform"
         routine, dynamic = mission_gen.generate_episode_missions(
             n_routine=n_routine, n_dynamic_per_insertion=n_dynamic,
-            n_insertions=3, sampling_strategy=strat,
+            n_insertions=n_insertions, sampling_strategy=strat,
         )
         scenarios.append((routine, dynamic))
     return scenarios
@@ -259,7 +260,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
         routine, dynamic = mission_gen.generate_episode_missions(
             n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
             n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-            n_insertions=3,
+            n_insertions=cfg.mission.dynamic_insertions_per_day,
         )
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
@@ -393,7 +394,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         routine, dynamic = mission_gen.generate_episode_missions(
             n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
             n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-            n_insertions=3,
+            n_insertions=cfg.mission.dynamic_insertions_per_day,
         )
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
@@ -534,6 +535,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", type=str, default="runs/compare")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--max_action_dim", type=int, default=None,
+                        help="动作空间任务槽位数; 默认自动取 max(配置值, "
+                             "n_routine + dynamic_insertions_per_day*n_dynamic)")
     parser.add_argument("--methods", type=str, default="single,indep,mappo",
                         help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
@@ -617,14 +621,43 @@ def main():
 
     cfg = get_default_config()
     cfg.mappo.n_satellites = args.n_satellites
+    required_action_dim = (
+        args.n_routine
+        + cfg.mission.dynamic_insertions_per_day * args.n_dynamic
+    )
+    if args.max_action_dim is not None and args.max_action_dim < required_action_dim:
+        raise ValueError(
+            f"--max_action_dim={args.max_action_dim} 小于当前评估任务槽位需求 "
+            f"{required_action_dim} = n_routine({args.n_routine}) + "
+            f"{cfg.mission.dynamic_insertions_per_day}*n_dynamic({args.n_dynamic})"
+        )
+    cfg.mission.max_action_dim = max(
+        cfg.mission.max_action_dim,
+        args.max_action_dim or 0,
+        required_action_dim,
+    )
+    args.max_action_dim = cfg.mission.max_action_dim
+    logger.info(
+        "动作空间任务槽位: max_action_dim=%s, 当前评估需求=%s",
+        cfg.mission.max_action_dim,
+        required_action_dim,
+    )
 
     acled = load_acled_shapefile(args.acled_path) if args.acled_path else None
     mission_gen = MissionGenerator(acled_df=acled, seed=args.seed)
 
     # 固定测试集 (三方案共用)
     scenarios = make_test_scenarios(mission_gen, args.eval_episodes,
-                                    args.n_routine, args.n_dynamic, seed=args.seed + 1000)
-    logger.info(f"测试场景数: {len(scenarios)}, 每个 {args.n_routine} routine + {args.n_dynamic}×3 dynamic")
+                                    args.n_routine, args.n_dynamic,
+                                    n_insertions=cfg.mission.dynamic_insertions_per_day,
+                                    seed=args.seed + 1000)
+    logger.info(
+        "测试场景数: %s, 每个 %s routine + %s×%s dynamic",
+        len(scenarios),
+        args.n_routine,
+        args.n_dynamic,
+        cfg.mission.dynamic_insertions_per_day,
+    )
 
     results = {}
     t0 = time.time()

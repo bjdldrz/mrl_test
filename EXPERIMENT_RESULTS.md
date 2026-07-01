@@ -96,6 +96,8 @@ python compare_methods.py \
 
 目的:在任务规模扩大到 `600 routine + 150 dynamic` 后,重新比较 Single-PPO、Indep-PPO 和 MAPPO。
 
+该压力配置需要 `1050` 个任务槽位,当前 `compare_methods.py` 会自动扩容 `max_action_dim`,避免动态任务被丢弃导致 `dynamic_completion_rate` 失真。
+
 重点看 `duplicate_rate`、`n_scheduled`、`observation_success_rate`、`dynamic_completion_rate`、`avg_dynamic_response_s`、`load_balance_cv` 和 `avg_off_nadir_deg`。如果压力测试中 MAPPO 相比 Indep-PPO 的完成数或动态响应优势明显扩大,就能支撑“资源越紧张,协同调度越有价值”的结论。
 
 ---

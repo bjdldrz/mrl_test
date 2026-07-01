@@ -794,6 +794,9 @@ def main():
     parser.add_argument("--n_dynamic", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--max_action_dim", type=int, default=None,
+                        help="传给 compare_methods.py 的动作空间任务槽位数; "
+                             "默认由 compare_methods.py 按任务规模自动扩容")
     parser.add_argument("--methods", type=str, default="mappo",
                         help="传给 compare_methods.py 的方法列表; 默认 mappo, "
                              "避免消融子实验重复训练不变的 Single/Indep baseline。"
@@ -972,6 +975,8 @@ def main():
                 "--flat_out_dir",
                 *spec["extra_args"],
             ]
+            if args.max_action_dim is not None:
+                cmd.extend(["--max_action_dim", str(args.max_action_dim)])
             if args.run_oracle and "--run_oracle" not in cmd:
                 cmd.append("--run_oracle")
             if args.acled_path:
