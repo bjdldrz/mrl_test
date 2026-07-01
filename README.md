@@ -13,6 +13,7 @@
 ## 一、目录结构
 
 数据集与实验场景说明见 [DATASET_DESCRIPTION.md](DATASET_DESCRIPTION.md)。
+完整实验运行路线和各消融目的见 [EXPERIMENT_README.md](EXPERIMENT_README.md)。
 
 ```
 mrl_dms/
