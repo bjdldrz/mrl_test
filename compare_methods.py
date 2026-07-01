@@ -64,6 +64,50 @@ def make_test_scenarios(mission_gen, n_episodes, n_routine, n_dynamic, seed=123)
     return scenarios
 
 
+METHOD_ORDER = ["Single-PPO", "Indep-PPO", "MAPPO", "Greedy-Oracle"]
+METHOD_ALIASES = {
+    "single": "Single-PPO",
+    "single_ppo": "Single-PPO",
+    "single-ppo": "Single-PPO",
+    "indep": "Indep-PPO",
+    "independent": "Indep-PPO",
+    "indep_ppo": "Indep-PPO",
+    "indep-ppo": "Indep-PPO",
+    "mappo": "MAPPO",
+    "oracle": "Greedy-Oracle",
+    "greedy_oracle": "Greedy-Oracle",
+    "greedy-oracle": "Greedy-Oracle",
+}
+
+
+def parse_methods(text, run_oracle=False):
+    """Parse a comma-separated method list while preserving the canonical order."""
+    tokens = [t.strip().lower() for t in text.split(",") if t.strip()]
+    if not tokens:
+        tokens = ["single", "indep", "mappo"]
+
+    requested = []
+    for token in tokens:
+        if token == "all":
+            requested.extend(METHOD_ORDER)
+            continue
+        if token not in METHOD_ALIASES:
+            valid = sorted([*METHOD_ALIASES.keys(), "all"])
+            raise ValueError(f"未知 --methods 项: {token}; 可选: {valid}")
+        requested.append(METHOD_ALIASES[token])
+
+    if run_oracle:
+        requested.append("Greedy-Oracle")
+
+    dedup = []
+    for name in METHOD_ORDER:
+        if name in requested and name not in dedup:
+            dedup.append(name)
+    if not dedup:
+        raise ValueError("--methods 至少需要包含一个方法")
+    return dedup
+
+
 def _avg_metrics(metrics_list):
     """对一批 episode 的指标取平均"""
     if not metrics_list:
@@ -490,6 +534,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", type=str, default="runs/compare")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--methods", type=str, default="single,indep,mappo",
+                        help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
+                             "默认运行 Single-PPO/Indep-PPO/MAPPO")
     parser.add_argument("--run_name", type=str, default=None,
                         help="本次 compare run 名称; 默认由 experiment_tag/关键参数生成")
     parser.add_argument("--flat_out_dir", action="store_true",
@@ -561,6 +608,8 @@ def main():
     parser.add_argument("--experiment_tag", type=str, default="single_compare",
                         help="实验标签, 写入 manifest 方便批量对比")
     args = parser.parse_args()
+    method_names = parse_methods(args.methods, run_oracle=args.run_oracle)
+    args.methods = ",".join(method_names)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -592,62 +641,74 @@ def main():
         out_dir = unique_dir(args.out_dir, safe_name(run_name))
         args.out_dir = str(out_dir)
 
-    logger.info("=== [1/3] 单星 PPO ===")
-    results["Single-PPO"] = run_single_ppo(
-        cfg, mission_gen, scenarios, args.train_iters, device, viz_out_dir=out_dir)
+    step_total = len(method_names)
+    step_idx = 1
+    if "Single-PPO" in method_names:
+        logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
+        results["Single-PPO"] = run_single_ppo(
+            cfg, mission_gen, scenarios, args.train_iters, device, viz_out_dir=out_dir)
+        step_idx += 1
 
-    logger.info("=== [2/3] 多星独立 PPO (无协同 baseline) ===")
-    results["Indep-PPO"] = run_multi(
-        cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
-        method_name="Indep-PPO", viz_out_dir=out_dir)
+    if "Indep-PPO" in method_names:
+        logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
+        results["Indep-PPO"] = run_multi(
+            cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
+            method_name="Indep-PPO", viz_out_dir=out_dir)
+        step_idx += 1
 
-    logger.info("=== [3/3] 多星 MAPPO (协同, 本方法) ===")
-    results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
-                                 coordinate=True, episode_assignment=args.episode_assignment,
-                                 assign_w_load=args.assign_w_load,
-                                 assignment_capacity_mode=args.assignment_capacity_mode,
-                                 release_before_deadline_s=args.release_before_deadline_s,
-                                 assignment_scorer=args.assignment_scorer,
-                                 assignment_scorer_mix=args.assignment_scorer_mix,
-                                 assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
-                                 assignment_mlp_seed=args.assignment_mlp_seed,
-                                 assignment_sequence_hidden_dim=args.assignment_sequence_hidden_dim,
-                                 assignment_replan_interval_s=args.assignment_replan_interval_s,
-                                 assignment_replan_horizon_s=args.assignment_replan_horizon_s,
-                                 assignment_replan_trigger=args.assignment_replan_trigger,
-                                 assignment_switch_penalty=args.assignment_switch_penalty,
-                                 assignment_lock_window_s=args.assignment_lock_window_s,
-                                 assignment_max_switches_per_task=args.assignment_max_switches_per_task,
-                                 assignment_manager_mode=args.assignment_manager_mode,
-                                 team_reward_mix=args.team_reward_mix,
-                                 load_balance_reward_coeff=args.load_balance_reward_coeff,
-                                 team_completion_bonus=args.team_completion_bonus,
-                                 normalize_agent_rewards=args.normalize_agent_rewards,
-                                 global_state_mode=args.global_state_mode,
-                                 global_state_task_stats=args.global_state_task_stats,
-                                 satellite_curriculum=args.satellite_curriculum,
-                                 curriculum_min_satellites=args.curriculum_min_satellites,
-                                 curriculum_iters=args.curriculum_iters,
-                                 joint_explore_prob=args.joint_explore_prob,
-                                 intent_broadcast=args.intent_broadcast,
-                                 intent_replan_rounds=args.intent_replan_rounds,
-                                 method_name="MAPPO",
-                                 viz_out_dir=out_dir)
+    if "MAPPO" in method_names:
+        logger.info(f"=== [{step_idx}/{step_total}] 多星 MAPPO (协同, 本方法) ===")
+        results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
+                                     coordinate=True, episode_assignment=args.episode_assignment,
+                                     assign_w_load=args.assign_w_load,
+                                     assignment_capacity_mode=args.assignment_capacity_mode,
+                                     release_before_deadline_s=args.release_before_deadline_s,
+                                     assignment_scorer=args.assignment_scorer,
+                                     assignment_scorer_mix=args.assignment_scorer_mix,
+                                     assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
+                                     assignment_mlp_seed=args.assignment_mlp_seed,
+                                     assignment_sequence_hidden_dim=args.assignment_sequence_hidden_dim,
+                                     assignment_replan_interval_s=args.assignment_replan_interval_s,
+                                     assignment_replan_horizon_s=args.assignment_replan_horizon_s,
+                                     assignment_replan_trigger=args.assignment_replan_trigger,
+                                     assignment_switch_penalty=args.assignment_switch_penalty,
+                                     assignment_lock_window_s=args.assignment_lock_window_s,
+                                     assignment_max_switches_per_task=args.assignment_max_switches_per_task,
+                                     assignment_manager_mode=args.assignment_manager_mode,
+                                     team_reward_mix=args.team_reward_mix,
+                                     load_balance_reward_coeff=args.load_balance_reward_coeff,
+                                     team_completion_bonus=args.team_completion_bonus,
+                                     normalize_agent_rewards=args.normalize_agent_rewards,
+                                     global_state_mode=args.global_state_mode,
+                                     global_state_task_stats=args.global_state_task_stats,
+                                     satellite_curriculum=args.satellite_curriculum,
+                                     curriculum_min_satellites=args.curriculum_min_satellites,
+                                     curriculum_iters=args.curriculum_iters,
+                                     joint_explore_prob=args.joint_explore_prob,
+                                     intent_broadcast=args.intent_broadcast,
+                                     intent_replan_rounds=args.intent_replan_rounds,
+                                     method_name="MAPPO",
+                                     viz_out_dir=out_dir)
+        step_idx += 1
 
-    if args.run_oracle:
-        logger.info("=== [4/4] Greedy Oracle (集中式启发式参考) ===")
+    if "Greedy-Oracle" in method_names:
+        logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
         results["Greedy-Oracle"] = run_greedy_oracle(cfg, scenarios, viz_out_dir=out_dir)
 
-    # 协同增益: MAPPO 完成数 / (N × 单星完成数)
+    # 协同增益: 多星完成数 / (N × 单星完成数), 仅在包含 Single-PPO 时计算。
     n_sat = args.n_satellites
-    single_sched = results["Single-PPO"].get("n_scheduled", 0)
-    for name in ["Indep-PPO", "MAPPO"]:
-        multi_sched = results[name].get("n_scheduled", 0)
-        gain = multi_sched / (n_sat * single_sched) if single_sched > 0 else 0.0
-        results[name]["coordination_gain"] = gain
+    single_sched = results.get("Single-PPO", {}).get("n_scheduled", 0)
+    if single_sched > 0:
+        for name in ["Indep-PPO", "MAPPO"]:
+            if name not in results:
+                continue
+            multi_sched = results[name].get("n_scheduled", 0)
+            results[name]["coordination_gain"] = multi_sched / (n_sat * single_sched)
     oracle_sched = results.get("Greedy-Oracle", {}).get("n_scheduled", 0)
     if oracle_sched > 0:
         for name in ["Indep-PPO", "MAPPO"]:
+            if name not in results:
+                continue
             results[name]["oracle_relative_completion"] = (
                 results[name].get("n_scheduled", 0) / oracle_sched
             )
@@ -660,9 +721,7 @@ def main():
 
     # 控制台摘要
     print("\n" + "=" * 78)
-    method_names = ["Single-PPO", "Indep-PPO", "MAPPO"]
-    if "Greedy-Oracle" in results:
-        method_names.append("Greedy-Oracle")
+    method_names = [name for name in METHOD_ORDER if name in results]
     print(f"{'指标':<32}" + "".join(f"{name:>14}" for name in method_names))
     print("-" * 78)
     show = [

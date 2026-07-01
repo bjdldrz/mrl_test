@@ -145,6 +145,7 @@ python compare_methods.py \
     --acled_path ./DynamicMission/DynamicMission.shp \
     --n_satellites 6 --train_iters 30 --eval_episodes 5 \
     --n_routine 200 --n_dynamic 50 \
+    --methods single,indep,mappo \
     --out_dir runs/compare
 # 协同机制开关 (仅影响 MAPPO):
 #   --no_episode_assignment   关闭全局指派, 退回逐时刻协同
@@ -156,6 +157,13 @@ python compare_methods.py \
 默认情况下,`compare_methods.py` 会在 `--out_dir` 下自动创建唯一子目录,例如
 `runs/compare/single_compare_sat6_iter30_assign_on_seed42_20260622_143000/`,
 避免重复运行覆盖旧结果。若确实想直接写入指定目录,加 `--flat_out_dir`。
+
+`--methods` 用来选择实际运行的方案,避免在消融实验中重复训练不变的 baseline:
+
+- `--methods single,indep,mappo`: 论文复现/完整三方案对比。
+- `--methods mappo`: 只评估当前 MAPPO 配置,适合参数消融。
+- `--methods mappo,oracle` 或 `--run_oracle`: MAPPO + Greedy-Oracle 上界参考。
+- `--methods all`: Single-PPO + Indep-PPO + MAPPO + Greedy-Oracle。
 
 | 方案 | 含义 |
 |---|---|
@@ -169,7 +177,7 @@ python compare_methods.py \
 
 ### 4.1 批量消融实验(推荐用于优化对比)
 
-`run_ablation.py` 会批量调用 `compare_methods.py`,每个子实验保存 `comparison_results.json` 和 `manifest.json`,并汇总成 `ablation_summary.csv/json`。
+`run_ablation.py` 会批量调用 `compare_methods.py`,每个子实验保存 `comparison_results.json` 和 `manifest.json`,并汇总成 `ablation_summary.csv/json`。为了提高效率,批量消融默认 `--methods mappo`,即每个子实验只跑当前 MAPPO 配置;如果需要完整三方案对比,显式加 `--methods single,indep,mappo`。
 
 ```bash
 python run_ablation.py \
@@ -177,11 +185,18 @@ python run_ablation.py \
     --preset assignment_v2 \
     --n_satellites 6 --train_iters 30 --eval_episodes 5 \
     --n_routine 200 --n_dynamic 50 \
+    --methods mappo \
     --out_root runs/ablation_assignment_v2 \
     --device cpu
 
 # 快速检查命令组合,不真正运行:
 python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
+
+# 完整 baseline 对比才运行 Single-PPO/Indep-PPO/MAPPO:
+python run_ablation.py \
+    --preset assignment_v2 \
+    --methods single,indep,mappo \
+    --out_root runs/ablation_assignment_v2_full
 ```
 
 默认情况下,`run_ablation.py` 会在 `--out_root` 下创建唯一批次目录,例如
@@ -198,6 +213,12 @@ python run_ablation.py \
 ```
 
 `--resume_latest` 会复用 `--out_root` 下匹配当前 preset/参数的最新批次目录;`--skip_existing` 会跳过已有 `manifest.json` 或 `summary.json` 的子实验。也可以用 `--resume_root <已有批次目录>` 精确指定要续跑的批次。
+
+推荐运行节奏:
+1. 先跑一次完整 baseline:`--methods single,indep,mappo`。
+2. 后续任务分配、奖励、状态、通信等消融用默认 `--methods mappo`。
+3. 中断后补跑用 `--resume_latest --skip_existing`,不会重复跑已有子实验。
+4. 只有需要 Oracle 上界时加 `--methods mappo,oracle` 或使用 `oracle_v1` preset。
 
 默认 `assignment_v2` preset 会比较:
 - `--no_episode_assignment` baseline
@@ -552,6 +573,8 @@ python visualize.py --compare_json runs/compare/comparison_results.json
   - `avg_off_nadir_deg`——平均观测质量(越小越好)
   - `avg_dynamic_response_s`——动态任务响应延迟(越小越快)
   - `coordination_gain`——协同增益 = 多星完成数 /(N × 单星完成数)
+
+批量消融的 `ablation_summary.csv/json` 会记录 `methods` 字段。若只运行 `--methods mappo`,摘要中只包含 `mappo_*` 指标;只有同时运行 `MAPPO` 和 `Indep-PPO` 时才会生成 `delta_*` 对比列,避免把未运行的 baseline 当成 0。
 
 ---
 

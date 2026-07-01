@@ -647,19 +647,23 @@ def metric(results, method, key, default=0.0):
     return float(results.get(method, {}).get(key, default))
 
 
+def optional_metric(results, method, key):
+    value = results.get(method, {}).get(key, "")
+    return "" if value in ("", None) else float(value)
+
+
 def summarize_run(tag, params, out_dir):
     result_path = out_dir / "comparison_results.json"
     manifest_path = out_dir / "manifest.json"
     results = load_json(result_path)
     manifest = load_json(manifest_path) if manifest_path.exists() else {}
 
-    mappo = results.get("MAPPO", {})
-    indep = results.get("Indep-PPO", {})
     row = {
         "tag": tag,
         "out_dir": str(out_dir),
         "git_commit": manifest.get("git", {}).get("commit", ""),
         "git_dirty": manifest.get("git", {}).get("dirty", ""),
+        "methods": ",".join(results.keys()),
         **params,
     }
 
@@ -681,20 +685,29 @@ def summarize_run(tag, params, out_dir):
         "coordination_gain",
         "oracle_relative_completion",
     ]
-    for key in keys:
-        row[f"mappo_{key}"] = metric(results, "MAPPO", key)
-        row[f"indep_{key}"] = metric(results, "Indep-PPO", key)
-        if "Greedy-Oracle" in results:
-            row[f"oracle_{key}"] = metric(results, "Greedy-Oracle", key)
+    method_prefixes = {
+        "Single-PPO": "single",
+        "Indep-PPO": "indep",
+        "MAPPO": "mappo",
+        "Greedy-Oracle": "oracle",
+    }
+    for method, prefix in method_prefixes.items():
+        if method not in results:
+            continue
+        for key in keys:
+            row[f"{prefix}_{key}"] = optional_metric(results, method, key)
 
-    row["delta_n_scheduled"] = row["mappo_n_scheduled"] - row["indep_n_scheduled"]
-    row["delta_success_rate"] = row["mappo_observation_success_rate"] - row["indep_observation_success_rate"]
-    row["delta_duplicate_rate"] = row["mappo_duplicate_rate"] - row["indep_duplicate_rate"]
-    row["delta_load_balance_cv"] = row["mappo_load_balance_cv"] - row["indep_load_balance_cv"]
-    row["delta_avg_off_nadir_deg"] = row["mappo_avg_off_nadir_deg"] - row["indep_avg_off_nadir_deg"]
-    if "Greedy-Oracle" in results:
+    if "MAPPO" in results and "Indep-PPO" in results:
+        row["delta_n_scheduled"] = row["mappo_n_scheduled"] - row["indep_n_scheduled"]
+        row["delta_success_rate"] = row["mappo_observation_success_rate"] - row["indep_observation_success_rate"]
+        row["delta_duplicate_rate"] = row["mappo_duplicate_rate"] - row["indep_duplicate_rate"]
+        row["delta_load_balance_cv"] = row["mappo_load_balance_cv"] - row["indep_load_balance_cv"]
+        row["delta_avg_off_nadir_deg"] = row["mappo_avg_off_nadir_deg"] - row["indep_avg_off_nadir_deg"]
+    if "MAPPO" in results and "Greedy-Oracle" in results:
         row["mappo_oracle_gap_n_scheduled"] = row["oracle_n_scheduled"] - row["mappo_n_scheduled"]
-        row["mappo_oracle_relative_completion"] = metric(results, "MAPPO", "oracle_relative_completion")
+        row["mappo_oracle_relative_completion"] = metric(
+            results, "MAPPO", "oracle_relative_completion"
+        )
     return row
 
 
@@ -781,6 +794,10 @@ def main():
     parser.add_argument("--n_dynamic", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--methods", type=str, default="mappo",
+                        help="传给 compare_methods.py 的方法列表; 默认 mappo, "
+                             "避免消融子实验重复训练不变的 Single/Indep baseline。"
+                             "完整对比可设为 single,indep,mappo 或 all")
     parser.add_argument("--assign_w_loads", type=str, default="0.05,0.1,0.2")
     parser.add_argument("--release_windows", type=str, default="0,1800")
     parser.add_argument("--capacity_modes", type=str, default="equal,proportional")
@@ -950,6 +967,7 @@ def main():
                 "--seed", str(args.seed),
                 "--out_dir", str(out_dir),
                 "--device", args.device,
+                "--methods", args.methods,
                 "--experiment_tag", tag,
                 "--flat_out_dir",
                 *spec["extra_args"],
