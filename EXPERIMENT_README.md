@@ -154,9 +154,7 @@ python compare_methods.py \
 目的:比较是否启用 episode 级指派、容量模式、负载权重和截止释放窗口。
 
 ```bash
-python run_ablation.py \
-  --python python \
-  --preset assignment_v2 \
+python compare_methods.py \
   --acled_path "$ACLED" \
   --n_satellites 6 \
   --train_iters 30 \
@@ -187,7 +185,32 @@ python run_ablation.py \
 - `assign_w_load`:负载均衡与吞吐之间的权衡。
 - `release_before_deadline_s`:截止前释放 owner 是否能减少硬指派带来的损失。
 
-### 5.2 学习式任务分配 scorer 消融
+### 5.2 基础三方案压力试验
+
+目的:在更大任务规模下直接比较 `Single-PPO / Indep-PPO / MAPPO`,验证资源更紧张时 MAPPO 的去重、负载均衡和观测质量优势是否能进一步转化为有效完成数优势。该实验只改变任务规模,不引入滚动重分配、学习式 scorer 或高层 manager,适合作为主对比后的第一组压力测试。
+
+```bash
+python compare_methods.py \
+  --acled_path "$ACLED" \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --methods single,indep,mappo \
+  --out_dir runs/compare_stress \
+  --device cuda:0
+```
+
+重点比较:
+
+- `duplicate_rate`:任务量变大后 Indep-PPO 的重复观测是否更严重,MAPPO 是否继续保持 0 或接近 0。
+- `n_scheduled`:资源紧张时 MAPPO 是否完成更多有效任务。
+- `observation_success_rate` / `dynamic_completion_rate`:压力场景下完成率是否拉开差距。
+- `avg_dynamic_response_s`:动态任务更多时 MAPPO 响应是否改善。
+- `load_balance_cv` / `avg_off_nadir_deg`:MAPPO 是否仍保持负载和观测质量优势。
+
+### 5.3 学习式任务分配 scorer 消融
 
 目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。
 
@@ -222,7 +245,7 @@ python run_ablation.py \
 - `mappo_avg_dynamic_response_s`
 - `mappo_avg_off_nadir_deg`
 
-### 5.3 滚动重分配消融
+### 5.4 滚动重分配消融
 
 目的:比较静态 owner、周期重分配、事件触发重分配、MPC 窗口重分配。
 
@@ -249,7 +272,7 @@ python run_ablation.py \
 - `mappo_stale_owner_rate`:失效 owner 比例。
 - `mappo_deadline_rescue_rate`:临近截止救援比例。
 
-### 5.4 高层分配 manager + 低层 MAPPO
+### 5.5 高层分配 manager + 低层 MAPPO
 
 目的:验证规则式高层 manager 是否优于普通滚动重分配,为后续学习式高层策略铺接口。
 
@@ -517,9 +540,9 @@ python visualize.py \
 
 ---
 
-## 12. 推荐最终实验组合
+## 12. 推荐实验组合
 
-如果时间有限,优先跑下面 5 组:
+当前先优先跑基础 baseline 和基础三方案压力测试:
 
 ```bash
 # 1. 完整 baseline
@@ -527,21 +550,30 @@ python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 200 --n_dynamic 50 --out_dir runs/compare_baseline --device cuda:0
 
-# 2. 全局任务指派
+# 2. 基础三方案压力测试
+python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 600 --n_dynamic 150 --out_dir runs/compare_stress --device cuda:0
+```
+
+压力测试完成后,如果 MAPPO 优势仍不明显,再补下面这些机制消融定位原因:
+
+```bash
+# 3. 全局任务指派
 python run_ablation.py --python python --preset assignment_v2 --acled_path "$ACLED" \
   --methods mappo --out_root runs/ablation_assignment_v2 --device cuda:0
 
-# 3. 学习式任务分配 scorer
+# 4. 学习式任务分配 scorer
 python run_ablation.py --python python --preset learned_assignment_v1 --acled_path "$ACLED" \
   --methods mappo --out_root runs/ablation_learned_assignment_v1 --device cuda:0
 
-# 4. 滚动重分配 + 层级 manager
+# 5. 滚动重分配 + 层级 manager
 python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path "$ACLED" \
   --methods mappo --out_root runs/ablation_assignment_rolling_v1 --device cuda:0
 python run_ablation.py --python python --preset hier_assignment_v1 --acled_path "$ACLED" \
   --methods mappo --out_root runs/ablation_hier_assignment_v1 --device cuda:0
 
-# 5. Oracle gap
+# 6. Oracle gap
 python run_ablation.py --python python --preset oracle_v1 --acled_path "$ACLED" \
   --methods mappo,oracle --out_root runs/ablation_oracle_v1 --device cuda:0
 ```

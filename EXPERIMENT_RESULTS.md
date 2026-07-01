@@ -80,61 +80,23 @@
 
 ## 2. 后续推荐实验
 
-基于当前主对比结果,后续优先级如下:
+基于当前主对比结果,下一步先做基础三方案压力测试即可。暂时不展开滚动重分配、高层 manager 或 Oracle 上界实验,先验证在更大任务规模和更紧张资源条件下,MAPPO 的协同去重优势是否会进一步转化为有效完成数、动态响应和观测质量优势。
 
-### 2.1 任务分配与动态响应
-
-```bash
-python run_ablation.py \
-  --python python \
-  --preset assignment_rolling_v1 \
-  --acled_path "$ACLED" \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --methods mappo \
-  --out_root runs/ablation_assignment_rolling_v1 \
-  --device cuda:0 \
-  --resume_latest \
-  --skip_existing
-```
-
-目的:验证滚动重分配是否能降低 `avg_dynamic_response_s` 和 `stale_owner_rate`。
-
-### 2.2 高层 manager
+### 2.1 基础三方案压力测试
 
 ```bash
-python run_ablation.py \
-  --python python \
-  --preset hier_assignment_v1 \
+python compare_methods.py \
   --acled_path "$ACLED" \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --methods mappo \
-  --out_root runs/ablation_hier_assignment_v1 \
-  --device cuda:0 \
-  --resume_latest \
-  --skip_existing
+  --n_routine 600 --n_dynamic 150 \
+  --methods single,indep,mappo \
+  --out_dir runs/compare_stress \
+  --device cuda:0
 ```
 
-目的:比较规则式高层 manager 是否能在保持 0 重复率的同时改善动态响应和 owner 失效。
+目的:在任务规模扩大到 `600 routine + 150 dynamic` 后,重新比较 Single-PPO、Indep-PPO 和 MAPPO。
 
-### 2.3 Oracle gap
-
-```bash
-python run_ablation.py \
-  --python python \
-  --preset oracle_v1 \
-  --acled_path "$ACLED" \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --methods mappo,oracle \
-  --out_root runs/ablation_oracle_v1 \
-  --device cuda:0 \
-  --resume_latest \
-  --skip_existing
-```
-
-目的:量化 MAPPO 与集中式 Greedy-Oracle 的差距,判断后续应优化 scorer、解码器还是低层策略。
+重点看 `duplicate_rate`、`n_scheduled`、`observation_success_rate`、`dynamic_completion_rate`、`avg_dynamic_response_s`、`load_balance_cv` 和 `avg_off_nadir_deg`。如果压力测试中 MAPPO 相比 Indep-PPO 的完成数或动态响应优势明显扩大,就能支撑“资源越紧张,协同调度越有价值”的结论。
 
 ---
 
