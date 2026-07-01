@@ -14,6 +14,7 @@
 
 数据集与实验场景说明见 [DATASET_DESCRIPTION.md](DATASET_DESCRIPTION.md)。
 完整实验运行路线和各消融目的见 [EXPERIMENT_README.md](EXPERIMENT_README.md)。
+已完成关键实验结果和结论记录见 [EXPERIMENT_RESULTS.md](EXPERIMENT_RESULTS.md)。
 
 ```
 mrl_dms/
