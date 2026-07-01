@@ -1,314 +1,594 @@
-# MRL-DMS 实验运行路线
+# MRL-DMS 实验流程与结果对比文档
 
-本文档用于梳理当前项目中较多优化方案的运行顺序、对比目的和建议观察指标。建议按阶段推进,不要一开始把所有 preset 全部跑完,否则结果很多但难以解释。
+> 目标:用统一、可复现、可断点续跑的方式完成论文复现、多星协同优化消融和后续结果对比。
+> 当前版本建议先建立完整 baseline,之后所有优化消融默认只跑 `MAPPO`,避免反复训练不变的 `Single-PPO` / `Indep-PPO`。
 
-## 0. 统一实验配置
+---
 
-正式对比建议固定以下配置,保证横向可比:
+## 1. 实验总路线
+
+建议按下面顺序执行。每一步都写入独立目录,便于后续画表、画图和回溯版本。
+
+| 阶段 | 实验 | 主要目的 | 推荐方法 |
+|---|---|---|---|
+| S0 | 冒烟测试 | 确认环境、依赖、输出目录可用 | `--train_iters 0/--fast` |
+| S1 | 论文/基础 baseline | 建立 Single-PPO、Indep-PPO、MAPPO 的统一对照 | `--methods single,indep,mappo` |
+| S2 | 任务分配消融 | 比较全局指派、容量、释放窗口、学习式 scorer、滚动重分配 | 默认 `--methods mappo` |
+| S3 | 协同机制消融 | 比较奖励、critic state、训练稳定性、通信机制 | 默认 `--methods mappo` |
+| S4 | 元学习结构消融 | 比较 LSTM/GRU/MLP/Transformer/Set Transformer 外循环 | `meta_encoder_v1` |
+| S5 | Oracle/上界实验 | 判断 MAPPO 离强启发式上界还有多远 | `--methods mappo,oracle` |
+| S6 | 结果汇总 | 生成最终表格、图和论文叙述材料 | `ablation_summary.csv/json` |
+
+推荐原则:
+
+1. 先跑一次完整三方案 baseline,后续消融只改变 MAPPO 配置。
+2. 每类实验使用单独 `--out_root`,不要把不同任务混到一个目录。
+3. 长实验中断后使用 `--resume_latest --skip_existing`,不要重新开新批次重复跑。
+4. 每个结果目录里的 `manifest.json` 会记录命令、参数、git commit 和 dirty 状态,用于版本追溯。
+
+---
+
+## 2. 通用运行参数
+
+本地 Mac 推荐:
 
 ```bash
---python /Users/zhouzidie/miniconda3/envs/myenv/bin/python
---n_satellites 6
---train_iters 30
---eval_episodes 5
---n_routine 200
---n_dynamic 50
---seed 42
---device cpu
+PY=/Users/zhouzidie/miniconda3/envs/myenv/bin/python
+DEVICE=cpu
 ```
 
-如果时间充足,最终关键实验再补多随机种子,例如 `--seed 42/43/44`。
-
-每个 `run_ablation.py` 批次会自动创建唯一结果目录,每个子实验会输出:
-
-- `comparison_results.json`: 指标结果
-- `manifest.json`: 参数、git commit、运行环境
-- `*_viz_data.json`: 可视化数据
-- 批次根目录 `ablation_summary.json/csv`: 汇总表
-
-## 1. 主复现结果
-
-**目的**:回答 MAPPO 是否优于 Single-PPO / Indep-PPO,作为论文复现和多星扩展的主结果。
+服务器/AutoDL 可按实际环境替换:
 
 ```bash
-python compare_methods.py \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --out_dir runs/compare_main \
-  --device cpu
+PY=python
+DEVICE=cpu
 ```
 
-**对比对象**:
-
-- `Single-PPO`: 单星 PPO
-- `Indep-PPO`: 多星但无协同
-- `MAPPO`: 多星协同,含全局任务指派和集中式 critic
-
-**重点指标**:
-
-- `n_scheduled`
-- `observation_success_rate`
-- `dynamic_completion_rate`
-- `duplicate_rate`
-- `avg_dynamic_response_s`
-- `load_balance_cv`
-- `coordination_gain`
-
-## 2. 全局任务分配消融
-
-**目的**:验证 episode 级任务所有权、容量比例分配、截止释放机制是否真的带来收益。
+真实 ACLED 数据路径:
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
-  --preset assignment_v2 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --out_root runs/ablation_assignment_v2 \
-  --device cpu
+ACLED=./DynamicMission/DynamicMission.shp
 ```
 
-**对比目的**:
-
-- `no_episode_assignment`: 关闭全局任务分配,验证所有权机制是否必要
-- `assignment_capacity_mode=equal/proportional`: 比较等额分配和按覆盖能力分配
-- `assign_w_load=0.05/0.1/0.2`: 观察负载均衡和吞吐的权衡
-- `release_before_deadline_s=0/1800`: 验证临近 deadline 释放 owner 是否提升完成率
-
-**重点指标**:
-
-- `n_scheduled`
-- `duplicate_rate`
-- `load_balance_cv`
-- `avg_off_nadir_deg`
-- `avg_dynamic_response_s`
-
-## 3. Oracle 上界对比
-
-**目的**:判断当前 MAPPO/分配器距离集中式强启发式参考还有多大差距。
+消融实验通用参数:
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
-  --preset oracle_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
-  --out_root runs/ablation_oracle_v1 \
-  --device cpu
+--n_satellites 6 \
+--train_iters 30 \
+--eval_episodes 5 \
+--n_routine 200 \
+--n_dynamic 50 \
+--seed 42 \
+--device $DEVICE
 ```
 
-**对比目的**:
-
-- `oracle_no_assignment`: 无全局分配时的 Greedy-Oracle 参考
-- `oracle_assignment_v2`: 默认全局分配下的 Greedy-Oracle 参考
-
-**重点指标**:
-
-- `oracle_relative_completion`
-- `mappo_oracle_gap_n_scheduled`
-- `n_scheduled`
-
-如果 oracle gap 很大,后续应优先研究任务分配、解码器或高层策略;如果 gap 很小,瓶颈可能更多来自任务可见性或数据本身。
-
-## 4. 学习式任务分配 scorer
-
-**目的**:比较不同任务分配 scorer 是否优于手写 heuristic,判断哪类结构最有研究价值。
+快速检查命令是否正确,不真正运行:
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py --preset assignment_v2 --dry_run --train_iters 0 --eval_episodes 1
+```
+
+断点续跑:
+
+```bash
+$PY run_ablation.py \
   --preset learned_assignment_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
   --out_root runs/ablation_learned_assignment_v1 \
-  --device cpu
+  --resume_latest \
+  --skip_existing
 ```
 
-**对比目的**:
+`--resume_latest` 会复用当前参数匹配的最新批次目录;`--skip_existing` 会跳过已有 `manifest.json` 或 `summary.json` 的子实验。
 
-- `heuristic`: 当前手写分配分数
-- `mlp`: 只看任务-卫星边特征是否足够
-- `lstm/gru`: 任务序列上下文是否有帮助
-- `transformer/set_transformer`: 集合建模是否优于人工排序序列
-- `gnn`: 卫星-任务二分图结构是否更适合分配问题
+---
 
-**重点指标**:
+## 3. S0 冒烟测试
 
-- `n_scheduled`
-- `avg_dynamic_response_s`
-- `load_balance_cv`
-- `avg_off_nadir_deg`
-- `oracle_relative_completion`
-
-## 5. 滚动重分配 / Rolling Horizon
-
-**目的**:验证静态 episode 分配是否会因为动态任务、错过窗口、owner 失效而变差。
+目的:先确认代码、依赖、目录输出和最小训练流程正常。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY train.py --method mrl_dms --fast --device $DEVICE
+```
+
+MAPPO-only 对比 smoke:
+
+```bash
+$PY compare_methods.py \
+  --methods mappo \
+  --train_iters 0 \
+  --eval_episodes 1 \
+  --n_satellites 2 \
+  --n_routine 8 \
+  --n_dynamic 1 \
+  --out_dir runs/smoke_mappo_only \
+  --flat_out_dir \
+  --device $DEVICE
+```
+
+通过标准:
+
+- 生成 `comparison_results.json` 和 `manifest.json`。
+- 控制台表格能列出 `n_total_tasks`、`n_feasible_tasks`、完成率、重复率等指标。
+- MAPPO-only 时 `coordination_gain` 和 `oracle_relative_completion` 可为空,这是正常的。
+
+---
+
+## 4. S1 基础三方案 baseline
+
+目的:建立后续所有消融的共同参照。
+
+```bash
+$PY compare_methods.py \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods single,indep,mappo \
+  --out_dir runs/compare_baseline \
+  --device $DEVICE
+```
+
+重点对比:
+
+| 指标 | 解释 | 期待现象 |
+|---|---|---|
+| `n_feasible_tasks` | 可观测任务数,完成率的主要分母 | 用来解释 raw 完成率偏低 |
+| `observation_success_rate` | feasible 口径观测完成率 | MAPPO 应保持较高 |
+| `duplicate_rate` | 多星重复观测率 | MAPPO 应显著低于 Indep-PPO |
+| `load_balance_cv` | 负载均衡程度 | 越低越均衡 |
+| `avg_dynamic_response_s` | 动态任务响应延迟 | 越低越好 |
+| `avg_off_nadir_deg` | 平均观测角 | 越低表示质量越高 |
+| `coordination_gain` | 多星相对单星的协同增益 | 仅在包含 Single-PPO 时有意义 |
+
+说明:
+
+- `Indep-PPO` 的 `total_reward` 可能因为重复观测而偏高,不能只看奖励。
+- 完成率默认使用可观测任务数作为分母,同时保留 `*_raw` 和 `feasible_ratio` 诊断全部任务口径。
+
+---
+
+## 5. S2 任务分配优化实验
+
+这一组是当前多星优化主线。建议先跑低成本 MAPPO-only 消融,找到较优配置后再挑关键组合做完整三方案对比。
+
+### 5.1 全局任务指派参数消融
+
+目的:比较是否启用 episode 级指派、容量模式、负载权重和截止释放窗口。
+
+```bash
+$PY run_ablation.py \
+  --python $PY \
+  --preset assignment_v2 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
+  --out_root runs/ablation_assignment_v2 \
+  --device $DEVICE
+```
+
+若要完整三方案对比:
+
+```bash
+$PY run_ablation.py \
+  --python $PY \
+  --preset assignment_v2 \
+  --acled_path $ACLED \
+  --methods single,indep,mappo \
+  --out_root runs/ablation_assignment_v2_full \
+  --device $DEVICE
+```
+
+比较目的:
+
+- `no_assignment` vs `assign_*`:全局任务指派是否带来收益。
+- `equal` vs `proportional`:等额容量和按覆盖能力容量的差异。
+- `assign_w_load`:负载均衡与吞吐之间的权衡。
+- `release_before_deadline_s`:截止前释放 owner 是否能减少硬指派带来的损失。
+
+### 5.2 学习式任务分配 scorer 消融
+
+目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。
+
+```bash
+$PY run_ablation.py \
+  --python $PY \
+  --preset learned_assignment_v1 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
+  --assignment_scorer_mixes 0.1,0.25,0.5 \
+  --assignment_sequence_scorers lstm,gru \
+  --assignment_sequence_mixes 0.25 \
+  --assignment_attention_scorers transformer,set_transformer \
+  --assignment_attention_mixes 0.25 \
+  --assignment_graph_scorers gnn \
+  --assignment_graph_mixes 0.25 \
+  --out_root runs/ablation_learned_assignment_v1 \
+  --device $DEVICE
+```
+
+建议先看:
+
+- `mappo_n_scheduled`
+- `mappo_observation_success_rate`
+- `mappo_dynamic_completion_rate`
+- `mappo_load_balance_cv`
+- `mappo_avg_dynamic_response_s`
+- `mappo_avg_off_nadir_deg`
+
+### 5.3 滚动重分配消融
+
+目的:比较静态 owner、周期重分配、事件触发重分配、MPC 窗口重分配。
+
+```bash
+$PY run_ablation.py \
+  --python $PY \
   --preset assignment_rolling_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-**对比目的**:
+重点新增指标:
 
-- `rolling_static`: 当前静态 owner
-- `rolling_periodic_1h`: 每小时重分配
-- `rolling_event`: 动态任务/owner 失效/deadline 触发
-- `rolling_mpc_2h`: 只看未来 2 小时窗口的 rolling horizon
+- `mappo_n_replans`:重分配次数。
+- `mappo_n_owner_switches`:owner 切换次数。
+- `mappo_owner_churn_rate`:owner 切换率。
+- `mappo_stale_owner_rate`:失效 owner 比例。
+- `mappo_deadline_rescue_rate`:临近截止救援比例。
 
-**重点指标**:
+### 5.4 高层分配 manager + 低层 MAPPO
 
-- `n_replans`
-- `n_owner_switches`
-- `owner_churn_rate`
-- `stale_owner_rate`
-- `deadline_rescue_rate`
-- `avg_dynamic_response_s`
-- `dynamic_completion_rate_raw`
-
-## 6. 层级任务分配接口
-
-**目的**:验证“高层 Assignment Manager + 低层 MAPPO”的接口是否值得继续推进为可学习 manager。
+目的:验证规则式高层 manager 是否优于普通滚动重分配,为后续学习式高层策略铺接口。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset hier_assignment_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_hier_assignment_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-**对比目的**:
+比较目的:
 
-- `hier_no_manager`: rolling/MPC,无额外高层 manager
-- `hier_rule_manager`: 规则式高层 manager 读取 `get_assignment_state()` 并提出 owner 建议
+- `hier_no_manager`:仅使用滚动/MPC 分配。
+- `hier_rule_manager`:增加规则式高层 assignment manager。
 
-**重点指标**:
+---
 
-- `n_scheduled`
-- `avg_dynamic_response_s`
-- `owner_churn_rate`
-- `stale_owner_rate`
-- `deadline_rescue_rate`
+## 6. S3 协同机制消融
 
-如果 `hier_rule_manager` 相比 `hier_no_manager` 有收益,下一步可以实现 `supervised_manager` 或 GNN/Transformer manager。
+### 6.1 协同奖励消融
 
-## 7. MAPPO 训练机制消融
-
-这些实验用于解释 MAPPO 为什么好或不好,属于辅助分析。
-
-### 7.1 奖励塑形
-
-**目的**:验证团队奖励、负载均衡奖励、团队完成 bonus 是否帮助协同学习。
+目的:判断团队奖励、负载奖励、团队完成 bonus 和奖励归一化是否改善协同。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset reward_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_reward_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-### 7.2 集中式 critic 状态
+重点看:
 
-**目的**:验证 critic 是否需要更完整的全局状态,例如 concat 各星观测或追加任务/负载统计。
+- 完成率是否上升。
+- `duplicate_rate` 是否保持低位。
+- `load_balance_cv` 是否下降。
+- `total_reward` 是否和任务指标方向一致。
+
+### 6.2 Critic 全局状态消融
+
+目的:比较 mean pooling、追加任务统计、concat 全局状态等 critic 输入方式。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset state_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_state_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-### 7.3 训练稳定性
+比较目的:
 
-**目的**:验证卫星数量课程学习和联合探索是否提升 MAPPO 训练稳定性。
+- mean pooling 是否丢失关键信息。
+- 任务统计是否帮助 critic 估计全局价值。
+- concat 是否在 6 星规模下带来更好结果。
+
+### 6.3 训练稳定性消融
+
+目的:比较卫星数量 curriculum、联合探索、组合策略对 MAPPO 训练稳定性的影响。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset train_stability_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_train_stability_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-### 7.4 意图广播通信
+### 6.4 执行期通信消融
 
-**目的**:验证规则式意图广播是否减少多星动作冲突和重复选择。
+目的:比较无通信、意图广播、意图广播 + 稳定训练策略。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset communication_v1 \
-  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
-  --n_routine 200 --n_dynamic 50 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo \
   --out_root runs/ablation_communication_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-## 8. MRL-DMS 外循环结构消融
+重点看:
 
-**目的**:比较论文默认 LSTM 外循环和 GRU/MLP/Transformer/Set Transformer,同时保留 MAPPO+LSTM 外循环对照。
+- 冲突后改派是否更有效。
+- 重复率是否继续保持 0 或接近 0。
+- 动态响应延迟是否下降。
+
+---
+
+## 7. S4 外循环元学习结构消融
+
+目的:比较原论文 LSTM 外循环与 GRU、MLP、Transformer、Set Transformer,并验证 MAPPO + LSTM 外循环分支。
 
 ```bash
-python run_ablation.py \
-  --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
+$PY run_ablation.py \
+  --python $PY \
   --preset meta_encoder_v1 \
-  --meta_encoder_types lstm,gru,mlp,transformer,set_transformer \
+  --acled_path $ACLED \
+  --seed 42 \
   --meta_iterations 2 \
-  --meta_mappo_n_satellites 6 \
-  --full_train \
+  --meta_encoder_types lstm,gru,mlp,transformer,set_transformer \
+  --meta_mappo_n_satellites 2 \
   --out_root runs/ablation_meta_encoder_v1 \
-  --device cpu
+  --device $DEVICE
 ```
 
-**对比目的**:
+说明:
 
-- `lstm`: 原论文外循环
-- `gru`: 更轻量的循环结构
-- `mlp`: 无序列记忆 baseline
-- `transformer/set_transformer`: 注意力/集合式外循环
-- `MAPPO + LSTM`: 多星协同下保留原论文 LSTM 外循环
+- 默认是快速配置,适合验证接口和小规模趋势。
+- 若要完整训练,加 `--full_train`。
+- 每个子实验输出 `summary.json`、`train_log.csv`、`eval_log.csv`。
+- 这组不是 `compare_methods.py` 三方案对比,而是调用 `train.py` 的训练型消融。
 
-## 9. 推荐最终论文表格顺序
+---
 
-建议最终论文或报告按以下顺序组织结果:
+## 8. S5 Oracle/上界实验
 
-1. 主对比表: `Single-PPO / Indep-PPO / MAPPO`
-2. 任务统计表: 全部任务数、可观测任务数、完成数
-3. 全局分配消融: `assignment_v2`
-4. Oracle gap: `oracle_v1`
-5. 学习式分配 scorer: `learned_assignment_v1`
-6. 滚动/层级分配: `assignment_rolling_v1` + `hier_assignment_v1`
-7. 训练辅助机制: `reward_v1`、`state_v1`、`train_stability_v1`、`communication_v1`
-8. 外循环结构: `meta_encoder_v1`
+目的:估计 MAPPO 与集中式启发式上界的距离。
 
-## 10. 最小优先运行路线
+```bash
+$PY run_ablation.py \
+  --python $PY \
+  --preset oracle_v1 \
+  --acled_path $ACLED \
+  --n_satellites 6 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --methods mappo,oracle \
+  --out_root runs/ablation_oracle_v1 \
+  --device $DEVICE
+```
 
-如果计算资源有限,优先运行:
+重点指标:
+
+- `mappo_oracle_gap_n_scheduled`:Oracle 完成数 - MAPPO 完成数。
+- `mappo_oracle_relative_completion`:MAPPO 相对 Oracle 的完成比例。
+
+注意:当前 Oracle 是 Greedy-Oracle,不是严格 ILP 最优,但适合做统一强启发式参考。
+
+---
+
+## 9. S6 结果汇总与横向对比
+
+每个批次根目录会生成:
 
 ```text
-compare_main
-assignment_v2
-oracle_v1
-learned_assignment_v1
-assignment_rolling_v1
-hier_assignment_v1
+runs/<ablation_root>/<batch_name>/
+├── ablation_summary.csv
+├── ablation_summary.json
+├── <tag_1>/
+│   ├── comparison_results.json
+│   ├── manifest.json
+│   └── *_viz_data.json
+└── <tag_2>/
+    ├── comparison_results.json
+    └── manifest.json
 ```
 
-这条路线最能支撑“多星协同 + 任务分配优化”的主线。
+建议最终报告至少做 4 张表:
 
+| 表 | 数据来源 | 目的 |
+|---|---|---|
+| Baseline 三方案表 | `runs/compare_baseline/**/comparison_results.json` | 证明 MAPPO 协同价值 |
+| 任务分配消融表 | `assignment_v2/learned_assignment/rolling/hier` 的 summary | 找最佳任务分配策略 |
+| 协同机制消融表 | `reward/state/train_stability/communication` 的 summary | 判断收益来自奖励、状态还是通信 |
+| Oracle gap 表 | `oracle_v1` summary | 说明离启发式上界还有多少空间 |
+
+推荐排序字段:
+
+1. 先按 `mappo_observation_success_rate` 或 `mappo_n_scheduled` 降序。
+2. 再按 `mappo_duplicate_rate` 升序。
+3. 再按 `mappo_avg_dynamic_response_s` 升序。
+4. 最后看 `mappo_load_balance_cv` 和 `mappo_avg_off_nadir_deg`。
+
+MAPPO-only 消融的 summary 只会包含 `mappo_*` 字段。只有运行了 `--methods single,indep,mappo` 时,才会出现 `indep_*`、`single_*` 和 `delta_*` 对比列。
+
+---
+
+## 10. 可视化
+
+方案对比图:
+
+```bash
+$PY visualize.py --compare_json runs/compare_baseline/<run_name>/comparison_results.json
+```
+
+训练曲线:
+
+```bash
+$PY visualize.py --run_dir runs/<train_run_dir>
+```
+
+多次训练对比:
+
+```bash
+$PY visualize.py \
+  --run_dirs runs/exp_a runs/exp_b \
+  --labels LSTM GRU
+```
+
+`compare_methods.py` 会写出 `*_viz_data.json`,用于任务分布图和任务调度甘特图。若某个子实验没有可视化文件,优先检查该子实验是否真实运行完成,而不是只做了 `--dry_run`。
+
+---
+
+## 11. 结果解读口径
+
+完成率:
+
+- `observation_success_rate`、`dynamic_completion_rate`、`routine_completion_rate` 使用可观测任务数作为分母。
+- `*_raw` 使用全部任务数作为分母,主要用于诊断轨道覆盖稀疏性。
+- `n_feasible_tasks`、`n_feasible_routine`、`n_feasible_dynamic` 必须和完成率一起报告。
+
+协同指标:
+
+- `duplicate_rate`:越低越好,MAPPO 应显著低于 Indep-PPO。
+- `load_balance_cv`:越低越均衡,但过低可能牺牲吞吐。
+- `avg_dynamic_response_s`:越低越好,动态任务优化重点。
+- `avg_off_nadir_deg`:越低表示观测质量越好。
+- `coordination_gain`:只有包含 Single-PPO baseline 时才解释。
+- `oracle_relative_completion`:只有包含 Oracle 时才解释。
+
+任务分配类指标:
+
+- `n_replans` 太高可能表示重分配过于频繁。
+- `owner_churn_rate` 太高可能导致训练非平稳。
+- `stale_owner_rate` 下降通常说明滚动重分配有效。
+- `deadline_rescue_rate` 上升说明释放/救援机制在发挥作用。
+
+---
+
+## 12. 推荐最终实验组合
+
+如果时间有限,优先跑下面 5 组:
+
+```bash
+# 1. 完整 baseline
+$PY compare_methods.py --acled_path $ACLED --methods single,indep,mappo \
+  --n_satellites 6 --train_iters 30 --eval_episodes 5 \
+  --n_routine 200 --n_dynamic 50 --out_dir runs/compare_baseline --device $DEVICE
+
+# 2. 全局任务指派
+$PY run_ablation.py --python $PY --preset assignment_v2 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_assignment_v2 --device $DEVICE
+
+# 3. 学习式任务分配 scorer
+$PY run_ablation.py --python $PY --preset learned_assignment_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_learned_assignment_v1 --device $DEVICE
+
+# 4. 滚动重分配 + 层级 manager
+$PY run_ablation.py --python $PY --preset assignment_rolling_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_assignment_rolling_v1 --device $DEVICE
+$PY run_ablation.py --python $PY --preset hier_assignment_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_hier_assignment_v1 --device $DEVICE
+
+# 5. Oracle gap
+$PY run_ablation.py --python $PY --preset oracle_v1 --acled_path $ACLED \
+  --methods mappo,oracle --out_root runs/ablation_oracle_v1 --device $DEVICE
+```
+
+如果需要论文复现完整性,再补:
+
+```bash
+$PY run_ablation.py --python $PY --preset reward_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_reward_v1 --device $DEVICE
+$PY run_ablation.py --python $PY --preset state_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_state_v1 --device $DEVICE
+$PY run_ablation.py --python $PY --preset communication_v1 --acled_path $ACLED \
+  --methods mappo --out_root runs/ablation_communication_v1 --device $DEVICE
+$PY run_ablation.py --python $PY --preset meta_encoder_v1 --acled_path $ACLED \
+  --out_root runs/ablation_meta_encoder_v1 --device $DEVICE
+```
+
+---
+
+## 13. 实验记录模板
+
+每完成一批实验,建议在记录中写:
+
+```text
+实验名称:
+运行日期:
+git commit:
+命令:
+输出目录:
+是否使用 ACLED:
+训练迭代 / 评估 episode:
+主要结论:
+最佳 tag:
+关键指标:
+  n_feasible_tasks:
+  mappo_n_scheduled:
+  mappo_observation_success_rate:
+  mappo_dynamic_completion_rate:
+  mappo_duplicate_rate:
+  mappo_load_balance_cv:
+  mappo_avg_dynamic_response_s:
+  mappo_avg_off_nadir_deg:
+问题/下一步:
+```
+
+最终对比时优先引用 `manifest.json` 中的命令和 git 信息,不要只依赖手写记录。
