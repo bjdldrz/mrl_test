@@ -73,6 +73,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from utils.experiment_dirs import unique_dir, safe_name
 
@@ -741,6 +742,19 @@ def parse_str_list(text):
     return [x.strip() for x in text.split(",") if x.strip()]
 
 
+def find_latest_batch_dir(out_root: Path, batch_prefix: str) -> Optional[Path]:
+    """Find the newest existing batch directory matching the generated batch prefix."""
+    if not out_root.exists():
+        return None
+    candidates = [
+        p for p in out_root.iterdir()
+        if p.is_dir() and p.name.startswith(f"{batch_prefix}_")
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (p.stat().st_mtime, p.name))
+
+
 def main():
     parser = argparse.ArgumentParser(description="批量运行 MRL-DMS/compare_methods.py 消融实验")
     parser.add_argument("--preset", type=str, default="assignment_v2",
@@ -755,6 +769,10 @@ def main():
                         help="本批消融实验名称; 默认由 preset/关键参数生成")
     parser.add_argument("--flat_out_root", action="store_true",
                         help="直接写入 --out_root, 不自动创建唯一批次子目录")
+    parser.add_argument("--resume_latest", action="store_true",
+                        help="复用 --out_root 下匹配当前 batch_name 的最新批次目录, 通常配合 --skip_existing 断点续跑")
+    parser.add_argument("--resume_root", type=str, default=None,
+                        help="复用指定的已有批次目录, 通常配合 --skip_existing 只补跑缺失子实验")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--n_satellites", type=int, default=6)
     parser.add_argument("--train_iters", type=int, default=30)
@@ -801,15 +819,33 @@ def main():
                         help="meta_encoder_v1 使用完整训练配置; 默认加 --fast 便于 smoke")
     args = parser.parse_args()
 
-    if args.flat_out_root:
+    if sum(bool(x) for x in [args.flat_out_root, args.resume_latest, args.resume_root]) > 1:
+        raise ValueError("--flat_out_root、--resume_latest、--resume_root 只能同时使用一个")
+
+    batch_name = args.batch_name or (
+        f"{args.preset}_sat{args.n_satellites}_iter{args.train_iters}_"
+        f"eval{args.eval_episodes}_seed{args.seed}"
+    )
+    batch_prefix = safe_name(batch_name)
+
+    if args.resume_root:
+        out_root = Path(args.resume_root)
+        if not out_root.exists():
+            raise FileNotFoundError(f"--resume_root 指定的目录不存在: {out_root}")
+    elif args.resume_latest:
+        base_root = Path(args.out_root)
+        latest = find_latest_batch_dir(base_root, batch_prefix)
+        if latest is None:
+            out_root = unique_dir(args.out_root, batch_prefix)
+            print(f"未找到可恢复批次, 创建新批次: {out_root}")
+        else:
+            out_root = latest
+            print(f"恢复最新批次: {out_root}")
+    elif args.flat_out_root:
         out_root = Path(args.out_root)
         out_root.mkdir(parents=True, exist_ok=True)
     else:
-        batch_name = args.batch_name or (
-            f"{args.preset}_sat{args.n_satellites}_iter{args.train_iters}_"
-            f"eval{args.eval_episodes}_seed{args.seed}"
-        )
-        out_root = unique_dir(args.out_root, safe_name(batch_name))
+        out_root = unique_dir(args.out_root, batch_prefix)
 
     if args.preset == "assignment_v2":
         specs = build_assignment_v2_specs(

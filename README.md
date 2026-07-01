@@ -187,6 +187,17 @@ python run_ablation.py --dry_run --train_iters 0 --eval_episodes 1
 默认情况下,`run_ablation.py` 会在 `--out_root` 下创建唯一批次目录,例如
 `runs/ablation_assignment_v2/assignment_v2_sat6_iter30_eval5_seed42_20260622_143000/`;
 各子实验再写入该批次目录下的 `<tag>/`。若要复用指定目录,加 `--flat_out_root`。
+如果某个批次中断或只想补跑缺失子实验,不要重新开新批次,使用:
+
+```bash
+python run_ablation.py \
+    --preset learned_assignment_v1 \
+    --out_root runs/ablation_learned_assignment_v1 \
+    --resume_latest \
+    --skip_existing
+```
+
+`--resume_latest` 会复用 `--out_root` 下匹配当前 preset/参数的最新批次目录;`--skip_existing` 会跳过已有 `manifest.json` 或 `summary.json` 的子实验。也可以用 `--resume_root <已有批次目录>` 精确指定要续跑的批次。
 
 默认 `assignment_v2` preset 会比较:
 - `--no_episode_assignment` baseline
