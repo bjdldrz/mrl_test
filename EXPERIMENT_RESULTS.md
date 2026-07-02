@@ -80,7 +80,7 @@
 
 ## 2. 后续推荐实验
 
-基于当前主对比结果,下一步先做基础三方案压力测试即可。暂时不展开滚动重分配、高层 manager 或 Oracle 上界实验,先验证在更大任务规模和更紧张资源条件下,MAPPO 的协同去重优势是否会进一步转化为有效完成数、动态响应和观测质量优势。
+基于当前主对比结果,下一步先做基础三方案压力测试即可。暂时不展开滚动重分配、高层 manager 或 Oracle 上界实验,先验证在更大任务规模和更大星座条件下,MAPPO 的协同去重优势是否会进一步转化为有效完成数、动态响应和资源利用优势。
 
 ### 2.1 基础三方案压力测试
 
@@ -99,6 +99,20 @@ python compare_methods.py \
 该压力配置需要 `1050` 个任务槽位,当前 `compare_methods.py` 会自动扩容 `max_action_dim`,避免动态任务被丢弃导致 `dynamic_completion_rate` 失真。
 
 重点看 `duplicate_rate`、`n_scheduled`、`observation_success_rate`、`dynamic_completion_rate`、`avg_dynamic_response_s`、`load_balance_cv` 和 `avg_off_nadir_deg`。如果压力测试中 MAPPO 相比 Indep-PPO 的完成数或动态响应优势明显扩大,就能支撑“资源越紧张,协同调度越有价值”的结论。
+
+### 2.2 大规模星座压力测试
+
+```bash
+python compare_methods.py \
+  --acled_path "$ACLED" \
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 \
+  --methods single,indep,mappo \
+  --out_dir runs/compare_scale_sat12 \
+  --device cuda:0
+```
+
+目的:验证星座规模扩大后,Indep-PPO 是否因多星重复选择同一任务而浪费更多资源,MAPPO 是否仍能通过全局任务所有权和冲突协调保持低重复率、高完成率和更好的观测质量。
 
 ---
 

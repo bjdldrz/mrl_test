@@ -212,6 +212,23 @@ python compare_methods.py \
 
 压力测试需要 `600 + 3×150 = 1050` 个任务槽位。`compare_methods.py` 会按任务规模自动扩容 `max_action_dim`,避免动态任务因默认 800 槽位不足而被丢弃;如需手动指定,可追加 `--max_action_dim 1200`。
 
+若要验证更大星座下 MAPPO 是否仍能协同规划、避免 Indep-PPO 随卫星数增加而产生更多重复观测,可运行大规模星座压力测试:
+
+```bash
+python compare_methods.py \
+  --acled_path "$ACLED" \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 5 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods single,indep,mappo \
+  --out_dir runs/compare_scale_sat12 \
+  --device cuda:0
+```
+
+当 `--n_satellites` 超过默认 6 颗时,`compare_methods.py` 会基于原 6 颗 SSO 卫星生成带 RAAN/相位偏移的派生星座。该实验重点看 `duplicate_rate` 是否随 Indep-PPO 星数放大而升高,以及 MAPPO 是否在保持完成率的同时继续把重复观测压到 0 或接近 0。
+
 ### 5.3 学习式任务分配 scorer 消融
 
 目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。

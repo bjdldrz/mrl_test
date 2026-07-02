@@ -40,6 +40,7 @@ import numpy as np
 import torch
 
 from config import get_default_config
+from config import SatelliteConfig
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.experiment_dirs import unique_dir, safe_name
 
@@ -107,6 +108,34 @@ def parse_methods(text, run_oracle=False):
     if not dedup:
         raise ValueError("--methods 至少需要包含一个方法")
     return dedup
+
+
+def expand_satellite_configs(base_satellites, n_satellites):
+    """Repeat the base constellation with RAAN/phase offsets for scale tests."""
+    if n_satellites <= len(base_satellites):
+        return copy.deepcopy(base_satellites[:n_satellites])
+
+    satellites = []
+    base_n = len(base_satellites)
+    for idx in range(n_satellites):
+        base = base_satellites[idx % base_n]
+        replica = idx // base_n
+        n_replicas = max((n_satellites + base_n - 1) // base_n, 1)
+        raan_offset = (replica * 360.0 / n_replicas) % 360.0
+        phase_offset = (idx * 360.0 / n_satellites) % 360.0
+        satellites.append(SatelliteConfig(
+            name=f"{base.name}_r{replica + 1}" if replica else base.name,
+            semi_major_axis_km=base.semi_major_axis_km,
+            eccentricity=base.eccentricity,
+            inclination_deg=base.inclination_deg,
+            raan_deg=(base.raan_deg + raan_offset) % 360.0,
+            arg_perigee_deg=base.arg_perigee_deg,
+            mean_anomaly_deg=(base.mean_anomaly_deg + phase_offset) % 360.0,
+            max_roll_deg=base.max_roll_deg,
+            fov_deg=base.fov_deg,
+            maneuver_speed_deg_s=base.maneuver_speed_deg_s,
+        ))
+    return satellites
 
 
 def _avg_metrics(metrics_list):
@@ -620,6 +649,8 @@ def main():
     device = torch.device(args.device)
 
     cfg = get_default_config()
+    base_satellite_count = len(cfg.satellites)
+    cfg.satellites = expand_satellite_configs(cfg.satellites, args.n_satellites)
     cfg.mappo.n_satellites = args.n_satellites
     required_action_dim = (
         args.n_routine
@@ -642,6 +673,12 @@ def main():
         cfg.mission.max_action_dim,
         required_action_dim,
     )
+    if args.n_satellites > base_satellite_count:
+        logger.info(
+            "星座规模扩展: 使用 %s 颗派生卫星 (基础配置 %s 颗)",
+            len(cfg.satellites),
+            base_satellite_count,
+        )
 
     acled = load_acled_shapefile(args.acled_path) if args.acled_path else None
     mission_gen = MissionGenerator(acled_df=acled, seed=args.seed)
