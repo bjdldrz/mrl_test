@@ -135,6 +135,9 @@ class MRLDMSTrainer:
         self.global_step = 0
         self.meta_iteration = 0
         self.best_reward = -float('inf')
+        self.best_train_reward = -float('inf')
+        self.last_train_reward = None
+        self.last_train_dynamic_rate = None
         # 初始化反馈向量 (避免首次 meta_update 时未定义)
         self._prev_feedback = MetaLearner.build_feedback_vector(
             cumulative_reward=0.0, avg_advantage=0.0,
@@ -294,6 +297,11 @@ class MRLDMSTrainer:
                 meta_loss, meta_info = self._meta_update()
                 lr_scheduler.step()
 
+                self.last_train_reward = float(meta_info["avg_reward"])
+                self.last_train_dynamic_rate = float(meta_info["avg_dynamic_rate"])
+                if self.last_train_reward > self.best_train_reward:
+                    self.best_train_reward = self.last_train_reward
+
                 # 进度条实时指标
                 pbar.set_postfix(
                     loss=f"{meta_loss:.4f}",
@@ -351,6 +359,11 @@ class MRLDMSTrainer:
             "total_iters": total_iters,
             "global_step": self.global_step,
             "best_reward": self.best_reward,
+            "best_eval_reward": self.best_reward,
+            "has_eval": bool(np.isfinite(self.best_reward)),
+            "best_train_reward": self.best_train_reward,
+            "last_train_reward": self.last_train_reward,
+            "last_train_dynamic_rate": self.last_train_dynamic_rate,
             "meta_encoder_type": self.cfg.network.meta_encoder_type,
             "mappo_n_satellites": self.cfg.mappo.n_satellites,
             "multi_agent": self.multi_agent,
@@ -927,6 +940,9 @@ class MRLDMSTrainer:
             'global_step': self.global_step,
             'meta_iteration': self.meta_iteration,
             'best_reward': self.best_reward,
+            'best_train_reward': self.best_train_reward,
+            'last_train_reward': self.last_train_reward,
+            'last_train_dynamic_rate': self.last_train_dynamic_rate,
         }
         if self.multi_agent and self._mappo_model is not None:
             ckpt['mappo_model'] = self._mappo_model.state_dict()
@@ -949,6 +965,9 @@ class MRLDMSTrainer:
         self.global_step = ckpt.get('global_step', 0)
         self.meta_iteration = ckpt.get('meta_iteration', 0)
         self.best_reward = ckpt.get('best_reward', -float('inf'))
+        self.best_train_reward = ckpt.get('best_train_reward', -float('inf'))
+        self.last_train_reward = ckpt.get('last_train_reward')
+        self.last_train_dynamic_rate = ckpt.get('last_train_dynamic_rate')
         logger.info(f"检查点已加载: {path}")
 
     @staticmethod

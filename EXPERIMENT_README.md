@@ -447,6 +447,8 @@ python run_ablation.py \
 说明:
 
 - 默认是快速配置,适合验证接口和小规模趋势。
+- `--meta_iterations 2` 不会触发默认 `eval_interval=10` 的评估,因此短跑主要看 `best_train_reward`、`last_train_reward` 和 `last_train_dynamic_rate`。
+- 若要比较评估奖励,将 `--meta_iterations` 提高到至少 11,或使用完整训练配置;此时重点看 `best_eval_reward` / `best_reward`。
 - 若要完整训练,加 `--full_train`。
 - 每个子实验输出 `summary.json`、`train_log.csv`、`eval_log.csv`。
 - 这组不是 `compare_methods.py` 三方案对比,而是调用 `train.py` 的训练型消融。
