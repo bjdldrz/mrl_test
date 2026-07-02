@@ -229,20 +229,31 @@ python compare_methods.py \
 
 当 `--n_satellites` 超过默认 6 颗时,`compare_methods.py` 会基于原 6 颗 SSO 卫星生成带 RAAN/相位偏移的派生星座。该实验重点看 `duplicate_rate` 是否随 Indep-PPO 星数放大而升高,以及 MAPPO 是否在保持完成率的同时继续把重复观测压到 0 或接近 0。
 
-### 5.3 学习式任务分配 scorer 消融
+后续优化版本消融统一采用该压力口径:
 
-目的:比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。
+```text
+n_satellites = 12
+n_routine = 1200
+n_dynamic = 300
+methods = mappo
+```
+
+这样可以避免轻载场景下所有方法都接近可观测任务上限,导致优化收益不明显。
+
+### 5.3 学习式任务分配 scorer 压力消融
+
+目的:在大规模星座压力场景下比较 heuristic、MLP、LSTM、GRU、Transformer、Set Transformer、GNN 分配 scorer。后续任务分配类优化默认使用该压力口径,避免轻载场景下优化空间不足。
 
 ```bash
 python run_ablation.py \
   --python python \
   --preset learned_assignment_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
   --assignment_scorer_mixes 0.1,0.25,0.5 \
   --assignment_sequence_scorers lstm,gru \
@@ -251,7 +262,7 @@ python run_ablation.py \
   --assignment_attention_mixes 0.25 \
   --assignment_graph_scorers gnn \
   --assignment_graph_mixes 0.25 \
-  --out_root runs/ablation_learned_assignment_v1 \
+  --out_root runs/ablation_learned_assignment_v1_stress \
   --device cuda:0
 ```
 
@@ -264,7 +275,7 @@ python run_ablation.py \
 - `mappo_avg_dynamic_response_s`
 - `mappo_avg_off_nadir_deg`
 
-### 5.4 滚动重分配消融
+### 5.4 滚动重分配压力消融
 
 目的:比较静态 owner、周期重分配、事件触发重分配、MPC 窗口重分配。
 
@@ -273,13 +284,13 @@ python run_ablation.py \
   --python python \
   --preset assignment_rolling_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_assignment_rolling_v1 \
+  --out_root runs/ablation_assignment_rolling_v1_stress \
   --device cuda:0
 ```
 
@@ -291,7 +302,7 @@ python run_ablation.py \
 - `mappo_stale_owner_rate`:失效 owner 比例。
 - `mappo_deadline_rescue_rate`:临近截止救援比例。
 
-### 5.5 高层分配 manager + 低层 MAPPO
+### 5.5 高层分配 manager + 低层 MAPPO 压力消融
 
 目的:验证规则式高层 manager 是否优于普通滚动重分配,为后续学习式高层策略铺接口。
 
@@ -300,13 +311,13 @@ python run_ablation.py \
   --python python \
   --preset hier_assignment_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_hier_assignment_v1 \
+  --out_root runs/ablation_hier_assignment_v1_stress \
   --device cuda:0
 ```
 
@@ -319,7 +330,7 @@ python run_ablation.py \
 
 ## 6. S3 协同机制消融
 
-### 6.1 协同奖励消融
+### 6.1 协同奖励压力消融
 
 目的:判断团队奖励、负载奖励、团队完成 bonus 和奖励归一化是否改善协同。
 
@@ -328,13 +339,13 @@ python run_ablation.py \
   --python python \
   --preset reward_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_reward_v1 \
+  --out_root runs/ablation_reward_v1_stress \
   --device cuda:0
 ```
 
@@ -345,7 +356,7 @@ python run_ablation.py \
 - `load_balance_cv` 是否下降。
 - `total_reward` 是否和任务指标方向一致。
 
-### 6.2 Critic 全局状态消融
+### 6.2 Critic 全局状态压力消融
 
 目的:比较 mean pooling、追加任务统计、concat 全局状态等 critic 输入方式。
 
@@ -354,13 +365,13 @@ python run_ablation.py \
   --python python \
   --preset state_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_state_v1 \
+  --out_root runs/ablation_state_v1_stress \
   --device cuda:0
 ```
 
@@ -370,7 +381,7 @@ python run_ablation.py \
 - 任务统计是否帮助 critic 估计全局价值。
 - concat 是否在 6 星规模下带来更好结果。
 
-### 6.3 训练稳定性消融
+### 6.3 训练稳定性压力消融
 
 目的:比较卫星数量 curriculum、联合探索、组合策略对 MAPPO 训练稳定性的影响。
 
@@ -379,17 +390,17 @@ python run_ablation.py \
   --python python \
   --preset train_stability_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_train_stability_v1 \
+  --out_root runs/ablation_train_stability_v1_stress \
   --device cuda:0
 ```
 
-### 6.4 执行期通信消融
+### 6.4 执行期通信压力消融
 
 目的:比较无通信、意图广播、意图广播 + 稳定训练策略。
 
@@ -398,13 +409,13 @@ python run_ablation.py \
   --python python \
   --preset communication_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo \
-  --out_root runs/ablation_communication_v1 \
+  --out_root runs/ablation_communication_v1_stress \
   --device cuda:0
 ```
 
@@ -442,7 +453,7 @@ python run_ablation.py \
 
 ---
 
-## 8. S5 Oracle/上界实验
+## 8. S5 Oracle/上界压力实验
 
 目的:估计 MAPPO 与集中式启发式上界的距离。
 
@@ -451,13 +462,13 @@ python run_ablation.py \
   --python python \
   --preset oracle_v1 \
   --acled_path "$ACLED" \
-  --n_satellites 6 \
+  --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
-  --n_routine 200 \
-  --n_dynamic 50 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --methods mappo,oracle \
-  --out_root runs/ablation_oracle_v1 \
+  --out_root runs/ablation_oracle_v1_stress \
   --device cuda:0
 ```
 
@@ -575,37 +586,53 @@ python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
   --n_routine 600 --n_dynamic 150 --out_dir runs/compare_stress --device cuda:0
 ```
 
-压力测试完成后,如果 MAPPO 优势仍不明显,再补下面这些机制消融定位原因:
+压力测试完成后,后续优化版本消融也使用同一压力口径,以保证有足够优化空间:
 
 ```bash
 # 3. 全局任务指派
 python run_ablation.py --python python --preset assignment_v2 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_assignment_v2 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_assignment_v2_stress --device cuda:0
 
 # 4. 学习式任务分配 scorer
 python run_ablation.py --python python --preset learned_assignment_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_learned_assignment_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_learned_assignment_v1_stress --device cuda:0
 
 # 5. 滚动重分配 + 层级 manager
 python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_assignment_rolling_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_assignment_rolling_v1_stress --device cuda:0
 python run_ablation.py --python python --preset hier_assignment_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_hier_assignment_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_hier_assignment_v1_stress --device cuda:0
 
 # 6. Oracle gap
 python run_ablation.py --python python --preset oracle_v1 --acled_path "$ACLED" \
-  --methods mappo,oracle --out_root runs/ablation_oracle_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo,oracle \
+  --out_root runs/ablation_oracle_v1_stress --device cuda:0
 ```
 
 如果需要论文复现完整性,再补:
 
 ```bash
 python run_ablation.py --python python --preset reward_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_reward_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_reward_v1_stress --device cuda:0
 python run_ablation.py --python python --preset state_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_state_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_state_v1_stress --device cuda:0
 python run_ablation.py --python python --preset communication_v1 --acled_path "$ACLED" \
-  --methods mappo --out_root runs/ablation_communication_v1 --device cuda:0
+  --n_satellites 12 --train_iters 30 --eval_episodes 5 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_communication_v1_stress --device cuda:0
 python run_ablation.py --python python --preset meta_encoder_v1 --acled_path "$ACLED" \
   --out_root runs/ablation_meta_encoder_v1 --device cuda:0
 ```

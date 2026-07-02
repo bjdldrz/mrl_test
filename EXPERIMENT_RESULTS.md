@@ -114,6 +114,19 @@ python compare_methods.py \
 
 目的:验证星座规模扩大后,Indep-PPO 是否因多星重复选择同一任务而浪费更多资源,MAPPO 是否仍能通过全局任务所有权和冲突协调保持低重复率、高完成率和更好的观测质量。
 
+### 2.3 后续优化消融口径
+
+后续优化版本消融统一放在大规模压力场景下运行:
+
+```text
+n_satellites = 12
+n_routine = 1200
+n_dynamic = 300
+methods = mappo
+```
+
+这样可以避免轻载场景下 Indep-PPO/MAPPO 都接近可观测任务完成上限,导致任务分配、奖励、通信等优化收益被压缩。重点比较各优化版本的 `mappo_n_scheduled`、`mappo_duplicate_rate`、`mappo_dynamic_completion_rate`、`mappo_avg_dynamic_response_s`、`mappo_load_balance_cv` 和 `mappo_avg_off_nadir_deg`。
+
 ---
 
 ## 3. 写作建议
