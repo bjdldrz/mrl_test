@@ -653,6 +653,41 @@ def optional_metric(results, method, key):
     return "" if value in ("", None) else float(value)
 
 
+def summarize_train_log(summary, out_dir):
+    train_log = summary.get("train_log") or str(out_dir / "train_log.csv")
+    train_log_path = Path(train_log)
+    if not train_log_path.exists():
+        train_log_path = out_dir / "train_log.csv"
+    if not train_log_path.exists():
+        return {}
+
+    rows = []
+    with open(train_log_path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("avg_reward") in ("", None):
+                continue
+            rows.append(row)
+    if not rows:
+        return {}
+
+    rewards = [float(row["avg_reward"]) for row in rows]
+    last = rows[-1]
+    metrics = {
+        "best_train_reward": max(rewards),
+        "last_train_reward": float(last["avg_reward"]),
+    }
+    if last.get("avg_dynamic_rate") not in ("", None):
+        metrics["last_train_dynamic_rate"] = float(last["avg_dynamic_rate"])
+    return metrics
+
+
+def first_present(*values):
+    for value in values:
+        if value not in ("", None):
+            return value
+    return ""
+
+
 def summarize_run(tag, params, out_dir):
     result_path = out_dir / "comparison_results.json"
     manifest_path = out_dir / "manifest.json"
@@ -715,16 +750,26 @@ def summarize_run(tag, params, out_dir):
 def summarize_train_run(tag, params, out_dir):
     summary_path = out_dir / "summary.json"
     summary = load_json(summary_path)
+    train_metrics = summarize_train_log(summary, out_dir)
     row = {
         "tag": tag,
         "out_dir": str(out_dir),
         **params,
-        "best_reward": summary.get("best_reward", ""),
-        "best_eval_reward": summary.get("best_eval_reward", summary.get("best_reward", "")),
+        "best_reward": first_present(summary.get("best_reward")),
+        "best_eval_reward": first_present(summary.get("best_eval_reward"), summary.get("best_reward")),
         "has_eval": summary.get("has_eval", ""),
-        "best_train_reward": summary.get("best_train_reward", ""),
-        "last_train_reward": summary.get("last_train_reward", ""),
-        "last_train_dynamic_rate": summary.get("last_train_dynamic_rate", ""),
+        "best_train_reward": first_present(
+            summary.get("best_train_reward"),
+            train_metrics.get("best_train_reward"),
+        ),
+        "last_train_reward": first_present(
+            summary.get("last_train_reward"),
+            train_metrics.get("last_train_reward"),
+        ),
+        "last_train_dynamic_rate": first_present(
+            summary.get("last_train_dynamic_rate"),
+            train_metrics.get("last_train_dynamic_rate"),
+        ),
         "global_step": summary.get("global_step", 0),
         "total_iters": summary.get("total_iters", 0),
         "train_log": summary.get("train_log", ""),
