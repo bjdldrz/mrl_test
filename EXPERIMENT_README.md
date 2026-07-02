@@ -30,10 +30,10 @@
 
 ## 2. 通用运行参数
 
-服务器/AutoDL 推荐先设置真实 ACLED 数据路径:
+服务器/AutoDL 推荐直接使用真实 ACLED 数据路径:
 
-```bash
-ACLED=./DynamicMission/DynamicMission.shp
+```text
+./DynamicMission/DynamicMission.shp
 ```
 
 消融实验通用参数:
@@ -66,7 +66,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset learned_assignment_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --methods mappo \
   --out_root runs/ablation_learned_assignment_v1 \
   --device cuda:0 \
@@ -115,7 +115,7 @@ python compare_methods.py \
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -155,7 +155,7 @@ python compare_methods.py \
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -172,7 +172,7 @@ python compare_methods.py \
 python run_ablation.py \
   --python python \
   --preset assignment_v2 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --methods single,indep,mappo \
   --out_root runs/ablation_assignment_v2_full \
   --device cuda:0
@@ -191,7 +191,7 @@ python run_ablation.py \
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 6 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -216,7 +216,7 @@ python compare_methods.py \
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -248,7 +248,7 @@ methods = mappo
 python run_ablation.py \
   --python python \
   --preset learned_assignment_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -283,7 +283,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset assignment_rolling_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -310,7 +310,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset hier_assignment_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -338,7 +338,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset reward_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -364,7 +364,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset state_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -389,7 +389,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset train_stability_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -408,7 +408,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset communication_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -435,7 +435,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset meta_encoder_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --seed 42 \
   --meta_iterations 2 \
   --meta_encoder_types lstm,gru,mlp,transformer,set_transformer \
@@ -451,7 +451,7 @@ python run_ablation.py \
 - 若要比较评估奖励,将 `--meta_iterations` 提高到至少 6;此时重点看 `best_eval_reward` / `best_reward`。
 - `train.py` 会按训练池和评估规模自动扩容 `max_action_dim`;如需手动指定,可追加 `--max_action_dim 800`。
 - `meta_encoder_v1` 的 `--n_routine/--n_dynamic` 用作训练型消融的 eval 任务规模,默认 `200 + 3×50`。
-- 如果日志出现“未指定 ACLED 数据”,说明 `$ACLED` 为空或未传入有效路径,当前实验会退回合成动态任务。
+- 如果日志出现“未指定 ACLED 数据”,说明 `./DynamicMission/DynamicMission.shp` 文件不存在或路径无效,当前实验会退回合成动态任务。
 - 若要完整训练,加 `--full_train`。
 - 每个子实验输出 `summary.json`、`train_log.csv`、`eval_log.csv`。
 - 这组不是 `compare_methods.py` 三方案对比,而是调用 `train.py` 的训练型消融。
@@ -466,7 +466,7 @@ python run_ablation.py \
 python run_ablation.py \
   --python python \
   --preset oracle_v1 \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 5 \
@@ -581,12 +581,12 @@ python visualize.py \
 
 ```bash
 # 1. 完整 baseline
-python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
+python compare_methods.py --acled_path ./DynamicMission/DynamicMission.shp --methods single,indep,mappo \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 200 --n_dynamic 50 --out_dir runs/compare_baseline --device cuda:0
 
 # 2. 基础三方案压力测试
-python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
+python compare_methods.py --acled_path ./DynamicMission/DynamicMission.shp --methods single,indep,mappo \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 600 --n_dynamic 150 --out_dir runs/compare_stress --device cuda:0
 ```
@@ -595,29 +595,29 @@ python compare_methods.py --acled_path "$ACLED" --methods single,indep,mappo \
 
 ```bash
 # 3. 全局任务指派
-python run_ablation.py --python python --preset assignment_v2 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset assignment_v2 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_assignment_v2_stress --device cuda:0
 
 # 4. 学习式任务分配 scorer
-python run_ablation.py --python python --preset learned_assignment_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset learned_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_learned_assignment_v1_stress --device cuda:0
 
 # 5. 滚动重分配 + 层级 manager
-python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1_stress --device cuda:0
-python run_ablation.py --python python --preset hier_assignment_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset hier_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_hier_assignment_v1_stress --device cuda:0
 
 # 6. Oracle gap
-python run_ablation.py --python python --preset oracle_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset oracle_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo,oracle \
   --out_root runs/ablation_oracle_v1_stress --device cuda:0
@@ -626,19 +626,19 @@ python run_ablation.py --python python --preset oracle_v1 --acled_path "$ACLED" 
 如果需要论文复现完整性,再补:
 
 ```bash
-python run_ablation.py --python python --preset reward_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset reward_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_reward_v1_stress --device cuda:0
-python run_ablation.py --python python --preset state_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset state_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_state_v1_stress --device cuda:0
-python run_ablation.py --python python --preset communication_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset communication_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_communication_v1_stress --device cuda:0
-python run_ablation.py --python python --preset meta_encoder_v1 --acled_path "$ACLED" \
+python run_ablation.py --python python --preset meta_encoder_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --meta_iterations 12 --n_routine 200 --n_dynamic 50 \
   --out_root runs/ablation_meta_encoder_v1 --device cuda:0
 ```

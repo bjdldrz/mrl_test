@@ -86,7 +86,7 @@
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 6 --train_iters 30 --eval_episodes 5 \
   --n_routine 600 --n_dynamic 150 \
   --methods single,indep,mappo \
@@ -104,7 +104,7 @@ python compare_methods.py \
 
 ```bash
 python compare_methods.py \
-  --acled_path "$ACLED" \
+  --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 \
   --methods single,indep,mappo \
