@@ -24,7 +24,6 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import sys
-import json
 import time
 import copy
 import argparse
@@ -43,6 +42,7 @@ from config import get_default_config
 from config import SatelliteConfig
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.experiment_dirs import unique_dir, safe_name
+from utils.json_utils import dump_json
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -194,7 +194,7 @@ def _write_manifest(out_dir: Path, args, results, elapsed_s: float):
         "results": results,
     }
     with open(out_dir / "manifest.json", "w") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        dump_json(manifest, f, indent=2, ensure_ascii=False)
 
 
 def _mission_to_dict(m):
@@ -237,7 +237,7 @@ def _save_single_viz_data(env, out_dir: Path, method_name: str):
     }
     path = out_dir / f"{method_name}_viz_data.json"
     with open(path, "w") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+        dump_json(payload, f, indent=2, ensure_ascii=False)
     return path
 
 
@@ -255,7 +255,7 @@ def _save_multi_viz_data(env, out_dir: Path, method_name: str):
     }
     path = out_dir / f"{method_name}_viz_data.json"
     with open(path, "w") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+        dump_json(payload, f, indent=2, ensure_ascii=False)
     return path
 
 
@@ -785,7 +785,7 @@ def main():
         results["Greedy-Oracle"]["oracle_relative_completion"] = 1.0
 
     with open(out_dir / "comparison_results.json", "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+        dump_json(results, f, indent=2, ensure_ascii=False)
     elapsed_s = time.time() - t0
     _write_manifest(out_dir, args, results, elapsed_s)
 

@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.experiment_dirs import unique_dir, safe_name
+from utils.json_utils import dump_json
 
 ROOT = Path(__file__).resolve().parent
 
@@ -732,7 +733,7 @@ def write_summary(rows, out_root):
     json_path = out_root / "ablation_summary.json"
     csv_path = out_root / "ablation_summary.csv"
     with open(json_path, "w") as f:
-        json.dump(rows, f, indent=2, ensure_ascii=False)
+        dump_json(rows, f, indent=2, ensure_ascii=False)
 
     if rows:
         fieldnames = []

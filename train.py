@@ -41,6 +41,7 @@ from models.actor_critic import ActorCritic
 from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.experiment_dirs import safe_name, timestamp
+from utils.json_utils import dump_json
 
 import numpy as np
 import torch
@@ -66,7 +67,6 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
     """PPO baseline 训练 (用于对比实验)"""
     from tqdm import tqdm
     import csv
-    import json
 
     mission_gen = MissionGenerator(acled_df=acled_df, seed=config.train.seed)
 
@@ -193,7 +193,7 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
         "train_log": train_log_path,
     }
     with open(os.path.join(log_dir, "summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+        dump_json(summary, f, indent=2)
 
     logger.info(f"PPO baseline 训练完成, 日志: {log_dir}")
     return actor_critic

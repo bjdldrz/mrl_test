@@ -22,7 +22,6 @@ import torch.optim as optim
 import numpy as np
 import copy
 import csv
-import json
 import time
 import logging
 from multiprocessing import get_context
@@ -35,6 +34,7 @@ from models.meta_learner import MetaLearner
 from algo.ppo import PPOTrainer, RolloutBuffer
 from envs.satellite_env import SatelliteSchedulingEnv
 from data.mission_generator import MissionGenerator
+from utils.json_utils import dump_json
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,7 @@ class MRLDMSTrainer:
         }
         summary_path = log_dir / "summary.json"
         with open(summary_path, "w") as f:
-            json.dump(summary, f, indent=2)
+            dump_json(summary, f, indent=2)
 
         logger.info(f"训练完成, 摘要已保存至: {summary_path}")
 
