@@ -1001,12 +1001,16 @@ def main():
                 "--seed", str(args.seed),
                 "--device", args.device,
                 "--meta_iterations", str(args.meta_iterations),
+                "--eval_n_routine", str(args.n_routine),
+                "--eval_n_dynamic", str(args.n_dynamic),
                 "--log_dir", str(out_root),
                 "--exp_name", tag,
                 *spec["extra_args"],
             ]
             if not args.full_train:
                 cmd.insert(6, "--fast")
+            if args.max_action_dim is not None:
+                cmd.extend(["--max_action_dim", str(args.max_action_dim)])
             if args.acled_path:
                 cmd.extend(["--acled_path", args.acled_path])
         else:

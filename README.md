@@ -439,6 +439,8 @@ python run_ablation.py \
 - `python train.py --method mrl_dms --meta_encoder_type gru --device cpu`
 - `python train.py --method mrl_dms --meta_encoder_type lstm --mappo_n_satellites 6 --device cpu`
 
+训练型消融会自动按训练池和评估规模扩容 `max_action_dim`,避免动态任务槽位不足污染完成率。`--fast` 下评估间隔为 5;`--meta_iterations 2` 只适合接口 smoke,若要看 `best_eval_reward` 至少设为 6。`--n_routine/--n_dynamic` 在 `meta_encoder_v1` 中表示 eval 任务规模;如果日志提示“未指定 ACLED 数据”,请先确认 `$ACLED` 已设置为有效 `.shp` 路径。
+
 只对比 LSTM / GRU / Transformer 三种单星外循环编码器:
 
 ```bash
@@ -446,6 +448,8 @@ python run_ablation.py \
     --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
     --preset meta_encoder_v1 \
     --meta_encoder_types lstm,gru,transformer \
+    --n_routine 200 \
+    --n_dynamic 50 \
     --out_root runs/ablation_meta_encoder_v1 \
     --batch_name lstm_gru_transformer_compare \
     --meta_iterations 20 \
@@ -461,6 +465,8 @@ python run_ablation.py \
     --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
     --preset meta_encoder_v1 \
     --meta_encoder_types lstm,gru,transformer \
+    --n_routine 200 \
+    --n_dynamic 50 \
     --out_root runs/ablation_meta_encoder_v1 \
     --batch_name lstm_gru_transformer_compare \
     --meta_iterations 20 \

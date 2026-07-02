@@ -155,6 +155,8 @@ class TrainConfig:
     save_interval: int = 20        # 每 20 次元迭代保存一次
     log_dir: str = "runs/"
     checkpoint_dir: str = "checkpoints/"
+    eval_n_routine: int = 200
+    eval_n_dynamic_per_insertion: int = 50
     vtw_time_step_s: float = 60.0            # VTW 采样步长(秒); LEO 过境快, >60s 会漏采过境最接近点
                                              # 实测: 300s 严重漏窗→0, 60s 稳定且单次仅 ~4ms(有跨任务缓存)
     num_workers: int = 16                    # 并行 worker 数; 0 = 自动(等于 meta_batch_size)

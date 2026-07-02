@@ -199,6 +199,37 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
     return actor_critic
 
 
+def configure_action_space(config: Config, requested_max_action_dim: int = None):
+    """确保动作槽位能容纳训练/评估任务规模，避免动态任务被截断。"""
+    train_required = (
+        max(config.mission.routine_pool_sizes)
+        + config.mission.dynamic_insertions_per_day * max(config.mission.dynamic_pool_sizes)
+    )
+    eval_required = (
+        config.train.eval_n_routine
+        + config.mission.dynamic_insertions_per_day * config.train.eval_n_dynamic_per_insertion
+    )
+    required = max(train_required, eval_required)
+
+    if requested_max_action_dim is not None and requested_max_action_dim < required:
+        raise ValueError(
+            f"--max_action_dim={requested_max_action_dim} 小于当前训练/评估任务槽位需求 "
+            f"{required}; 请调大该值,否则 dynamic_completion_rate 会被污染"
+        )
+
+    config.mission.max_action_dim = max(
+        config.mission.max_action_dim,
+        requested_max_action_dim or 0,
+        required,
+    )
+    logger.info(
+        "动作空间任务槽位: max_action_dim=%s, 训练需求=%s, 评估需求=%s",
+        config.mission.max_action_dim,
+        train_required,
+        eval_required,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="MRL-DMS Training")
     parser.add_argument("--method", type=str, default="mrl_dms",
@@ -210,7 +241,6 @@ def main():
                         help="快速测试模式 (减少训练步数)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto",
-                        choices=["auto", "cpu", "cuda", "mps"],
                         help="计算设备; 本地 Mac 请用 cpu (MPS 的 recurrent backward 有 bug 会崩溃)")
     parser.add_argument("--meta_encoder_type", type=str, default=None,
                         choices=["lstm", "gru", "mlp", "transformer", "set_transformer"],
@@ -233,6 +263,12 @@ def main():
                         help="训练日志根目录, 默认使用配置中的 runs/")
     parser.add_argument("--meta_iterations", type=int, default=None,
                         help="覆盖 MRL-DMS 外循环迭代次数, 便于消融 smoke")
+    parser.add_argument("--max_action_dim", type=int, default=None,
+                        help="动作空间任务槽位数; 默认按训练/评估任务规模自动扩容")
+    parser.add_argument("--eval_n_routine", type=int, default=None,
+                        help="MRL-DMS evaluate() 使用的常规任务数")
+    parser.add_argument("--eval_n_dynamic", type=int, default=None,
+                        help="MRL-DMS evaluate() 每次动态插入的任务数")
     args = parser.parse_args()
 
     # 加载配置
@@ -251,6 +287,10 @@ def main():
         config.mappo.n_satellites = args.mappo_n_satellites
     if args.log_dir is not None:
         config.train.log_dir = args.log_dir
+    if args.eval_n_routine is not None:
+        config.train.eval_n_routine = args.eval_n_routine
+    if args.eval_n_dynamic is not None:
+        config.train.eval_n_dynamic_per_insertion = args.eval_n_dynamic
 
     if args.fast:
         config.train.total_training_steps = 5000
@@ -266,6 +306,8 @@ def main():
         config.train.log_interval = 1
         config.train.eval_interval = 5
         logger.info("快速测试模式")
+
+    configure_action_space(config, requested_max_action_dim=args.max_action_dim)
 
     # 设置随机种子
     np.random.seed(args.seed)

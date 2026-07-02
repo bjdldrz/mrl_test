@@ -904,8 +904,8 @@ class MRLDMSTrainer:
 
         for _ in range(n_episodes):
             routine, dynamic = self.mission_gen.generate_episode_missions(
-                n_routine=200,
-                n_dynamic_per_insertion=50,
+                n_routine=self.cfg.train.eval_n_routine,
+                n_dynamic_per_insertion=self.cfg.train.eval_n_dynamic_per_insertion,
             )
             self._precompute_task_vtw(routine, dynamic)
 
