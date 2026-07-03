@@ -72,6 +72,7 @@ import csv
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -886,6 +887,8 @@ def main():
                         help="不运行 --no_episode_assignment baseline")
     parser.add_argument("--skip_existing", action="store_true",
                         help="若子实验已有 manifest.json 则跳过")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="并行运行多少个子实验; 普通消融训练阶段用它吃多 CPU, 1 为串行")
     parser.add_argument("--dry_run", action="store_true",
                         help="只打印命令, 不运行")
     parser.add_argument("--run_oracle", action="store_true",
@@ -1037,7 +1040,7 @@ def main():
             mappo_n_satellites=args.meta_mappo_n_satellites,
         )
 
-    rows = []
+    jobs = []
     for idx, spec in enumerate(specs, start=1):
         tag = spec["tag"]
         out_dir = out_root / tag
@@ -1113,22 +1116,59 @@ def main():
             if args.acled_path:
                 cmd.extend(["--acled_path", args.acled_path])
 
-        print(f"[{idx}/{len(specs)}] {tag}")
-        print(" ".join(cmd))
-        if args.dry_run:
-            continue
-        if args.skip_existing and manifest_path.exists():
-            print(f"skip existing: {manifest_path}")
-        else:
-            subprocess.run(cmd, cwd=ROOT, check=True)
-        if spec.get("script") == "train":
-            rows.append(summarize_train_run(tag, spec["params"], out_dir))
-        else:
-            rows.append(summarize_run(tag, spec["params"], out_dir))
-        write_summary(rows, out_root)
+        jobs.append({
+            "idx": idx,
+            "total": len(specs),
+            "tag": tag,
+            "spec": spec,
+            "out_dir": out_dir,
+            "manifest_path": manifest_path,
+            "cmd": cmd,
+        })
+
+    for job in jobs:
+        print(f"[{job['idx']}/{job['total']}] {job['tag']}")
+        print(" ".join(job["cmd"]))
 
     if args.dry_run:
         return
+
+    def run_job(job):
+        spec = job["spec"]
+        manifest_path = job["manifest_path"]
+        if args.skip_existing and manifest_path.exists():
+            print(f"skip existing: {manifest_path}")
+        else:
+            subprocess.run(job["cmd"], cwd=ROOT, check=True)
+        if spec.get("script") == "train":
+            return summarize_train_run(job["tag"], spec["params"], job["out_dir"])
+        else:
+            return summarize_run(job["tag"], spec["params"], job["out_dir"])
+
+    rows_by_tag = {}
+    max_jobs = max(1, min(args.jobs, len(jobs)))
+    if max_jobs == 1:
+        for job in jobs:
+            row = run_job(job)
+            rows_by_tag[job["tag"]] = row
+            write_summary(
+                [rows_by_tag[j["tag"]] for j in jobs if j["tag"] in rows_by_tag],
+                out_root,
+            )
+    else:
+        print(f"并行子实验: jobs={max_jobs}")
+        with ThreadPoolExecutor(max_workers=max_jobs) as executor:
+            future_to_job = {executor.submit(run_job, job): job for job in jobs}
+            for future in as_completed(future_to_job):
+                job = future_to_job[future]
+                row = future.result()
+                rows_by_tag[job["tag"]] = row
+                write_summary(
+                    [rows_by_tag[j["tag"]] for j in jobs if j["tag"] in rows_by_tag],
+                    out_root,
+                )
+
+    rows = [rows_by_tag[j["tag"]] for j in jobs if j["tag"] in rows_by_tag]
     json_path, csv_path = write_summary(rows, out_root)
     print(f"summary json: {json_path}")
     print(f"summary csv : {csv_path}")

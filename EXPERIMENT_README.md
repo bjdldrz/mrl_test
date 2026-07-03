@@ -292,9 +292,16 @@ python run_ablation.py \
   --n_dynamic 300 \
   --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1_stress \
-  --device cpu
-  --num_workers 8
+  --device cpu \
+  --jobs 4 \
+  --eval_workers 4 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --vtw_time_step_s 60
 ```
+
+说明:`assignment_rolling_v1` 属于普通消融,单个子实验内的 MAPPO 训练是串行策略更新;训练阶段用 `--jobs` 并行多个子实验,评估阶段用 `--eval_workers` 并行多个 eval episode。`--eval_workers` 的有效上限是 `--eval_episodes`。
 
 重点新增指标:
 

@@ -483,7 +483,8 @@ python run_ablation.py \
     --eval_workers 4 \
     --vtw_time_step_s 60 \
     --out_root runs/ablation_assignment_v2_stress \
-    --device cpu
+    --device cpu \
+    --jobs 4
 ```
 
 只对比 LSTM / GRU / Transformer 三种单星外循环编码器:
