@@ -269,6 +269,22 @@ def main():
                         help="MRL-DMS evaluate() 使用的常规任务数")
     parser.add_argument("--eval_n_dynamic", type=int, default=None,
                         help="MRL-DMS evaluate() 每次动态插入的任务数")
+    parser.add_argument("--num_workers", type=int, default=None,
+                        help="MRL-DMS meta batch 并行 worker 数; 0 表示等于 meta_batch_size")
+    parser.add_argument("--meta_batch_size", type=int, default=None,
+                        help="每次元更新采样的任务数; 通常应与 num_workers 匹配")
+    parser.add_argument("--inner_steps", type=int, default=None,
+                        help="每个任务内循环 PPO/MAPPO 更新步数")
+    parser.add_argument("--rollout_steps", type=int, default=None,
+                        help="每个内循环 step 的 rollout 长度")
+    parser.add_argument("--eval_interval", type=int, default=None,
+                        help="每隔多少个 meta iteration 执行 evaluate; 调大可减少 CPU 评估开销")
+    parser.add_argument("--save_interval", type=int, default=None,
+                        help="每隔多少个 meta iteration 保存 checkpoint")
+    parser.add_argument("--vtw_time_step_s", type=float, default=None,
+                        help="VTW 采样步长; 越小越精确但 CPU 更重")
+    parser.add_argument("--no_profile_timing", action="store_true",
+                        help="关闭 MRL-DMS 阶段耗时日志和 profile 输出")
     args = parser.parse_args()
 
     # 加载配置
@@ -306,6 +322,24 @@ def main():
         config.train.log_interval = 1
         config.train.eval_interval = 5
         logger.info("快速测试模式")
+
+    # 显式命令行参数放在 --fast 之后应用，便于在 fast/smoke 中单独调优瓶颈。
+    if args.num_workers is not None:
+        config.train.num_workers = args.num_workers
+    if args.meta_batch_size is not None:
+        config.meta.meta_batch_size = args.meta_batch_size
+    if args.inner_steps is not None:
+        config.meta.inner_steps = args.inner_steps
+    if args.rollout_steps is not None:
+        config.meta.rollout_steps = args.rollout_steps
+    if args.eval_interval is not None:
+        config.train.eval_interval = args.eval_interval
+    if args.save_interval is not None:
+        config.train.save_interval = args.save_interval
+    if args.vtw_time_step_s is not None:
+        config.train.vtw_time_step_s = args.vtw_time_step_s
+    if args.no_profile_timing:
+        config.train.profile_timing = False
 
     configure_action_space(config, requested_max_action_dim=args.max_action_dim)
 

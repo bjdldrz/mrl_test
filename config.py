@@ -160,6 +160,7 @@ class TrainConfig:
     vtw_time_step_s: float = 60.0            # VTW 采样步长(秒); LEO 过境快, >60s 会漏采过境最接近点
                                              # 实测: 300s 严重漏窗→0, 60s 稳定且单次仅 ~4ms(有跨任务缓存)
     num_workers: int = 16                    # 并行 worker 数; 0 = 自动(等于 meta_batch_size)
+    profile_timing: bool = True              # 记录 MRL-DMS 各阶段耗时,用于定位 CPU/IO/GPU 瓶颈
 
 
 # -----------------------------------------------------------------------

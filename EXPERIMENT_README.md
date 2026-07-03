@@ -437,16 +437,25 @@ python run_ablation.py \
   --preset meta_encoder_v1 \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --seed 42 \
-  --meta_iterations 2 \
+  --meta_iterations 12 \
   --meta_encoder_types lstm,gru,mlp,transformer,set_transformer \
   --meta_mappo_n_satellites 2 \
-  --out_root runs/ablation_meta_encoder_v1 \
-  --device cuda:0
+  --n_routine 200 \
+  --n_dynamic 50 \
+  --num_workers 8 \
+  --meta_batch_size 8 \
+  --inner_steps 2 \
+  --rollout_steps 256 \
+  --eval_interval 20 \
+  --out_root runs/ablation_meta_encoder_v1_eval \
+  --device cpu
 ```
 
 说明:
 
 - 默认是快速配置,适合验证接口和小规模趋势。
+- MRL-DMS 的瓶颈通常在 CPU 环境 rollout、VTW 和评估,不是 GPU;训练型消融优先用 `--device cpu` 和 `--num_workers/--meta_batch_size` 控制吞吐。
+- `train_log.csv` 会记录 `sample_s`、`modulation_s`、`worker_map_s`、`meta_apply_s`、`meta_opt_s`、`eval_s`。若 `worker_map_s` 占比最高,说明主要卡在 worker 内的环境模拟/VTW;若 `eval_s` 高,调大 `--eval_interval`。
 - `--fast` 下评估间隔为 5;`--meta_iterations 2` 不会触发评估,短跑主要看 `best_train_reward`、`last_train_reward` 和 `last_train_dynamic_rate`。
 - 若要比较评估奖励,将 `--meta_iterations` 提高到至少 6;此时重点看 `best_eval_reward` / `best_reward`。
 - `train.py` 会按训练池和评估规模自动扩容 `max_action_dim`;如需手动指定,可追加 `--max_action_dim 800`。
@@ -640,7 +649,8 @@ python run_ablation.py --python python --preset communication_v1 --acled_path ./
   --out_root runs/ablation_communication_v1_stress --device cuda:0
 python run_ablation.py --python python --preset meta_encoder_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --meta_iterations 12 --n_routine 200 --n_dynamic 50 \
-  --out_root runs/ablation_meta_encoder_v1 --device cuda:0
+  --num_workers 8 --meta_batch_size 8 --inner_steps 2 --rollout_steps 256 --eval_interval 20 \
+  --out_root runs/ablation_meta_encoder_v1 --device cpu
 ```
 
 ---

@@ -770,6 +770,13 @@ def summarize_train_run(tag, params, out_dir):
             summary.get("last_train_dynamic_rate"),
             train_metrics.get("last_train_dynamic_rate"),
         ),
+        "num_workers": summary.get("num_workers", ""),
+        "meta_batch_size": summary.get("meta_batch_size", ""),
+        "inner_steps": summary.get("inner_steps", ""),
+        "rollout_steps": summary.get("rollout_steps", ""),
+        "eval_interval": summary.get("eval_interval", ""),
+        "vtw_time_step_s": summary.get("vtw_time_step_s", ""),
+        "profile_timing": summary.get("profile_timing", ""),
         "global_step": summary.get("global_step", 0),
         "total_iters": summary.get("total_iters", 0),
         "train_log": summary.get("train_log", ""),
@@ -888,6 +895,22 @@ def main():
                         help="meta_encoder_v1 不运行 MAPPO+LSTM 外循环分支")
     parser.add_argument("--full_train", action="store_true",
                         help="meta_encoder_v1 使用完整训练配置; 默认加 --fast 便于 smoke")
+    parser.add_argument("--num_workers", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的并行 worker 数")
+    parser.add_argument("--meta_batch_size", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的 meta batch size")
+    parser.add_argument("--inner_steps", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的内循环步数")
+    parser.add_argument("--rollout_steps", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的 rollout 长度")
+    parser.add_argument("--eval_interval", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的评估间隔")
+    parser.add_argument("--save_interval", type=int, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的 checkpoint 间隔")
+    parser.add_argument("--vtw_time_step_s", type=float, default=None,
+                        help="meta_encoder_v1 透传给 train.py 的 VTW 采样步长")
+    parser.add_argument("--no_profile_timing", action="store_true",
+                        help="meta_encoder_v1 关闭 train.py 阶段耗时 profile")
     args = parser.parse_args()
 
     if sum(bool(x) for x in [args.flat_out_root, args.resume_latest, args.resume_root]) > 1:
@@ -1011,6 +1034,20 @@ def main():
                 cmd.insert(6, "--fast")
             if args.max_action_dim is not None:
                 cmd.extend(["--max_action_dim", str(args.max_action_dim)])
+            for arg_name in [
+                "num_workers",
+                "meta_batch_size",
+                "inner_steps",
+                "rollout_steps",
+                "eval_interval",
+                "save_interval",
+                "vtw_time_step_s",
+            ]:
+                value = getattr(args, arg_name)
+                if value is not None:
+                    cmd.extend([f"--{arg_name}", str(value)])
+            if args.no_profile_timing:
+                cmd.append("--no_profile_timing")
             if args.acled_path:
                 cmd.extend(["--acled_path", args.acled_path])
         else:

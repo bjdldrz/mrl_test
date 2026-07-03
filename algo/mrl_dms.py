@@ -256,7 +256,12 @@ class MRLDMSTrainer:
         train_log_path = log_dir / "train_log.csv"
         eval_log_path = log_dir / "eval_log.csv"
 
-        train_fieldnames = ["iter", "global_step", "meta_loss", "avg_reward", "avg_dynamic_rate"]
+        train_fieldnames = [
+            "iter", "global_step", "meta_loss", "avg_reward", "avg_dynamic_rate",
+            "iter_s", "sample_s", "modulation_s", "worker_prep_s",
+            "worker_map_s", "worker_post_s", "meta_apply_s", "meta_opt_s",
+            "eval_s",
+        ]
         eval_fieldnames = ["iter", "total_reward", "observation_success_rate",
                            "dynamic_completion_rate", "routine_completion_rate",
                            "dynamic_reward", "routine_reward", "n_scheduled"]
@@ -270,6 +275,17 @@ class MRLDMSTrainer:
 
         logger.info(f"开始元训练, 共 {total_iters} 个元迭代, 设备: {self.device}")
         logger.info(f"日志目录: {log_dir}")
+        logger.info(
+            "训练配置: meta_batch_size=%s, inner_steps=%s, rollout_steps=%s, "
+            "num_workers=%s, eval_interval=%s, vtw_time_step_s=%s, profile_timing=%s",
+            self.cfg.meta.meta_batch_size,
+            self.cfg.meta.inner_steps,
+            self.cfg.meta.rollout_steps,
+            self.cfg.train.num_workers,
+            self.cfg.train.eval_interval,
+            self.cfg.train.vtw_time_step_s,
+            self.cfg.train.profile_timing,
+        )
 
         # 余弦退火：meta_lr 在训练过程中从初始值衰减到 1/10
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -296,6 +312,7 @@ class MRLDMSTrainer:
                 self.meta_iteration = meta_iter
                 meta_loss, meta_info = self._meta_update()
                 lr_scheduler.step()
+                timing = dict(meta_info.get("timing", {}))
 
                 self.last_train_reward = float(meta_info["avg_reward"])
                 self.last_train_dynamic_rate = float(meta_info["avg_dynamic_rate"])
@@ -310,24 +327,18 @@ class MRLDMSTrainer:
                     step=self.global_step,
                 )
 
-                # 写训练行
-                train_writer.writerow({
-                    "iter": meta_iter,
-                    "global_step": self.global_step,
-                    "meta_loss": round(meta_loss, 6),
-                    "avg_reward": round(meta_info['avg_reward'], 4),
-                    "avg_dynamic_rate": round(meta_info['avg_dynamic_rate'], 4),
-                })
-                train_csv_f.flush()
-
                 # 评估
+                eval_s = 0.0
                 if meta_iter % self.cfg.train.eval_interval == 0 and meta_iter > 0:
+                    t_eval = time.perf_counter()
                     eval_metrics = self.evaluate()
+                    eval_s = time.perf_counter() - t_eval
                     tqdm.write(
                         f"  [Eval iter={meta_iter}] "
                         f"reward={eval_metrics['total_reward']:.1f} "
                         f"obs_rate={eval_metrics['observation_success_rate']:.1%} "
-                        f"dyn_rate={eval_metrics['dynamic_completion_rate']:.1%}"
+                        f"dyn_rate={eval_metrics['dynamic_completion_rate']:.1%} "
+                        f"eval_s={eval_s:.2f}"
                     )
 
                     eval_writer.writerow({"iter": meta_iter, **{
@@ -338,6 +349,25 @@ class MRLDMSTrainer:
                     if eval_metrics['total_reward'] > self.best_reward:
                         self.best_reward = eval_metrics['total_reward']
                         self.save_checkpoint("best")
+
+                # 写训练行
+                train_writer.writerow({
+                    "iter": meta_iter,
+                    "global_step": self.global_step,
+                    "meta_loss": round(meta_loss, 6),
+                    "avg_reward": round(meta_info['avg_reward'], 4),
+                    "avg_dynamic_rate": round(meta_info['avg_dynamic_rate'], 4),
+                    "iter_s": round(timing.get("iter_s", 0.0) + eval_s, 4),
+                    "sample_s": round(timing.get("sample_s", 0.0), 4),
+                    "modulation_s": round(timing.get("modulation_s", 0.0), 4),
+                    "worker_prep_s": round(timing.get("worker_prep_s", 0.0), 4),
+                    "worker_map_s": round(timing.get("worker_map_s", 0.0), 4),
+                    "worker_post_s": round(timing.get("worker_post_s", 0.0), 4),
+                    "meta_apply_s": round(timing.get("meta_apply_s", 0.0), 4),
+                    "meta_opt_s": round(timing.get("meta_opt_s", 0.0), 4),
+                    "eval_s": round(eval_s, 4),
+                })
+                train_csv_f.flush()
 
                 # 定期保存
                 if meta_iter % self.cfg.train.save_interval == 0 and meta_iter > 0:
@@ -364,6 +394,13 @@ class MRLDMSTrainer:
             "best_train_reward": self.best_train_reward,
             "last_train_reward": self.last_train_reward,
             "last_train_dynamic_rate": self.last_train_dynamic_rate,
+            "num_workers": self.cfg.train.num_workers,
+            "meta_batch_size": self.cfg.meta.meta_batch_size,
+            "inner_steps": self.cfg.meta.inner_steps,
+            "rollout_steps": self.cfg.meta.rollout_steps,
+            "eval_interval": self.cfg.train.eval_interval,
+            "vtw_time_step_s": self.cfg.train.vtw_time_step_s,
+            "profile_timing": self.cfg.train.profile_timing,
             "meta_encoder_type": self.cfg.network.meta_encoder_type,
             "mappo_n_satellites": self.cfg.mappo.n_satellites,
             "multi_agent": self.multi_agent,
@@ -388,12 +425,16 @@ class MRLDMSTrainer:
         多星模式：MAPPO 内部已经是 N 星并发，meta_batch 串行执行避免多环境
         共享状态竞态问题。
         """
+        t_iter = time.perf_counter()
+        timing = {}
         base_model = self._mappo_model.actor if self.multi_agent else self.actor_critic
         base_state = copy.deepcopy(base_model.state_dict())
 
         self.meta_learner.reset_hidden(batch_size=1, device=self.device)
 
+        t_sample = time.perf_counter()
         tasks = self._sample_task_batch(self.cfg.meta.meta_batch_size)
+        timing["sample_s"] = time.perf_counter() - t_sample
         n_tasks = len(tasks)
 
         # 预先为每个任务计算 LSTM 调制（串行，需共享 LSTM 状态）
@@ -414,16 +455,19 @@ class MRLDMSTrainer:
             task_log_probs.append(log_prob)
             task_init_states.append(copy.deepcopy(base_model.state_dict()))
         serial_s = time.perf_counter() - t_serial
-        if not self.multi_agent:
+        timing["modulation_s"] = serial_s
+        if self.cfg.train.profile_timing and not self.multi_agent:
             tqdm.write(
                 f"[iter {self.meta_iteration}] "
                 f"{self.cfg.network.meta_encoder_type}外循环调制串行准备={serial_s:.2f}s"
             )
 
+        self._last_worker_timing = {}
         if self.multi_agent:
             results = self._meta_update_mappo(tasks, task_init_states, base_model, base_state)
         else:
             results = self._meta_update_single(tasks, task_init_states)
+        timing.update(self._last_worker_timing)
 
         param_diffs, meta_rewards, total_dynamic_rate, total_reward = [], [], 0.0, 0.0
         for param_diff, eval_reward, eval_metrics, steps in results:
@@ -452,6 +496,7 @@ class MRLDMSTrainer:
         )
 
         # FOMAML base 参数更新
+        t_apply = time.perf_counter()
         base_model.load_state_dict(base_state)
         meta_lr = self.cfg.meta.meta_lr
         with torch.no_grad():
@@ -459,11 +504,13 @@ class MRLDMSTrainer:
                 diffs = torch.stack([d[name].to(param.device) for d in param_diffs])
                 avg_diff = diffs.mean(dim=0)
                 param.data.add_(meta_lr * avg_diff)
+        timing["meta_apply_s"] = time.perf_counter() - t_apply
 
         # LSTM / 调制头更新 (论文 Eq.27 元目标的 REINFORCE 实现)
         # 把"LSTM 产生调制"视为随机策略动作, 适应后累积奖励 R 作为 return,
         # loss = -(R_normalized · log_prob), 使 R 的信号通过 log_prob 反传到 LSTM。
         # R_normalized 用 batch 内均值做 baseline 降方差。
+        t_meta_opt = time.perf_counter()
         self.meta_optimizer.zero_grad()
         rewards_t = torch.tensor(meta_rewards, dtype=torch.float32, device=self.device)
         r_std = rewards_t.std().clamp(min=1e-6)
@@ -474,10 +521,24 @@ class MRLDMSTrainer:
         lstm_loss.backward()
         nn.utils.clip_grad_norm_(self.meta_learner.parameters(), 1.0)
         self.meta_optimizer.step()
+        timing["meta_opt_s"] = time.perf_counter() - t_meta_opt
+        timing["iter_s"] = time.perf_counter() - t_iter
+
+        if self.cfg.train.profile_timing:
+            tqdm.write(
+                f"[iter {self.meta_iteration}] profile "
+                f"sample={timing.get('sample_s', 0.0):.2f}s "
+                f"mod={timing.get('modulation_s', 0.0):.2f}s "
+                f"map={timing.get('worker_map_s', 0.0):.2f}s "
+                f"apply={timing.get('meta_apply_s', 0.0):.2f}s "
+                f"opt={timing.get('meta_opt_s', 0.0):.2f}s "
+                f"iter={timing.get('iter_s', 0.0):.2f}s"
+            )
 
         info = {
             'avg_reward': total_reward / n_tasks,
             'avg_dynamic_rate': total_dynamic_rate / n_tasks,
+            'timing': timing,
         }
         return lstm_loss.item(), info
 
@@ -526,13 +587,19 @@ class MRLDMSTrainer:
             }
             raw[idx] = (param_diff, r['eval_reward'], r['eval_metrics'], r['steps_consumed'])
         post_s = time.perf_counter() - t_post
+        self._last_worker_timing = {
+            "worker_prep_s": prep_s,
+            "worker_map_s": map_s,
+            "worker_post_s": post_s,
+        }
 
         # 计时日志：直观看到并行段(map) vs 主进程串行段(prep/post) 的占比
-        tqdm.write(
-            f"[iter {self.meta_iteration}] 并行 map={map_s:.2f}s | "
-            f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
-            f"tasks={len(tasks)} workers={self._worker_pool._processes}"
-        )
+        if self.cfg.train.profile_timing:
+            tqdm.write(
+                f"[iter {self.meta_iteration}] 并行 map={map_s:.2f}s | "
+                f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
+                f"tasks={len(tasks)} workers={self._worker_pool._processes}"
+            )
         return raw
 
     def _meta_update_mappo(self, tasks, task_init_states, base_model, base_state) -> list:
@@ -590,12 +657,18 @@ class MRLDMSTrainer:
             }
             results[idx] = (param_diff, r['eval_reward'], r['eval_metrics'], r['steps_consumed'])
         post_s = time.perf_counter() - t_post
+        self._last_worker_timing = {
+            "worker_prep_s": prep_s,
+            "worker_map_s": map_s,
+            "worker_post_s": post_s,
+        }
 
-        tqdm.write(
-            f"[iter {self.meta_iteration}] 多星并行 map={map_s:.2f}s | "
-            f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
-            f"tasks={len(tasks)} workers={self._worker_pool._processes}"
-        )
+        if self.cfg.train.profile_timing:
+            tqdm.write(
+                f"[iter {self.meta_iteration}] 多星并行 map={map_s:.2f}s | "
+                f"准备 prep={prep_s:.2f}s | 回收 post={post_s:.2f}s | "
+                f"tasks={len(tasks)} workers={self._worker_pool._processes}"
+            )
         return results
 
     # -------------------------------------------------------------------
