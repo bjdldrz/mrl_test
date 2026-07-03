@@ -277,6 +277,10 @@ def main():
                         help="每个任务内循环 PPO/MAPPO 更新步数")
     parser.add_argument("--rollout_steps", type=int, default=None,
                         help="每个内循环 step 的 rollout 长度")
+    parser.add_argument("--ppo_epochs", type=int, default=None,
+                        help="每次 PPO/MAPPO update 的 epoch 数")
+    parser.add_argument("--ppo_batch_size", type=int, default=None,
+                        help="PPO/MAPPO update minibatch 大小")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="每隔多少个 meta iteration 执行 evaluate; 调大可减少 CPU 评估开销")
     parser.add_argument("--save_interval", type=int, default=None,
@@ -332,6 +336,10 @@ def main():
         config.meta.inner_steps = args.inner_steps
     if args.rollout_steps is not None:
         config.meta.rollout_steps = args.rollout_steps
+    if args.ppo_epochs is not None:
+        config.ppo.ppo_epochs = args.ppo_epochs
+    if args.ppo_batch_size is not None:
+        config.ppo.batch_size = args.ppo_batch_size
     if args.eval_interval is not None:
         config.train.eval_interval = args.eval_interval
     if args.save_interval is not None:

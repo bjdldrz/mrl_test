@@ -567,6 +567,14 @@ def main():
     parser.add_argument("--max_action_dim", type=int, default=None,
                         help="动作空间任务槽位数; 默认自动取 max(配置值, "
                              "n_routine + dynamic_insertions_per_day*n_dynamic)")
+    parser.add_argument("--rollout_steps", type=int, default=None,
+                        help="覆盖 PPO/MAPPO 每次训练迭代的 rollout 长度")
+    parser.add_argument("--ppo_epochs", type=int, default=None,
+                        help="覆盖 PPO/MAPPO 每次 update 的 epoch 数")
+    parser.add_argument("--ppo_batch_size", type=int, default=None,
+                        help="覆盖 PPO/MAPPO update minibatch 大小")
+    parser.add_argument("--vtw_time_step_s", type=float, default=None,
+                        help="覆盖 VTW 采样步长; 越小越精确但 CPU 更重")
     parser.add_argument("--methods", type=str, default="single,indep,mappo",
                         help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
@@ -649,6 +657,14 @@ def main():
     device = torch.device(args.device)
 
     cfg = get_default_config()
+    if args.rollout_steps is not None:
+        cfg.meta.rollout_steps = args.rollout_steps
+    if args.ppo_epochs is not None:
+        cfg.ppo.ppo_epochs = args.ppo_epochs
+    if args.ppo_batch_size is not None:
+        cfg.ppo.batch_size = args.ppo_batch_size
+    if args.vtw_time_step_s is not None:
+        cfg.train.vtw_time_step_s = args.vtw_time_step_s
     base_satellite_count = len(cfg.satellites)
     cfg.satellites = expand_satellite_configs(cfg.satellites, args.n_satellites)
     cfg.mappo.n_satellites = args.n_satellites
@@ -672,6 +688,16 @@ def main():
         "动作空间任务槽位: max_action_dim=%s, 当前评估需求=%s",
         cfg.mission.max_action_dim,
         required_action_dim,
+    )
+    logger.info(
+        "训练配置: train_iters=%s, rollout_steps=%s, ppo_epochs=%s, "
+        "ppo_batch_size=%s, vtw_time_step_s=%s, device=%s",
+        args.train_iters,
+        cfg.meta.rollout_steps,
+        cfg.ppo.ppo_epochs,
+        cfg.ppo.batch_size,
+        cfg.train.vtw_time_step_s,
+        device,
     )
     if args.n_satellites > base_satellite_count:
         logger.info(

@@ -463,6 +463,27 @@ python run_ablation.py \
 
 判断方式:如果 `worker_map_s` 占主要耗时,瓶颈在环境 rollout/VTW/CPU worker;如果 `eval_s` 很大,调大 `--eval_interval`;如果 `sample_s` 或 `modulation_s` 很大,减少任务规模或检查数据读取。
 
+普通消融预设会走 `compare_methods.py`,同样可以配置 rollout/PPO/VTW 参数:
+
+```bash
+python run_ablation.py \
+    --python python \
+    --preset assignment_v2 \
+    --acled_path ./DynamicMission/DynamicMission.shp \
+    --n_satellites 12 \
+    --train_iters 30 \
+    --eval_episodes 5 \
+    --n_routine 1200 \
+    --n_dynamic 300 \
+    --methods mappo \
+    --rollout_steps 256 \
+    --ppo_epochs 2 \
+    --ppo_batch_size 256 \
+    --vtw_time_step_s 60 \
+    --out_root runs/ablation_assignment_v2_stress \
+    --device cpu
+```
+
 只对比 LSTM / GRU / Transformer 三种单星外循环编码器:
 
 ```bash

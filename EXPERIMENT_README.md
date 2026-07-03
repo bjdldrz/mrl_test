@@ -607,28 +607,33 @@ python compare_methods.py --acled_path ./DynamicMission/DynamicMission.shp --met
 python run_ablation.py --python python --preset assignment_v2 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_assignment_v2_stress --device cuda:0
 
 # 4. 学习式任务分配 scorer
 python run_ablation.py --python python --preset learned_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_learned_assignment_v1_stress --device cuda:0
 
 # 5. 滚动重分配 + 层级 manager
 python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_assignment_rolling_v1_stress --device cuda:0
 python run_ablation.py --python python --preset hier_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_hier_assignment_v1_stress --device cuda:0
 
 # 6. Oracle gap
 python run_ablation.py --python python --preset oracle_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo,oracle \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_oracle_v1_stress --device cuda:0
 ```
 
@@ -638,14 +643,17 @@ python run_ablation.py --python python --preset oracle_v1 --acled_path ./Dynamic
 python run_ablation.py --python python --preset reward_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_reward_v1_stress --device cuda:0
 python run_ablation.py --python python --preset state_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_state_v1_stress --device cuda:0
 python run_ablation.py --python python --preset communication_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --vtw_time_step_s 60 \
   --out_root runs/ablation_communication_v1_stress --device cuda:0
 python run_ablation.py --python python --preset meta_encoder_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --meta_iterations 12 --n_routine 200 --n_dynamic 50 \

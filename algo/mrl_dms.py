@@ -277,10 +277,13 @@ class MRLDMSTrainer:
         logger.info(f"日志目录: {log_dir}")
         logger.info(
             "训练配置: meta_batch_size=%s, inner_steps=%s, rollout_steps=%s, "
-            "num_workers=%s, eval_interval=%s, vtw_time_step_s=%s, profile_timing=%s",
+            "ppo_epochs=%s, ppo_batch_size=%s, num_workers=%s, eval_interval=%s, "
+            "vtw_time_step_s=%s, profile_timing=%s",
             self.cfg.meta.meta_batch_size,
             self.cfg.meta.inner_steps,
             self.cfg.meta.rollout_steps,
+            self.cfg.ppo.ppo_epochs,
+            self.cfg.ppo.batch_size,
             self.cfg.train.num_workers,
             self.cfg.train.eval_interval,
             self.cfg.train.vtw_time_step_s,
@@ -398,6 +401,8 @@ class MRLDMSTrainer:
             "meta_batch_size": self.cfg.meta.meta_batch_size,
             "inner_steps": self.cfg.meta.inner_steps,
             "rollout_steps": self.cfg.meta.rollout_steps,
+            "ppo_epochs": self.cfg.ppo.ppo_epochs,
+            "ppo_batch_size": self.cfg.ppo.batch_size,
             "eval_interval": self.cfg.train.eval_interval,
             "vtw_time_step_s": self.cfg.train.vtw_time_step_s,
             "profile_timing": self.cfg.train.profile_timing,

@@ -702,6 +702,22 @@ def summarize_run(tag, params, out_dir):
         "methods": ",".join(results.keys()),
         **params,
     }
+    manifest_args = manifest.get("args", {})
+    for key in [
+        "n_satellites",
+        "train_iters",
+        "eval_episodes",
+        "n_routine",
+        "n_dynamic",
+        "rollout_steps",
+        "ppo_epochs",
+        "ppo_batch_size",
+        "vtw_time_step_s",
+        "max_action_dim",
+        "device",
+    ]:
+        if key in manifest_args:
+            row[key] = manifest_args.get(key)
 
     keys = [
         "n_scheduled",
@@ -774,6 +790,8 @@ def summarize_train_run(tag, params, out_dir):
         "meta_batch_size": summary.get("meta_batch_size", ""),
         "inner_steps": summary.get("inner_steps", ""),
         "rollout_steps": summary.get("rollout_steps", ""),
+        "ppo_epochs": summary.get("ppo_epochs", ""),
+        "ppo_batch_size": summary.get("ppo_batch_size", ""),
         "eval_interval": summary.get("eval_interval", ""),
         "vtw_time_step_s": summary.get("vtw_time_step_s", ""),
         "profile_timing": summary.get("profile_timing", ""),
@@ -902,7 +920,11 @@ def main():
     parser.add_argument("--inner_steps", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的内循环步数")
     parser.add_argument("--rollout_steps", type=int, default=None,
-                        help="meta_encoder_v1 透传给 train.py 的 rollout 长度")
+                        help="透传给 train.py/compare_methods.py 的 rollout 长度")
+    parser.add_argument("--ppo_epochs", type=int, default=None,
+                        help="透传给 train.py/compare_methods.py 的 PPO epoch 数")
+    parser.add_argument("--ppo_batch_size", type=int, default=None,
+                        help="透传给 train.py/compare_methods.py 的 PPO minibatch 大小")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
     parser.add_argument("--save_interval", type=int, default=None,
@@ -1039,6 +1061,8 @@ def main():
                 "meta_batch_size",
                 "inner_steps",
                 "rollout_steps",
+                "ppo_epochs",
+                "ppo_batch_size",
                 "eval_interval",
                 "save_interval",
                 "vtw_time_step_s",
@@ -1069,6 +1093,15 @@ def main():
             ]
             if args.max_action_dim is not None:
                 cmd.extend(["--max_action_dim", str(args.max_action_dim)])
+            for arg_name in [
+                "rollout_steps",
+                "ppo_epochs",
+                "ppo_batch_size",
+                "vtw_time_step_s",
+            ]:
+                value = getattr(args, arg_name)
+                if value is not None:
+                    cmd.extend([f"--{arg_name}", str(value)])
             if args.run_oracle and "--run_oracle" not in cmd:
                 cmd.append("--run_oracle")
             if args.acled_path:
