@@ -283,6 +283,8 @@ def main():
                         help="PPO/MAPPO update minibatch 大小")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="每隔多少个 meta iteration 执行 evaluate; 调大可减少 CPU 评估开销")
+    parser.add_argument("--eval_workers", type=int, default=None,
+                        help="MRL-DMS evaluate episode 并行 worker 数; 1 为串行")
     parser.add_argument("--save_interval", type=int, default=None,
                         help="每隔多少个 meta iteration 保存 checkpoint")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
@@ -342,6 +344,8 @@ def main():
         config.ppo.batch_size = args.ppo_batch_size
     if args.eval_interval is not None:
         config.train.eval_interval = args.eval_interval
+    if args.eval_workers is not None:
+        config.train.eval_workers = args.eval_workers
     if args.save_interval is not None:
         config.train.save_interval = args.save_interval
     if args.vtw_time_step_s is not None:

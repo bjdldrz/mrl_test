@@ -712,6 +712,7 @@ def summarize_run(tag, params, out_dir):
         "rollout_steps",
         "ppo_epochs",
         "ppo_batch_size",
+        "eval_workers",
         "vtw_time_step_s",
         "max_action_dim",
         "device",
@@ -793,6 +794,7 @@ def summarize_train_run(tag, params, out_dir):
         "ppo_epochs": summary.get("ppo_epochs", ""),
         "ppo_batch_size": summary.get("ppo_batch_size", ""),
         "eval_interval": summary.get("eval_interval", ""),
+        "eval_workers": summary.get("eval_workers", ""),
         "vtw_time_step_s": summary.get("vtw_time_step_s", ""),
         "profile_timing": summary.get("profile_timing", ""),
         "global_step": summary.get("global_step", 0),
@@ -927,6 +929,8 @@ def main():
                         help="透传给 train.py/compare_methods.py 的 PPO minibatch 大小")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
+    parser.add_argument("--eval_workers", type=int, default=None,
+                        help="透传给 train.py/compare_methods.py 的评估 episode 并行 worker 数")
     parser.add_argument("--save_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的 checkpoint 间隔")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
@@ -1064,6 +1068,7 @@ def main():
                 "ppo_epochs",
                 "ppo_batch_size",
                 "eval_interval",
+                "eval_workers",
                 "save_interval",
                 "vtw_time_step_s",
             ]:
@@ -1097,6 +1102,7 @@ def main():
                 "rollout_steps",
                 "ppo_epochs",
                 "ppo_batch_size",
+                "eval_workers",
                 "vtw_time_step_s",
             ]:
                 value = getattr(args, arg_name)

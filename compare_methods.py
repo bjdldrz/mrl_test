@@ -30,6 +30,7 @@ import argparse
 import logging
 import platform
 import subprocess
+from multiprocessing import get_context
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -225,6 +226,166 @@ def _record_to_dict(r):
     }
 
 
+def _torch_state_to_numpy(state_dict):
+    return {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
+
+
+def _numpy_state_to_torch(state_dict):
+    return {k: torch.from_numpy(v.copy()) for k, v in state_dict.items()}
+
+
+def _eval_single_worker(args):
+    from envs.satellite_env import SatelliteSchedulingEnv
+    from models.actor_critic import ActorCritic
+
+    idx = args["idx"]
+    cfg = args["cfg"]
+    routine, dynamic = args["scenario"]
+    model_state = args["model_state"]
+
+    sat = cfg.satellites[0]
+    env = SatelliteSchedulingEnv(
+        satellite_config=sat,
+        max_action_dim=cfg.mission.max_action_dim,
+        reward_config=cfg.reward,
+        vtw_time_step_s=cfg.train.vtw_time_step_s,
+    )
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+    model = ActorCritic(
+        obs_dim, act_dim, cfg.network.hidden_layers, cfg.network.activation
+    ).to("cpu")
+    model.load_state_dict(_numpy_state_to_torch(model_state))
+
+    opts = {
+        "routine_missions": copy.deepcopy(routine),
+        "dynamic_schedule": copy.deepcopy(dynamic),
+    }
+    obs, info = env.reset(options=opts)
+    done = False
+    max_steps = int(env.horizon_s / 10.0) + 100
+    for _ in range(max_steps):
+        if done:
+            break
+        mask = info.get("action_mask", np.ones(act_dim))
+        with torch.no_grad():
+            a, _, _, _ = model.get_action_and_value(
+                torch.FloatTensor(obs).unsqueeze(0),
+                torch.FloatTensor(mask).unsqueeze(0),
+            )
+        obs, _, term, trunc, info = env.step(a.cpu().item())
+        done = term or trunc
+    return {"idx": idx, "metrics": env.get_metrics()}
+
+
+def _eval_multi_worker(args):
+    from envs.multi_satellite_env import MultiSatelliteEnv
+    from models.mappo import MAPPOActorCritic
+    from algo.mappo_trainer import MAPPOTrainer
+
+    idx = args["idx"]
+    cfg = args["cfg"]
+    routine, dynamic = args["scenario"]
+    model_state = args["model_state"]
+    env_kwargs = args["env_kwargs"]
+    trainer_kwargs = args["trainer_kwargs"]
+
+    n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
+    env = MultiSatelliteEnv(
+        satellite_configs=cfg.satellites[:n_sat],
+        max_action_dim=cfg.mission.max_action_dim,
+        reward_config=cfg.reward,
+        vtw_time_step_s=cfg.train.vtw_time_step_s,
+        **env_kwargs,
+    )
+    model = MAPPOActorCritic(
+        local_obs_dim=env.local_obs_dim,
+        action_dim=env.action_dim,
+        global_state_dim=env.global_state_dim,
+        actor_hidden_dims=cfg.network.hidden_layers,
+        critic_hidden_dims=cfg.mappo.critic_hidden_dims,
+    ).to("cpu")
+    model.load_state_dict(_numpy_state_to_torch(model_state))
+    trainer = MAPPOTrainer(
+        model,
+        lr=cfg.ppo.learning_rate,
+        gamma=cfg.ppo.discount_factor,
+        gae_lambda=cfg.ppo.gae_lambda,
+        clip_ratio=cfg.ppo.clip_ratio,
+        entropy_coeff=cfg.ppo.entropy_coeff,
+        value_loss_coeff=cfg.ppo.value_loss_coeff,
+        ppo_epochs=cfg.ppo.ppo_epochs,
+        batch_size=cfg.ppo.batch_size,
+        device="cpu",
+        **trainer_kwargs,
+    )
+
+    env.set_eval_mode(True)
+    opts = {
+        "routine_missions": copy.deepcopy(routine),
+        "dynamic_schedule": copy.deepcopy(dynamic),
+    }
+    res = env.reset(options=opts)
+    cur_obs = {a: r[0] for a, r in res.items()}
+    cur_info = {a: r[1] for a, r in res.items()}
+    max_steps = int(env.horizon_s / 10.0) + 100
+    for _ in range(max_steps):
+        actions, _, _, _ = trainer.sample_actions(
+            multi_env=env,
+            current_obs=cur_obs,
+            current_infos=cur_info,
+            intent_broadcast=args["intent_broadcast"],
+            intent_replan_rounds=args["intent_replan_rounds"],
+        )
+        step_res = env.step(actions)
+        for aid, (obs, _, _, _, info) in step_res.items():
+            cur_obs[aid] = obs
+            cur_info[aid] = info
+        if env.is_done():
+            break
+    return {"idx": idx, "metrics": env.get_metrics()}
+
+
+def _eval_oracle_worker(args):
+    from envs.multi_satellite_env import MultiSatelliteEnv
+
+    idx = args["idx"]
+    cfg = args["cfg"]
+    routine, dynamic = args["scenario"]
+    n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
+    env = MultiSatelliteEnv(
+        satellite_configs=cfg.satellites[:n_sat],
+        max_action_dim=cfg.mission.max_action_dim,
+        reward_config=cfg.reward,
+        vtw_time_step_s=cfg.train.vtw_time_step_s,
+        coordinate=True,
+        episode_assignment=False,
+        reassign_losers=False,
+    )
+    opts = {
+        "routine_missions": copy.deepcopy(routine),
+        "dynamic_schedule": copy.deepcopy(dynamic),
+    }
+    env.reset(options=opts)
+    max_steps = int(env.horizon_s / 10.0) + 100
+    for _ in range(max_steps):
+        if env.is_done():
+            break
+        env.step(_greedy_oracle_actions(env))
+    return {"idx": idx, "metrics": env.get_metrics()}
+
+
+def _parallel_eval(worker_fn, task_args, eval_workers, label):
+    n_workers = min(eval_workers, len(task_args))
+    if n_workers <= 1:
+        return None
+    logger.info("并行评估 %s: episodes=%s, eval_workers=%s", label, len(task_args), n_workers)
+    with get_context("spawn").Pool(processes=n_workers) as pool:
+        raw = pool.map(worker_fn, task_args)
+    raw = sorted(raw, key=lambda r: r["idx"])
+    return _avg_metrics([r["metrics"] for r in raw])
+
+
 def _save_single_viz_data(env, out_dir: Path, method_name: str):
     missions = [m for m in env.missions if m is not None]
     payload = {
@@ -263,7 +424,7 @@ def _save_multi_viz_data(env, out_dir: Path, method_name: str):
 # 方案 1: 单星 PPO
 # =======================================================================
 def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
-                   viz_out_dir: Path = None):
+                   eval_workers: int = 1, viz_out_dir: Path = None):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
     from algo.ppo import PPOTrainer, RolloutBuffer
@@ -302,6 +463,39 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
         ppo.update(buf, last_v)
 
     # 评估
+    if eval_workers > 1:
+        task_args = [
+            {
+                "idx": ep_idx,
+                "cfg": cfg,
+                "scenario": scenario,
+                "model_state": _torch_state_to_numpy(model.state_dict()),
+            }
+            for ep_idx, scenario in enumerate(scenarios)
+        ]
+        avg = _parallel_eval(_eval_single_worker, task_args, eval_workers, "Single-PPO")
+        if avg is not None:
+            if viz_out_dir is not None and scenarios:
+                # 只为可视化额外串行跑最后一集，不纳入指标，避免 worker 传回大对象。
+                routine, dynamic = scenarios[-1]
+                opts = {"routine_missions": copy.deepcopy(routine),
+                        "dynamic_schedule": copy.deepcopy(dynamic)}
+                obs, info = env.reset(options=opts)
+                done = False
+                max_steps = int(env.horizon_s / 10.0) + 100
+                for _ in range(max_steps):
+                    if done:
+                        break
+                    mask = info.get("action_mask", np.ones(act_dim))
+                    with torch.no_grad():
+                        a, _, _, _ = model.get_action_and_value(
+                            torch.FloatTensor(obs).unsqueeze(0).to(device),
+                            torch.FloatTensor(mask).unsqueeze(0).to(device))
+                    obs, _, term, trunc, info = env.step(a.cpu().item())
+                    done = term or trunc
+                _save_single_viz_data(env, viz_out_dir, "Single-PPO")
+            return avg
+
     metrics_list = []
     for ep_idx, (routine, dynamic) in enumerate(scenarios):
         opts = {"routine_missions": copy.deepcopy(routine),
@@ -357,6 +551,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               intent_broadcast=False,
               intent_replan_rounds=1,
               method_name="MAPPO",
+              eval_workers: int = 1,
               viz_out_dir: Path = None):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
@@ -441,6 +636,75 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         trainer.update(buf, env.get_global_state())
 
     # 评估
+    if eval_workers > 1:
+        env_kwargs = {
+            "coordinate": coordinate,
+            "episode_assignment": (coordinate and episode_assignment),
+            "assign_w_load": assign_w_load,
+            "assignment_capacity_mode": assignment_capacity_mode,
+            "release_before_deadline_s": release_before_deadline_s,
+            "assignment_scorer": assignment_scorer if coordinate else "heuristic",
+            "assignment_scorer_mix": assignment_scorer_mix,
+            "assignment_mlp_hidden_dim": assignment_mlp_hidden_dim,
+            "assignment_mlp_seed": assignment_mlp_seed,
+            "assignment_sequence_hidden_dim": assignment_sequence_hidden_dim,
+            "assignment_replan_interval_s": assignment_replan_interval_s if coordinate else 0.0,
+            "assignment_replan_horizon_s": assignment_replan_horizon_s if coordinate else 0.0,
+            "assignment_replan_trigger": assignment_replan_trigger if coordinate else "none",
+            "assignment_switch_penalty": assignment_switch_penalty,
+            "assignment_lock_window_s": assignment_lock_window_s,
+            "assignment_max_switches_per_task": assignment_max_switches_per_task,
+            "assignment_manager_mode": assignment_manager_mode if coordinate else "none",
+            "team_reward_mix": team_reward_mix if coordinate else 0.0,
+            "load_balance_reward_coeff": load_balance_reward_coeff if coordinate else 0.0,
+            "team_completion_bonus": team_completion_bonus if coordinate else 0.0,
+            "global_state_mode": global_state_mode if coordinate else "mean",
+            "global_state_task_stats": (coordinate and global_state_task_stats),
+        }
+        trainer_kwargs = {
+            "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
+        }
+        task_args = [
+            {
+                "idx": ep_idx,
+                "cfg": cfg,
+                "scenario": scenario,
+                "model_state": _torch_state_to_numpy(model.state_dict()),
+                "env_kwargs": env_kwargs,
+                "trainer_kwargs": trainer_kwargs,
+                "intent_broadcast": (coordinate and intent_broadcast),
+                "intent_replan_rounds": intent_replan_rounds,
+            }
+            for ep_idx, scenario in enumerate(scenarios)
+        ]
+        avg = _parallel_eval(_eval_multi_worker, task_args, eval_workers, method_name)
+        if avg is not None:
+            if viz_out_dir is not None and scenarios:
+                routine, dynamic = scenarios[-1]
+                opts = {"routine_missions": copy.deepcopy(routine),
+                        "dynamic_schedule": copy.deepcopy(dynamic)}
+                env.set_eval_mode(True)
+                res = env.reset(options=opts)
+                cur_obs = {a: r[0] for a, r in res.items()}
+                cur_info = {a: r[1] for a, r in res.items()}
+                max_steps = int(env.horizon_s / 10.0) + 100
+                for _ in range(max_steps):
+                    actions, _, _, _ = trainer.sample_actions(
+                        multi_env=env,
+                        current_obs=cur_obs,
+                        current_infos=cur_info,
+                        intent_broadcast=(coordinate and intent_broadcast),
+                        intent_replan_rounds=intent_replan_rounds,
+                    )
+                    step_res = env.step(actions)
+                    for aid, (obs, _, _, _, info) in step_res.items():
+                        cur_obs[aid] = obs
+                        cur_info[aid] = info
+                    if env.is_done():
+                        break
+                _save_multi_viz_data(env, viz_out_dir, method_name)
+            return avg
+
     metrics_list = []
     env.set_eval_mode(True)   # 评估期启用 A1 败者改派 (训练期关闭以保信用分配)
     for ep_idx, (routine, dynamic) in enumerate(scenarios):
@@ -519,8 +783,21 @@ def _greedy_oracle_actions(env):
     return actions
 
 
-def run_greedy_oracle(cfg, scenarios, viz_out_dir: Path = None):
+def run_greedy_oracle(cfg, scenarios, eval_workers: int = 1, viz_out_dir: Path = None):
     from envs.multi_satellite_env import MultiSatelliteEnv
+
+    if eval_workers > 1:
+        task_args = [
+            {"idx": ep_idx, "cfg": cfg, "scenario": scenario}
+            for ep_idx, scenario in enumerate(scenarios)
+        ]
+        avg = _parallel_eval(_eval_oracle_worker, task_args, eval_workers, "Greedy-Oracle")
+        if avg is not None and viz_out_dir is None:
+            return avg
+        if avg is not None and viz_out_dir is not None and not scenarios:
+            return avg
+        if avg is None:
+            eval_workers = 1
 
     n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
     sat_cfgs = cfg.satellites[:n_sat]
@@ -534,8 +811,13 @@ def run_greedy_oracle(cfg, scenarios, viz_out_dir: Path = None):
         reassign_losers=False,
     )
 
+    if eval_workers > 1:
+        eval_scenarios = [scenarios[-1]] if scenarios else []
+    else:
+        eval_scenarios = scenarios
+
     metrics_list = []
-    for ep_idx, (routine, dynamic) in enumerate(scenarios):
+    for ep_idx, (routine, dynamic) in enumerate(eval_scenarios):
         opts = {
             "routine_missions": copy.deepcopy(routine),
             "dynamic_schedule": copy.deepcopy(dynamic),
@@ -548,8 +830,10 @@ def run_greedy_oracle(cfg, scenarios, viz_out_dir: Path = None):
             actions = _greedy_oracle_actions(env)
             env.step(actions)
         metrics_list.append(env.get_metrics())
-        if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
+        if viz_out_dir is not None and ep_idx == len(eval_scenarios) - 1:
             _save_multi_viz_data(env, viz_out_dir, "Greedy-Oracle")
+    if eval_workers > 1:
+        return avg
     return _avg_metrics(metrics_list)
 
 
@@ -559,6 +843,8 @@ def main():
     parser.add_argument("--n_satellites", type=int, default=6)
     parser.add_argument("--train_iters", type=int, default=30)
     parser.add_argument("--eval_episodes", type=int, default=5)
+    parser.add_argument("--eval_workers", type=int, default=1,
+                        help="评估 episode 并行 worker 数; 1 为串行")
     parser.add_argument("--n_routine", type=int, default=200)
     parser.add_argument("--n_dynamic", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
@@ -691,11 +977,12 @@ def main():
     )
     logger.info(
         "训练配置: train_iters=%s, rollout_steps=%s, ppo_epochs=%s, "
-        "ppo_batch_size=%s, vtw_time_step_s=%s, device=%s",
+        "ppo_batch_size=%s, eval_workers=%s, vtw_time_step_s=%s, device=%s",
         args.train_iters,
         cfg.meta.rollout_steps,
         cfg.ppo.ppo_epochs,
         cfg.ppo.batch_size,
+        args.eval_workers,
         cfg.train.vtw_time_step_s,
         device,
     )
@@ -742,14 +1029,15 @@ def main():
     if "Single-PPO" in method_names:
         logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
         results["Single-PPO"] = run_single_ppo(
-            cfg, mission_gen, scenarios, args.train_iters, device, viz_out_dir=out_dir)
+            cfg, mission_gen, scenarios, args.train_iters, device,
+            eval_workers=args.eval_workers, viz_out_dir=out_dir)
         step_idx += 1
 
     if "Indep-PPO" in method_names:
         logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
         results["Indep-PPO"] = run_multi(
             cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
-            method_name="Indep-PPO", viz_out_dir=out_dir)
+            method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=out_dir)
         step_idx += 1
 
     if "MAPPO" in method_names:
@@ -784,12 +1072,14 @@ def main():
                                      intent_broadcast=args.intent_broadcast,
                                      intent_replan_rounds=args.intent_replan_rounds,
                                      method_name="MAPPO",
+                                     eval_workers=args.eval_workers,
                                      viz_out_dir=out_dir)
         step_idx += 1
 
     if "Greedy-Oracle" in method_names:
         logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
-        results["Greedy-Oracle"] = run_greedy_oracle(cfg, scenarios, viz_out_dir=out_dir)
+        results["Greedy-Oracle"] = run_greedy_oracle(
+            cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=out_dir)
 
     # 协同增益: 多星完成数 / (N × 单星完成数), 仅在包含 Single-PPO 时计算。
     n_sat = args.n_satellites

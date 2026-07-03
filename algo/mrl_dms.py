@@ -278,7 +278,7 @@ class MRLDMSTrainer:
         logger.info(
             "训练配置: meta_batch_size=%s, inner_steps=%s, rollout_steps=%s, "
             "ppo_epochs=%s, ppo_batch_size=%s, num_workers=%s, eval_interval=%s, "
-            "vtw_time_step_s=%s, profile_timing=%s",
+            "eval_workers=%s, vtw_time_step_s=%s, profile_timing=%s",
             self.cfg.meta.meta_batch_size,
             self.cfg.meta.inner_steps,
             self.cfg.meta.rollout_steps,
@@ -286,6 +286,7 @@ class MRLDMSTrainer:
             self.cfg.ppo.batch_size,
             self.cfg.train.num_workers,
             self.cfg.train.eval_interval,
+            self.cfg.train.eval_workers,
             self.cfg.train.vtw_time_step_s,
             self.cfg.train.profile_timing,
         )
@@ -404,6 +405,7 @@ class MRLDMSTrainer:
             "ppo_epochs": self.cfg.ppo.ppo_epochs,
             "ppo_batch_size": self.cfg.ppo.batch_size,
             "eval_interval": self.cfg.train.eval_interval,
+            "eval_workers": self.cfg.train.eval_workers,
             "vtw_time_step_s": self.cfg.train.vtw_time_step_s,
             "profile_timing": self.cfg.train.profile_timing,
             "meta_encoder_type": self.cfg.network.meta_encoder_type,
@@ -978,13 +980,25 @@ class MRLDMSTrainer:
         base_model = self._mappo_model.actor if self.multi_agent else self.actor_critic
         base_state = copy.deepcopy(base_model.state_dict())
 
-        all_metrics = []
+        eval_tasks = []
 
         for _ in range(n_episodes):
             routine, dynamic = self.mission_gen.generate_episode_missions(
                 n_routine=self.cfg.train.eval_n_routine,
                 n_dynamic_per_insertion=self.cfg.train.eval_n_dynamic_per_insertion,
             )
+            eval_tasks.append((routine, dynamic))
+
+        if self.cfg.train.eval_workers > 1:
+            all_metrics = self._evaluate_parallel(eval_tasks, base_state)
+            base_model.load_state_dict(base_state)
+            avg = {}
+            for key in all_metrics[0]:
+                avg[key] = np.mean([m[key] for m in all_metrics])
+            return avg
+
+        all_metrics = []
+        for routine, dynamic in eval_tasks:
             self._precompute_task_vtw(routine, dynamic)
 
             # 恢复 base 参数，执行内循环适应后再评估
@@ -1000,6 +1014,74 @@ class MRLDMSTrainer:
         for key in all_metrics[0]:
             avg[key] = np.mean([m[key] for m in all_metrics])
         return avg
+
+    def _evaluate_parallel(self, eval_tasks: list, base_state: dict) -> list:
+        """并行评估 episode。worker 内独立适应和评估,不修改主进程模型。"""
+        def _state_to_numpy(sd):
+            return {k: v.detach().cpu().numpy() for k, v in sd.items()}
+
+        n_workers = min(self.cfg.train.eval_workers, len(eval_tasks))
+        if n_workers <= 1:
+            raise ValueError("_evaluate_parallel requires n_workers > 1")
+
+        if self.multi_agent:
+            from algo.task_worker import run_mappo_task
+
+            actor_init_np = _state_to_numpy(base_state)
+            critic_init_np = _state_to_numpy(self._mappo_model.critic.state_dict())
+            n_sat = min(self.cfg.mappo.n_satellites, len(self.cfg.satellites))
+            sat_configs = self.cfg.satellites[:n_sat]
+            task_args = []
+            for idx, (routine, dynamic_schedule) in enumerate(eval_tasks):
+                task_args.append({
+                    'idx': idx,
+                    'routine': routine,
+                    'dynamic_schedule': dynamic_schedule,
+                    'actor_init_state': actor_init_np,
+                    'critic_init_state': critic_init_np,
+                    'sat_configs': sat_configs,
+                    'reward_config': self.cfg.reward,
+                    'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
+                    'max_action_dim': self.cfg.mission.max_action_dim,
+                    'cfg_ppo': self.cfg.ppo,
+                    'cfg_meta': self.cfg.meta,
+                    'obs_dim': self._worker_obs_dim,
+                    'action_dim': self._worker_action_dim,
+                    'global_state_dim': self._worker_obs_dim,
+                    'actor_hidden_dims': self.cfg.network.hidden_layers,
+                    'critic_hidden_dims': self.cfg.mappo.critic_hidden_dims,
+                })
+            worker_fn = run_mappo_task
+        else:
+            from algo.task_worker import run_single_task
+
+            init_np = _state_to_numpy(base_state)
+            task_args = []
+            for idx, (routine, dynamic_schedule) in enumerate(eval_tasks):
+                task_args.append({
+                    'idx': idx,
+                    'routine': routine,
+                    'dynamic_schedule': dynamic_schedule,
+                    'init_state': init_np,
+                    'sat_config': self.cfg.satellites[0],
+                    'reward_config': self.cfg.reward,
+                    'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
+                    'max_action_dim': self.cfg.mission.max_action_dim,
+                    'cfg_ppo': self.cfg.ppo,
+                    'cfg_meta': self.cfg.meta,
+                    'obs_dim': self._worker_obs_dim,
+                    'action_dim': self._worker_action_dim,
+                    'hidden_dims': self.cfg.network.hidden_layers,
+                    'activation': self.cfg.network.activation,
+                })
+            worker_fn = run_single_task
+
+        if self.cfg.train.profile_timing:
+            logger.info("并行评估: episodes=%s, eval_workers=%s", len(eval_tasks), n_workers)
+        with get_context('spawn').Pool(processes=n_workers) as pool:
+            raw = pool.map(worker_fn, task_args)
+        raw = sorted(raw, key=lambda r: r['idx'])
+        return [r['eval_metrics'] for r in raw]
 
     # ===================================================================
     # 保存 / 加载
