@@ -179,6 +179,7 @@ python compare_methods.py \
   --n_routine 1200 \
   --n_dynamic 300 \
   --methods single,indep,mappo \
+  --method_jobs 3 \
   --no_episode_assignment \
   --rollout_steps 256 \
   --ppo_epochs 2 \
@@ -211,6 +212,7 @@ python compare_methods.py \
   --n_routine 1200 \
   --n_dynamic 300 \
   --methods single,indep,mappo \
+  --method_jobs 3 \
   --assignment_capacity_mode proportional \
   --assign_w_load 0.1 \
   --release_before_deadline_s 1800 \
@@ -477,6 +479,22 @@ MRL-DMS 当前瓶颈主要是环境 rollout、VTW 计算、任务分配和评估
 - `--jobs`:并行多个子实验,用于普通消融的训练阶段吞吐。
 - `--eval_workers`:每个子实验内部并行多个 eval episode。
 - 有效评估 worker 上限是 `eval_episodes`。
+
+### `compare_methods.py` 如何多 CPU 训练
+
+完整三方案对比可以用:
+
+```bash
+--methods single,indep,mappo --method_jobs 3
+```
+
+这会把 `Single-PPO`、`Indep-PPO`、`MAPPO` 三个顶层方法放到独立进程并行训练。它不会改变单个 MAPPO 内部的 rollout 结构;如果只运行 `--methods mappo`,仍然只有一个顶层训练进程。
+
+16 CPU 推荐:
+
+```bash
+--method_jobs 3 --eval_workers 4
+```
 
 ### 动态任务槽位是否需要手动调
 

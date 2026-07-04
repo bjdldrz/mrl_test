@@ -30,6 +30,7 @@ import argparse
 import logging
 import platform
 import subprocess
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import get_context
 from datetime import datetime, timezone
 from pathlib import Path
@@ -344,6 +345,78 @@ def _eval_multi_worker(args):
         if env.is_done():
             break
     return {"idx": idx, "metrics": env.get_metrics()}
+
+
+def _run_compare_method_worker(job):
+    """Run one top-level comparison method in a separate process."""
+    method_name = job["method_name"]
+    cfg = job["cfg"]
+    mission_gen = job["mission_gen"]
+    scenarios = job["scenarios"]
+    args = job["args"]
+    out_dir = Path(args["out_dir"])
+    device = torch.device(args["device"])
+
+    # Each method process gets a deterministic but separate RNG stream.
+    seed = int(args["seed"]) + 1009 * METHOD_ORDER.index(method_name)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if method_name == "Single-PPO":
+        metrics = run_single_ppo(
+            cfg, mission_gen, scenarios, args["train_iters"], device,
+            eval_workers=args["eval_workers"], viz_out_dir=out_dir)
+    elif method_name == "Indep-PPO":
+        metrics = run_multi(
+            cfg, mission_gen, scenarios, args["train_iters"], device,
+            coordinate=False,
+            method_name="Indep-PPO",
+            eval_workers=args["eval_workers"],
+            viz_out_dir=out_dir)
+    elif method_name == "MAPPO":
+        metrics = run_multi(
+            cfg, mission_gen, scenarios, args["train_iters"], device,
+            coordinate=True,
+            episode_assignment=args["episode_assignment"],
+            assign_w_load=args["assign_w_load"],
+            assignment_capacity_mode=args["assignment_capacity_mode"],
+            release_before_deadline_s=args["release_before_deadline_s"],
+            assignment_scorer=args["assignment_scorer"],
+            assignment_scorer_mix=args["assignment_scorer_mix"],
+            assignment_context_encoder=args["assignment_context_encoder"],
+            assignment_context_weight=args["assignment_context_weight"],
+            assignment_mlp_hidden_dim=args["assignment_mlp_hidden_dim"],
+            assignment_mlp_seed=args["assignment_mlp_seed"],
+            assignment_sequence_hidden_dim=args["assignment_sequence_hidden_dim"],
+            assignment_replan_interval_s=args["assignment_replan_interval_s"],
+            assignment_replan_horizon_s=args["assignment_replan_horizon_s"],
+            assignment_replan_trigger=args["assignment_replan_trigger"],
+            assignment_switch_penalty=args["assignment_switch_penalty"],
+            assignment_lock_window_s=args["assignment_lock_window_s"],
+            assignment_max_switches_per_task=args["assignment_max_switches_per_task"],
+            assignment_manager_mode=args["assignment_manager_mode"],
+            team_reward_mix=args["team_reward_mix"],
+            load_balance_reward_coeff=args["load_balance_reward_coeff"],
+            team_completion_bonus=args["team_completion_bonus"],
+            normalize_agent_rewards=args["normalize_agent_rewards"],
+            global_state_mode=args["global_state_mode"],
+            global_state_task_stats=args["global_state_task_stats"],
+            satellite_curriculum=args["satellite_curriculum"],
+            curriculum_min_satellites=args["curriculum_min_satellites"],
+            curriculum_iters=args["curriculum_iters"],
+            joint_explore_prob=args["joint_explore_prob"],
+            intent_broadcast=args["intent_broadcast"],
+            intent_replan_rounds=args["intent_replan_rounds"],
+            method_name="MAPPO",
+            eval_workers=args["eval_workers"],
+            viz_out_dir=out_dir)
+    elif method_name == "Greedy-Oracle":
+        metrics = run_greedy_oracle(
+            cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=out_dir)
+    else:
+        raise ValueError(f"未知 method_name={method_name!r}")
+
+    return method_name, metrics
 
 
 def _eval_oracle_worker(args):
@@ -870,6 +943,8 @@ def main():
     parser.add_argument("--methods", type=str, default="single,indep,mappo",
                         help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
+    parser.add_argument("--method_jobs", type=int, default=1,
+                        help="并行训练多少个顶层方法; 例如 single,indep,mappo 可设为 3")
     parser.add_argument("--run_name", type=str, default=None,
                         help="本次 compare run 名称; 默认由 experiment_tag/关键参数生成")
     parser.add_argument("--flat_out_dir", action="store_true",
@@ -1045,64 +1120,101 @@ def main():
         out_dir = unique_dir(args.out_dir, safe_name(run_name))
         args.out_dir = str(out_dir)
 
-    step_total = len(method_names)
-    step_idx = 1
-    if "Single-PPO" in method_names:
-        logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
-        results["Single-PPO"] = run_single_ppo(
-            cfg, mission_gen, scenarios, args.train_iters, device,
-            eval_workers=args.eval_workers, viz_out_dir=out_dir)
-        step_idx += 1
+    method_jobs = max(1, min(args.method_jobs, len(method_names)))
+    if method_jobs > 1:
+        if str(device) != "cpu":
+            logger.warning(
+                "--method_jobs=%s 会并行启动多个训练进程; 单卡 GPU 场景可能抢显存, CPU 推荐使用",
+                method_jobs,
+            )
+        logger.info(
+            "并行顶层方法训练: method_jobs=%s, methods=%s",
+            method_jobs,
+            ",".join(method_names),
+        )
+        args_dict = vars(args).copy()
+        args_dict["out_dir"] = str(out_dir)
+        jobs = [
+            {
+                "method_name": method_name,
+                "cfg": copy.deepcopy(cfg),
+                "mission_gen": copy.deepcopy(mission_gen),
+                "scenarios": copy.deepcopy(scenarios),
+                "args": args_dict,
+            }
+            for method_name in method_names
+        ]
+        with ProcessPoolExecutor(
+            max_workers=method_jobs,
+            mp_context=get_context("spawn"),
+        ) as executor:
+            futures = {
+                executor.submit(_run_compare_method_worker, job): job["method_name"]
+                for job in jobs
+            }
+            for future in as_completed(futures):
+                method_name, metrics = future.result()
+                results[method_name] = metrics
+                logger.info("完成顶层方法: %s", method_name)
+    else:
+        step_total = len(method_names)
+        step_idx = 1
+        if "Single-PPO" in method_names:
+            logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
+            results["Single-PPO"] = run_single_ppo(
+                cfg, mission_gen, scenarios, args.train_iters, device,
+                eval_workers=args.eval_workers, viz_out_dir=out_dir)
+            step_idx += 1
 
-    if "Indep-PPO" in method_names:
-        logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
-        results["Indep-PPO"] = run_multi(
-            cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
-            method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=out_dir)
-        step_idx += 1
+        if "Indep-PPO" in method_names:
+            logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
+            results["Indep-PPO"] = run_multi(
+                cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
+                method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=out_dir)
+            step_idx += 1
 
-    if "MAPPO" in method_names:
-        logger.info(f"=== [{step_idx}/{step_total}] 多星 MAPPO (协同, 本方法) ===")
-        results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
-                                     coordinate=True, episode_assignment=args.episode_assignment,
-                                     assign_w_load=args.assign_w_load,
-                                     assignment_capacity_mode=args.assignment_capacity_mode,
-                                     release_before_deadline_s=args.release_before_deadline_s,
-                                     assignment_scorer=args.assignment_scorer,
-                                     assignment_scorer_mix=args.assignment_scorer_mix,
-                                     assignment_context_encoder=args.assignment_context_encoder,
-                                     assignment_context_weight=args.assignment_context_weight,
-                                     assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
-                                     assignment_mlp_seed=args.assignment_mlp_seed,
-                                     assignment_sequence_hidden_dim=args.assignment_sequence_hidden_dim,
-                                     assignment_replan_interval_s=args.assignment_replan_interval_s,
-                                     assignment_replan_horizon_s=args.assignment_replan_horizon_s,
-                                     assignment_replan_trigger=args.assignment_replan_trigger,
-                                     assignment_switch_penalty=args.assignment_switch_penalty,
-                                     assignment_lock_window_s=args.assignment_lock_window_s,
-                                     assignment_max_switches_per_task=args.assignment_max_switches_per_task,
-                                     assignment_manager_mode=args.assignment_manager_mode,
-                                     team_reward_mix=args.team_reward_mix,
-                                     load_balance_reward_coeff=args.load_balance_reward_coeff,
-                                     team_completion_bonus=args.team_completion_bonus,
-                                     normalize_agent_rewards=args.normalize_agent_rewards,
-                                     global_state_mode=args.global_state_mode,
-                                     global_state_task_stats=args.global_state_task_stats,
-                                     satellite_curriculum=args.satellite_curriculum,
-                                     curriculum_min_satellites=args.curriculum_min_satellites,
-                                     curriculum_iters=args.curriculum_iters,
-                                     joint_explore_prob=args.joint_explore_prob,
-                                     intent_broadcast=args.intent_broadcast,
-                                     intent_replan_rounds=args.intent_replan_rounds,
-                                     method_name="MAPPO",
-                                     eval_workers=args.eval_workers,
-                                     viz_out_dir=out_dir)
-        step_idx += 1
+        if "MAPPO" in method_names:
+            logger.info(f"=== [{step_idx}/{step_total}] 多星 MAPPO (协同, 本方法) ===")
+            results["MAPPO"] = run_multi(cfg, mission_gen, scenarios, args.train_iters, device,
+                                         coordinate=True, episode_assignment=args.episode_assignment,
+                                         assign_w_load=args.assign_w_load,
+                                         assignment_capacity_mode=args.assignment_capacity_mode,
+                                         release_before_deadline_s=args.release_before_deadline_s,
+                                         assignment_scorer=args.assignment_scorer,
+                                         assignment_scorer_mix=args.assignment_scorer_mix,
+                                         assignment_context_encoder=args.assignment_context_encoder,
+                                         assignment_context_weight=args.assignment_context_weight,
+                                         assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
+                                         assignment_mlp_seed=args.assignment_mlp_seed,
+                                         assignment_sequence_hidden_dim=args.assignment_sequence_hidden_dim,
+                                         assignment_replan_interval_s=args.assignment_replan_interval_s,
+                                         assignment_replan_horizon_s=args.assignment_replan_horizon_s,
+                                         assignment_replan_trigger=args.assignment_replan_trigger,
+                                         assignment_switch_penalty=args.assignment_switch_penalty,
+                                         assignment_lock_window_s=args.assignment_lock_window_s,
+                                         assignment_max_switches_per_task=args.assignment_max_switches_per_task,
+                                         assignment_manager_mode=args.assignment_manager_mode,
+                                         team_reward_mix=args.team_reward_mix,
+                                         load_balance_reward_coeff=args.load_balance_reward_coeff,
+                                         team_completion_bonus=args.team_completion_bonus,
+                                         normalize_agent_rewards=args.normalize_agent_rewards,
+                                         global_state_mode=args.global_state_mode,
+                                         global_state_task_stats=args.global_state_task_stats,
+                                         satellite_curriculum=args.satellite_curriculum,
+                                         curriculum_min_satellites=args.curriculum_min_satellites,
+                                         curriculum_iters=args.curriculum_iters,
+                                         joint_explore_prob=args.joint_explore_prob,
+                                         intent_broadcast=args.intent_broadcast,
+                                         intent_replan_rounds=args.intent_replan_rounds,
+                                         method_name="MAPPO",
+                                         eval_workers=args.eval_workers,
+                                         viz_out_dir=out_dir)
+            step_idx += 1
 
-    if "Greedy-Oracle" in method_names:
-        logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
-        results["Greedy-Oracle"] = run_greedy_oracle(
-            cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=out_dir)
+        if "Greedy-Oracle" in method_names:
+            logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
+            results["Greedy-Oracle"] = run_greedy_oracle(
+                cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=out_dir)
 
     # 协同增益: 多星完成数 / (N × 单星完成数), 仅在包含 Single-PPO 时计算。
     n_sat = args.n_satellites
