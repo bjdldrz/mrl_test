@@ -952,6 +952,7 @@ def summarize_run(tag, params, out_dir):
         "max_action_dim",
         "candidate_action_top_k",
         "no_viz",
+        "no_progress",
         "device",
         "assignment_scorer",
         "assignment_scorer_mix",
@@ -1206,6 +1207,8 @@ def main():
                         help="meta_encoder_v1 关闭 train.py 阶段耗时 profile")
     parser.add_argument("--no_viz", action="store_true",
                         help="普通消融透传给 compare_methods.py, 跳过可视化 JSON 生成")
+    parser.add_argument("--no_progress", action="store_true",
+                        help="普通消融透传给 compare_methods.py, 关闭 tqdm 进度条")
     args = parser.parse_args()
 
     if sum(bool(x) for x in [args.flat_out_root, args.resume_latest, args.resume_root]) > 1:
@@ -1406,6 +1409,8 @@ def main():
                     cmd.extend([f"--{arg_name}", str(value)])
             if args.no_viz:
                 cmd.append("--no_viz")
+            if args.no_progress:
+                cmd.append("--no_progress")
             if args.run_oracle and "--run_oracle" not in cmd:
                 cmd.append("--run_oracle")
             if args.acled_path:

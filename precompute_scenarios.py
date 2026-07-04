@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
+from tqdm import tqdm
 
 from config import SatelliteConfig, get_default_config
 from data.mission_generator import MissionGenerator, load_acled_shapefile
@@ -110,9 +111,18 @@ def generate_scenarios(
     n_dynamic: int,
     n_insertions: int,
     strategy_rng,
+    desc: str = "generate scenarios",
+    show_progress: bool = True,
 ) -> List[Tuple[list, list]]:
     scenarios = []
-    for _ in range(n_scenarios):
+    iterator = tqdm(
+        range(n_scenarios),
+        desc=desc,
+        unit="scenario",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for _ in iterator:
         scenarios.append(
             mission_gen.generate_episode_missions(
                 n_routine=n_routine,
@@ -130,6 +140,7 @@ def build_train_payload(
     total_scenarios: int,
     stages,
     n_insertions: int,
+    show_progress: bool = True,
 ):
     mission_gen = MissionGenerator(acled_df=acled_df, seed=seed)
     strategy_rng = np.random.RandomState(seed + 17)
@@ -147,6 +158,8 @@ def build_train_payload(
             n_dynamic=n_dynamic,
             n_insertions=n_insertions,
             strategy_rng=strategy_rng,
+            desc=f"train stage {idx + 1}/{n_stages} r{n_routine} d{n_dynamic}",
+            show_progress=show_progress,
         )
         payload_stages.append({
             "name": f"stage{idx + 1}_r{n_routine}_d{n_dynamic}",
@@ -174,6 +187,7 @@ def build_eval_payload(
     n_routine: int,
     n_dynamic: int,
     n_insertions: int,
+    show_progress: bool = True,
 ):
     mission_gen = MissionGenerator(acled_df=acled_df, seed=seed)
     strategy_rng = np.random.RandomState(seed + 23)
@@ -184,6 +198,8 @@ def build_eval_payload(
         n_dynamic=n_dynamic,
         n_insertions=n_insertions,
         strategy_rng=strategy_rng,
+        desc=f"eval full r{n_routine} d{n_dynamic}",
+        show_progress=show_progress,
     )
     return {
         "schema_version": 1,
@@ -239,6 +255,7 @@ def warm_vtw_cache(
     time_step_s: float,
     workers: int = 1,
     cache_dir: str = "",
+    show_progress: bool = True,
 ):
     missions = list(iter_scenario_missions(scenarios))
     unique = {}
@@ -261,7 +278,16 @@ def warm_vtw_cache(
     ]
     if n_workers <= 1:
         _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir)
-        results = [_warm_vtw_satellite_worker(args) for args in task_args]
+        results = [
+            _warm_vtw_satellite_worker(args)
+            for args in tqdm(
+                task_args,
+                desc="warm VTW satellites",
+                unit="sat",
+                dynamic_ncols=True,
+                disable=not show_progress,
+            )
+        ]
     else:
         start_method = "fork" if "fork" in get_all_start_methods() else "spawn"
         with get_context(start_method).Pool(
@@ -269,7 +295,14 @@ def warm_vtw_cache(
             initializer=_init_warm_vtw_worker,
             initargs=(targets, horizon_s, time_step_s, cache_dir),
         ) as pool:
-            results = pool.map(_warm_vtw_satellite_worker, task_args)
+            results = list(tqdm(
+                pool.imap_unordered(_warm_vtw_satellite_worker, task_args),
+                total=len(task_args),
+                desc="warm VTW satellites",
+                unit="sat",
+                dynamic_ncols=True,
+                disable=not show_progress,
+            ))
     logger.info("VTW 预热完成: %s satellites", len(results))
 
 
@@ -378,16 +411,37 @@ def write_scenario_points_csv(scenario, out_path: Path):
         writer.writerows(rows)
 
 
-def save_scenario_maps(train_payload, eval_payload, out_dir: Path, max_scenarios: int, dpi: int):
+def save_scenario_maps(
+    train_payload,
+    eval_payload,
+    out_dir: Path,
+    max_scenarios: int,
+    dpi: int,
+    show_progress: bool = True,
+):
     maps_dir = out_dir / "maps"
     n_saved = 0
     limit = None if max_scenarios <= 0 else int(max_scenarios)
 
-    for stage in train_payload["stages"]:
+    for stage in tqdm(
+        train_payload["stages"],
+        desc="plot train map stages",
+        unit="stage",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    ):
         stage_name = stage["name"]
-        for idx, scenario in enumerate(stage["scenarios"]):
-            if limit is not None and idx >= limit:
-                break
+        scenarios = stage["scenarios"]
+        if limit is not None:
+            scenarios = scenarios[:limit]
+        for idx, scenario in enumerate(tqdm(
+            scenarios,
+            desc=f"plot {stage_name}",
+            unit="map",
+            dynamic_ncols=True,
+            leave=False,
+            disable=not show_progress,
+        )):
             stem = f"{idx + 1:04d}_{stage_name}"
             plot_scenario_map(
                 scenario,
@@ -402,9 +456,15 @@ def save_scenario_maps(train_payload, eval_payload, out_dir: Path, max_scenarios
             n_saved += 1
 
     eval_scenarios = get_eval_scenarios(eval_payload)
-    for idx, scenario in enumerate(eval_scenarios):
-        if limit is not None and idx >= limit:
-            break
+    if limit is not None:
+        eval_scenarios = eval_scenarios[:limit]
+    for idx, scenario in enumerate(tqdm(
+        eval_scenarios,
+        desc="plot eval maps",
+        unit="map",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )):
         stem = f"{idx + 1:04d}_eval_full"
         plot_scenario_map(
             scenario,
@@ -447,6 +507,8 @@ def main():
                         help="每个 train stage / eval 最多绘制多少个场景; 0 表示全部绘制")
     parser.add_argument("--map_dpi", type=int, default=160,
                         help="任务分布地图 PNG 分辨率")
+    parser.add_argument("--no_progress", action="store_true",
+                        help="关闭 tqdm 进度条")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -474,6 +536,7 @@ def main():
         total_scenarios=args.n_train_scenarios,
         stages=stages,
         n_insertions=cfg.mission.dynamic_insertions_per_day,
+        show_progress=not args.no_progress,
     )
     eval_payload = build_eval_payload(
         acled_df=acled_df,
@@ -482,6 +545,7 @@ def main():
         n_routine=args.n_routine,
         n_dynamic=args.n_dynamic,
         n_insertions=cfg.mission.dynamic_insertions_per_day,
+        show_progress=not args.no_progress,
     )
 
     save_pickle(out_dir / "train_scenarios.pkl", train_payload)
@@ -499,6 +563,7 @@ def main():
             out_dir=out_dir,
             max_scenarios=args.map_max_scenarios,
             dpi=args.map_dpi,
+            show_progress=not args.no_progress,
         )
     if not args.no_warm_vtw:
         vtw_workers = args.vtw_workers
@@ -512,6 +577,7 @@ def main():
             time_step_s=cfg.train.vtw_time_step_s,
             workers=vtw_workers,
             cache_dir=str(vtw_cache_dir),
+            show_progress=not args.no_progress,
         )
 
     manifest = {

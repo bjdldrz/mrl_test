@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from config import get_default_config
 from config import SatelliteConfig
@@ -467,7 +468,8 @@ def _run_compare_method_worker(job):
         metrics = run_single_ppo(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             train_scenarios=train_scenarios,
-            eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir)
+            eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
+            show_progress=not args.get("no_progress", False))
     elif method_name == "Indep-PPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -475,7 +477,8 @@ def _run_compare_method_worker(job):
             train_scenarios=train_scenarios,
             method_name="Indep-PPO",
             eval_workers=args["eval_workers"],
-            viz_out_dir=viz_out_dir)
+            viz_out_dir=viz_out_dir,
+            show_progress=not args.get("no_progress", False))
     elif method_name == "MAPPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -515,10 +518,12 @@ def _run_compare_method_worker(job):
             train_scenarios=train_scenarios,
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
-            viz_out_dir=viz_out_dir)
+            viz_out_dir=viz_out_dir,
+            show_progress=not args.get("no_progress", False))
     elif method_name == "Greedy-Oracle":
         metrics = run_greedy_oracle(
-            cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir)
+            cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
+            show_progress=not args.get("no_progress", False))
     else:
         raise ValueError(f"未知 method_name={method_name!r}")
 
@@ -554,13 +559,20 @@ def _eval_oracle_worker(args):
     return {"idx": idx, "metrics": env.get_metrics()}
 
 
-def _parallel_eval(worker_fn, task_args, eval_workers, label):
+def _parallel_eval(worker_fn, task_args, eval_workers, label, show_progress: bool = True):
     n_workers = min(eval_workers, len(task_args))
     if n_workers <= 1:
         return None
     logger.info("并行评估 %s: episodes=%s, eval_workers=%s", label, len(task_args), n_workers)
     with get_context("spawn").Pool(processes=n_workers) as pool:
-        raw = pool.map(worker_fn, task_args)
+        raw = list(tqdm(
+            pool.imap_unordered(worker_fn, task_args),
+            total=len(task_args),
+            desc=f"eval {label}",
+            unit="ep",
+            dynamic_ncols=True,
+            disable=not show_progress,
+        ))
     raw = sorted(raw, key=lambda r: r["idx"])
     return _avg_metrics([r["metrics"] for r in raw])
 
@@ -604,7 +616,8 @@ def _save_multi_viz_data(env, out_dir: Path, method_name: str):
 # =======================================================================
 def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                    train_scenarios=None,
-                   eval_workers: int = 1, viz_out_dir: Path = None):
+                   eval_workers: int = 1, viz_out_dir: Path = None,
+                   show_progress: bool = True):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
     from algo.ppo import PPOTrainer, RolloutBuffer
@@ -626,7 +639,14 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                      device=str(device))
 
     # 训练: 默认随机采样; 若提供 scenario cache,则按 curriculum 从训练集采样。
-    for it in range(train_iters):
+    train_iter = tqdm(
+        range(train_iters),
+        desc="train Single-PPO",
+        unit="iter",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for it in train_iter:
         if train_scenarios is not None:
             routine, dynamic = select_train_scenario(
                 train_scenarios, it, train_iters, np.random
@@ -645,7 +665,11 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                                            reset_options=opts)
         with torch.no_grad():
             last_v = model.get_value(torch.FloatTensor(obs).unsqueeze(0).to(device)).cpu().item()
-        ppo.update(buf, last_v)
+        metrics = ppo.update(buf, last_v)
+        train_iter.set_postfix(
+            reward=f"{sum(buf.rewards):.2f}",
+            loss=f"{metrics.get('policy_loss', 0.0):.3f}",
+        )
 
     # 评估
     if eval_workers > 1:
@@ -658,7 +682,13 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
-        avg = _parallel_eval(_eval_single_worker, task_args, eval_workers, "Single-PPO")
+        avg = _parallel_eval(
+            _eval_single_worker,
+            task_args,
+            eval_workers,
+            "Single-PPO",
+            show_progress=show_progress,
+        )
         if avg is not None:
             if viz_out_dir is not None and scenarios:
                 # 只为可视化额外串行跑最后一集，不纳入指标，避免 worker 传回大对象。
@@ -682,7 +712,13 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
             return avg
 
     metrics_list = []
-    for ep_idx, (routine, dynamic) in enumerate(scenarios):
+    for ep_idx, (routine, dynamic) in enumerate(tqdm(
+        scenarios,
+        desc="eval Single-PPO",
+        unit="ep",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )):
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
         obs, info = env.reset(options=opts)
@@ -742,7 +778,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               train_scenarios=None,
               method_name="MAPPO",
               eval_workers: int = 1,
-              viz_out_dir: Path = None):
+              viz_out_dir: Path = None,
+              show_progress: bool = True):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -827,7 +864,14 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
     }
     train_env_workers = max(1, int(train_env_workers or 1))
 
-    for it in range(train_iters):
+    train_iter = tqdm(
+        range(train_iters),
+        desc=f"train {method_name}",
+        unit="iter",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for it in train_iter:
         active_agent_ids = None
         if coordinate and satellite_curriculum:
             min_sat = max(1, min(curriculum_min_satellites, n_sat))
@@ -885,7 +929,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             worker_results = sorted(worker_results, key=lambda r: r["idx"])
             buffers = [r["buffer"] for r in worker_results]
             last_states = [r["last_global_state"] for r in worker_results]
-            trainer.update_many(buffers, last_states)
+            metrics = trainer.update_many(buffers, last_states)
+            rollout_reward = sum(float(r.get("total_reward", 0.0)) for r in worker_results)
         else:
             if train_scenarios is not None:
                 routine, dynamic = select_train_scenario(
@@ -904,13 +949,18 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             cur_info = {a: r[1] for a, r in res.items()}
             buf = MultiAgentRolloutBuffer()
             buf.init_agents(active_agent_ids or env.agent_ids)
-            cur_obs, cur_info, _ = trainer.collect_rollout(
+            cur_obs, cur_info, rollout_reward = trainer.collect_rollout(
                 env, buf, cfg.meta.rollout_steps, cur_obs, cur_info,
                 active_agent_ids=active_agent_ids,
                 joint_explore_prob=(joint_explore_prob if coordinate else 0.0),
                 intent_broadcast=(coordinate and intent_broadcast),
                 intent_replan_rounds=intent_replan_rounds)
-            trainer.update(buf, env.get_global_state())
+            metrics = trainer.update(buf, env.get_global_state())
+        train_iter.set_postfix(
+            reward=f"{rollout_reward:.2f}",
+            ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
+            vloss=f"{metrics.get('value_loss', 0.0):.3f}",
+        )
 
     # 评估
     if eval_workers > 1:
@@ -927,7 +977,13 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
-        avg = _parallel_eval(_eval_multi_worker, task_args, eval_workers, method_name)
+        avg = _parallel_eval(
+            _eval_multi_worker,
+            task_args,
+            eval_workers,
+            method_name,
+            show_progress=show_progress,
+        )
         if avg is not None:
             if viz_out_dir is not None and scenarios:
                 routine, dynamic = scenarios[-1]
@@ -957,7 +1013,13 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
 
     metrics_list = []
     env.set_eval_mode(True)   # 评估期启用 A1 败者改派 (训练期关闭以保信用分配)
-    for ep_idx, (routine, dynamic) in enumerate(scenarios):
+    for ep_idx, (routine, dynamic) in enumerate(tqdm(
+        scenarios,
+        desc=f"eval {method_name}",
+        unit="ep",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )):
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
         res = env.reset(options=opts)
@@ -1033,7 +1095,13 @@ def _greedy_oracle_actions(env):
     return actions
 
 
-def run_greedy_oracle(cfg, scenarios, eval_workers: int = 1, viz_out_dir: Path = None):
+def run_greedy_oracle(
+    cfg,
+    scenarios,
+    eval_workers: int = 1,
+    viz_out_dir: Path = None,
+    show_progress: bool = True,
+):
     from envs.multi_satellite_env import MultiSatelliteEnv
 
     if eval_workers > 1:
@@ -1041,7 +1109,13 @@ def run_greedy_oracle(cfg, scenarios, eval_workers: int = 1, viz_out_dir: Path =
             {"idx": ep_idx, "cfg": cfg, "scenario": scenario}
             for ep_idx, scenario in enumerate(scenarios)
         ]
-        avg = _parallel_eval(_eval_oracle_worker, task_args, eval_workers, "Greedy-Oracle")
+        avg = _parallel_eval(
+            _eval_oracle_worker,
+            task_args,
+            eval_workers,
+            "Greedy-Oracle",
+            show_progress=show_progress,
+        )
         if avg is not None and viz_out_dir is None:
             return avg
         if avg is not None and viz_out_dir is not None and not scenarios:
@@ -1067,7 +1141,13 @@ def run_greedy_oracle(cfg, scenarios, eval_workers: int = 1, viz_out_dir: Path =
         eval_scenarios = scenarios
 
     metrics_list = []
-    for ep_idx, (routine, dynamic) in enumerate(eval_scenarios):
+    for ep_idx, (routine, dynamic) in enumerate(tqdm(
+        eval_scenarios,
+        desc="eval Greedy-Oracle",
+        unit="ep",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )):
         opts = {
             "routine_missions": copy.deepcopy(routine),
             "dynamic_schedule": copy.deepcopy(dynamic),
@@ -1126,6 +1206,8 @@ def main():
                         help="并行训练多少个顶层方法; 例如 single,indep,mappo 可设为 3")
     parser.add_argument("--no_viz", action="store_true",
                         help="跳过 *_viz_data.json 生成, 避免并行评估后额外串行重跑 1 个 episode")
+    parser.add_argument("--no_progress", action="store_true",
+                        help="关闭 tqdm 训练/评估进度条")
     parser.add_argument("--run_name", type=str, default=None,
                         help="本次 compare run 名称; 默认由 experiment_tag/关键参数生成")
     parser.add_argument("--flat_out_dir", action="store_true",
@@ -1384,7 +1466,8 @@ def main():
             results["Single-PPO"] = run_single_ppo(
                 cfg, mission_gen, scenarios, args.train_iters, device,
                 train_scenarios=train_scenarios,
-                eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
+                eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
+                show_progress=not args.no_progress)
             step_idx += 1
 
         if "Indep-PPO" in method_names:
@@ -1392,7 +1475,8 @@ def main():
             results["Indep-PPO"] = run_multi(
                 cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
                 train_scenarios=train_scenarios,
-                method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
+                method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
+                show_progress=not args.no_progress)
             step_idx += 1
 
         if "MAPPO" in method_names:
@@ -1433,13 +1517,15 @@ def main():
                                          train_scenarios=train_scenarios,
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
-                                         viz_out_dir=viz_out_dir)
+                                         viz_out_dir=viz_out_dir,
+                                         show_progress=not args.no_progress)
             step_idx += 1
 
         if "Greedy-Oracle" in method_names:
             logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
             results["Greedy-Oracle"] = run_greedy_oracle(
-                cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
+                cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
+                show_progress=not args.no_progress)
 
     # 协同增益: 多星完成数 / (N × 单星完成数), 仅在包含 Single-PPO 时计算。
     n_sat = args.n_satellites
