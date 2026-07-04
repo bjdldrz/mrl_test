@@ -88,6 +88,7 @@ python run_ablation.py \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
   --vtw_time_step_s 60 \
+  --no_viz \
   --dry_run
 ```
 
@@ -148,18 +149,27 @@ python compare_methods.py \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
   --eval_workers 4 \
+  --torch_num_threads 4 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_cva_mappo_train_eval \
   --run_name cva_mappo_lstm_rolling_stress \
+  --no_viz \
   --device cpu
 ```
+
+说明:
+
+- A1 只运行 `--methods mappo`,不能使用 `--method_jobs` 并行多个顶层方法。
+- `--eval_workers 4` 只并行训练后的评估 episode。
+- `--torch_num_threads 4` 让单个 MAPPO 训练进程内部的 PyTorch 前向/更新使用更多 CPU 线程。
+- `--no_viz` 会跳过 `*_viz_data.json`,避免并行评估后为了可视化额外串行重跑 1 个 episode;需要画任务分布图和甘特图时去掉这一项。
 
 结果文件:
 
 ```text
 runs/main_cva_mappo_train_eval/<run_name>/comparison_results.json
 runs/main_cva_mappo_train_eval/<run_name>/manifest.json
-runs/main_cva_mappo_train_eval/<run_name>/*_viz_data.json
+runs/main_cva_mappo_train_eval/<run_name>/*_viz_data.json  # 未使用 --no_viz 时生成
 ```
 
 ---
@@ -278,6 +288,7 @@ python run_ablation.py \
   --ppo_batch_size 256 \
   --vtw_time_step_s 60 \
   --resume_latest \
+  --no_viz \
   --skip_existing
 ```
 
@@ -319,6 +330,7 @@ python run_ablation.py \
   --ppo_batch_size 256 \
   --vtw_time_step_s 60 \
   --resume_latest \
+  --no_viz \
   --skip_existing
 ```
 
@@ -349,6 +361,7 @@ python run_ablation.py \
   --ppo_batch_size 256 \
   --vtw_time_step_s 60 \
   --resume_latest \
+  --no_viz \
   --skip_existing
 ```
 

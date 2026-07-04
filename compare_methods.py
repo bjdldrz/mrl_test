@@ -112,6 +112,19 @@ def parse_methods(text, run_oracle=False):
     return dedup
 
 
+def _configure_torch_threads(torch_num_threads):
+    if torch_num_threads is None:
+        return
+    n_threads = max(1, int(torch_num_threads))
+    torch.set_num_threads(n_threads)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # PyTorch 只允许在并行工作启动前设置 interop 线程;重复设置时忽略。
+        pass
+    logger.info("PyTorch CPU threads: intra_op=%s, inter_op=1", n_threads)
+
+
 def expand_satellite_configs(base_satellites, n_satellites):
     """Repeat the base constellation with RAAN/phase offsets for scale tests."""
     if n_satellites <= len(base_satellites):
@@ -356,6 +369,8 @@ def _run_compare_method_worker(job):
     args = job["args"]
     out_dir = Path(args["out_dir"])
     device = torch.device(args["device"])
+    viz_out_dir = None if args.get("no_viz", False) else out_dir
+    _configure_torch_threads(args.get("torch_num_threads"))
 
     # Each method process gets a deterministic but separate RNG stream.
     seed = int(args["seed"]) + 1009 * METHOD_ORDER.index(method_name)
@@ -365,14 +380,14 @@ def _run_compare_method_worker(job):
     if method_name == "Single-PPO":
         metrics = run_single_ppo(
             cfg, mission_gen, scenarios, args["train_iters"], device,
-            eval_workers=args["eval_workers"], viz_out_dir=out_dir)
+            eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir)
     elif method_name == "Indep-PPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             coordinate=False,
             method_name="Indep-PPO",
             eval_workers=args["eval_workers"],
-            viz_out_dir=out_dir)
+            viz_out_dir=viz_out_dir)
     elif method_name == "MAPPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -409,10 +424,10 @@ def _run_compare_method_worker(job):
             intent_replan_rounds=args["intent_replan_rounds"],
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
-            viz_out_dir=out_dir)
+            viz_out_dir=viz_out_dir)
     elif method_name == "Greedy-Oracle":
         metrics = run_greedy_oracle(
-            cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=out_dir)
+            cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir)
     else:
         raise ValueError(f"未知 method_name={method_name!r}")
 
@@ -924,6 +939,8 @@ def main():
     parser.add_argument("--eval_episodes", type=int, default=5)
     parser.add_argument("--eval_workers", type=int, default=1,
                         help="评估 episode 并行 worker 数; 1 为串行")
+    parser.add_argument("--torch_num_threads", type=int, default=None,
+                        help="单个训练进程内 PyTorch CPU 线程数; 默认沿用环境设置")
     parser.add_argument("--n_routine", type=int, default=200)
     parser.add_argument("--n_dynamic", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
@@ -945,6 +962,8 @@ def main():
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
     parser.add_argument("--method_jobs", type=int, default=1,
                         help="并行训练多少个顶层方法; 例如 single,indep,mappo 可设为 3")
+    parser.add_argument("--no_viz", action="store_true",
+                        help="跳过 *_viz_data.json 生成, 避免并行评估后额外串行重跑 1 个 episode")
     parser.add_argument("--run_name", type=str, default=None,
                         help="本次 compare run 名称; 默认由 experiment_tag/关键参数生成")
     parser.add_argument("--flat_out_dir", action="store_true",
@@ -1023,6 +1042,7 @@ def main():
     args = parser.parse_args()
     method_names = parse_methods(args.methods, run_oracle=args.run_oracle)
     args.methods = ",".join(method_names)
+    _configure_torch_threads(args.torch_num_threads)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -1119,6 +1139,7 @@ def main():
         )
         out_dir = unique_dir(args.out_dir, safe_name(run_name))
         args.out_dir = str(out_dir)
+    viz_out_dir = None if args.no_viz else out_dir
 
     method_jobs = max(1, min(args.method_jobs, len(method_names)))
     if method_jobs > 1:
@@ -1163,14 +1184,14 @@ def main():
             logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
             results["Single-PPO"] = run_single_ppo(
                 cfg, mission_gen, scenarios, args.train_iters, device,
-                eval_workers=args.eval_workers, viz_out_dir=out_dir)
+                eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
             step_idx += 1
 
         if "Indep-PPO" in method_names:
             logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
             results["Indep-PPO"] = run_multi(
                 cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
-                method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=out_dir)
+                method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
             step_idx += 1
 
         if "MAPPO" in method_names:
@@ -1208,13 +1229,13 @@ def main():
                                          intent_replan_rounds=args.intent_replan_rounds,
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
-                                         viz_out_dir=out_dir)
+                                         viz_out_dir=viz_out_dir)
             step_idx += 1
 
         if "Greedy-Oracle" in method_names:
             logger.info(f"=== [{step_idx}/{step_total}] Greedy Oracle (集中式启发式参考) ===")
             results["Greedy-Oracle"] = run_greedy_oracle(
-                cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=out_dir)
+                cfg, scenarios, eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
 
     # 协同增益: 多星完成数 / (N × 单星完成数), 仅在包含 Single-PPO 时计算。
     n_sat = args.n_satellites

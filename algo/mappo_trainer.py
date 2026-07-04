@@ -242,13 +242,20 @@ class MAPPOTrainer:
                 masks_used, multi_env.idle_action
             )
 
-        for aid in agent_ids:
-            forced_action = explore_actions.get(aid)
-            action_np, log_prob_np = self._sample_one_action(
-                obs_by_agent[aid], masks_used[aid], forced_action
+        if explore_actions:
+            for aid in agent_ids:
+                forced_action = explore_actions.get(aid)
+                action_np, log_prob_np = self._sample_one_action(
+                    obs_by_agent[aid], masks_used[aid], forced_action
+                )
+                actions[aid] = action_np
+                log_probs[aid] = log_prob_np
+        else:
+            batch_actions, batch_log_probs = self._sample_action_batch(
+                agent_ids, obs_by_agent, masks_used
             )
-            actions[aid] = action_np
-            log_probs[aid] = log_prob_np
+            actions.update(batch_actions)
+            log_probs.update(batch_log_probs)
 
         if intent_broadcast:
             self._apply_intent_broadcast(
@@ -261,6 +268,39 @@ class MAPPOTrainer:
             )
 
         return actions, log_probs, masks_used, obs_by_agent
+
+    def _sample_action_batch(
+        self,
+        agent_ids: List[str],
+        obs_by_agent: Dict[str, np.ndarray],
+        masks_used: Dict[str, np.ndarray],
+    ) -> Tuple[Dict[str, int], Dict[str, float]]:
+        """
+        批量采样多颗卫星动作。
+
+        CPU 场景下逐星调用 actor 会产生大量小 batch 前向;这里保持相同策略分布,
+        只把同一步的多星观测合成一个 batch,减少 Python/PyTorch 调用开销。
+        """
+        with torch.no_grad():
+            obs_t = torch.FloatTensor(
+                np.stack([obs_by_agent[aid] for aid in agent_ids], axis=0)
+            ).to(self.device)
+            mask_t = torch.FloatTensor(
+                np.stack([masks_used[aid] for aid in agent_ids], axis=0)
+            ).to(self.device)
+            action_t, log_prob_t, _ = self.model.actor.get_action(obs_t, mask_t)
+
+        action_np = action_t.cpu().numpy()
+        log_prob_np = log_prob_t.cpu().numpy()
+        actions = {
+            aid: int(action_np[idx])
+            for idx, aid in enumerate(agent_ids)
+        }
+        log_probs = {
+            aid: float(log_prob_np[idx])
+            for idx, aid in enumerate(agent_ids)
+        }
+        return actions, log_probs
 
     def _sample_one_action(
         self,

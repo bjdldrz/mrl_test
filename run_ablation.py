@@ -822,8 +822,10 @@ def summarize_run(tag, params, out_dir):
         "ppo_epochs",
         "ppo_batch_size",
         "eval_workers",
+        "torch_num_threads",
         "vtw_time_step_s",
         "max_action_dim",
+        "no_viz",
         "device",
         "assignment_scorer",
         "assignment_scorer_mix",
@@ -1057,12 +1059,16 @@ def main():
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
     parser.add_argument("--eval_workers", type=int, default=None,
                         help="透传给 train.py/compare_methods.py 的评估 episode 并行 worker 数")
+    parser.add_argument("--torch_num_threads", type=int, default=None,
+                        help="透传给 compare_methods.py 的单训练进程 PyTorch CPU 线程数")
     parser.add_argument("--save_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的 checkpoint 间隔")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
                         help="meta_encoder_v1 透传给 train.py 的 VTW 采样步长")
     parser.add_argument("--no_profile_timing", action="store_true",
                         help="meta_encoder_v1 关闭 train.py 阶段耗时 profile")
+    parser.add_argument("--no_viz", action="store_true",
+                        help="普通消融透传给 compare_methods.py, 跳过可视化 JSON 生成")
     args = parser.parse_args()
 
     if sum(bool(x) for x in [args.flat_out_root, args.resume_latest, args.resume_root]) > 1:
@@ -1243,11 +1249,14 @@ def main():
                 "ppo_epochs",
                 "ppo_batch_size",
                 "eval_workers",
+                "torch_num_threads",
                 "vtw_time_step_s",
             ]:
                 value = getattr(args, arg_name)
                 if value is not None:
                     cmd.extend([f"--{arg_name}", str(value)])
+            if args.no_viz:
+                cmd.append("--no_viz")
             if args.run_oracle and "--run_oracle" not in cmd:
                 cmd.append("--run_oracle")
             if args.acled_path:
