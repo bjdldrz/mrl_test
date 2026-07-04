@@ -235,6 +235,61 @@ def _save_viz_data(env, out_dir: Path):
         dump_json(payload, f, ensure_ascii=False, indent=2)
 
 
+def _collect_rollout_worker(payload):
+    seed = int(payload["seed"])
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.set_num_threads(1)
+
+    cfg = payload["cfg"]
+    args = payload["args"]
+    v2_cfg = payload["v2_cfg"]
+    routine, dynamic = payload["scenario"]
+    model_state = payload["model_state"]
+    n_steps = int(payload["rollout_steps"])
+
+    env = _make_env(cfg, args, v2_cfg)
+    model = MAPPOActorCritic(
+        local_obs_dim=env.local_obs_dim,
+        action_dim=env.action_dim,
+        global_state_dim=env.global_state_dim,
+        actor_hidden_dims=cfg.network.hidden_layers,
+        critic_hidden_dims=cfg.mappo.critic_hidden_dims,
+    ).to("cpu")
+    model.load_state_dict(_numpy_state_to_torch(model_state))
+    trainer = MAPPOTrainer(
+        model,
+        lr=cfg.ppo.learning_rate,
+        gamma=cfg.ppo.discount_factor,
+        gae_lambda=cfg.ppo.gae_lambda,
+        clip_ratio=cfg.ppo.clip_ratio,
+        entropy_coeff=cfg.ppo.entropy_coeff,
+        value_loss_coeff=cfg.ppo.value_loss_coeff,
+        ppo_epochs=cfg.ppo.ppo_epochs,
+        batch_size=cfg.ppo.batch_size,
+        device="cpu",
+    )
+
+    reset = env.reset(options={
+        "routine_missions": copy.deepcopy(routine),
+        "dynamic_schedule": copy.deepcopy(dynamic),
+    })
+    cur_obs = {aid: item[0] for aid, item in reset.items()}
+    cur_info = {aid: item[1] for aid, item in reset.items()}
+    buffer = MultiAgentRolloutBuffer()
+    buffer.init_agents(env.agent_ids)
+    _, _, reward = trainer.collect_rollout(
+        env, buffer, n_steps, cur_obs, cur_info
+    )
+    return {
+        "idx": payload["idx"],
+        "buffer": buffer,
+        "last_global_state": env.get_global_state(),
+        "total_reward": float(reward),
+        "steps": len(buffer),
+    }
+
+
 def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen, out_dir: Path):
     device = torch.device(args.device)
     env = _make_env(cfg, args, v2_cfg)
@@ -267,26 +322,65 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
         disable=args.no_progress,
     )
     for it in pbar:
-        if train_payload is not None:
-            routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
-        else:
-            routine, dynamic = mission_gen.generate_episode_missions(
-                n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
-                n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
-                n_insertions=cfg.mission.dynamic_insertions_per_day,
+        n_workers = max(1, min(int(args.train_env_workers or 1), int(cfg.meta.rollout_steps)))
+        if n_workers > 1:
+            from multiprocessing import get_context
+
+            step_counts = [cfg.meta.rollout_steps // n_workers] * n_workers
+            for wi in range(cfg.meta.rollout_steps % n_workers):
+                step_counts[wi] += 1
+            model_state = _torch_state_to_numpy(model.state_dict())
+            payloads = []
+            for wi, worker_steps in enumerate(step_counts):
+                if train_payload is not None:
+                    routine, dynamic = select_train_scenario(
+                        train_payload, it, args.train_iters, rng
+                    )
+                else:
+                    routine, dynamic = mission_gen.generate_episode_missions(
+                        n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+                        n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+                        n_insertions=cfg.mission.dynamic_insertions_per_day,
+                    )
+                payloads.append({
+                    "idx": wi,
+                    "cfg": copy.deepcopy(cfg),
+                    "args": args,
+                    "v2_cfg": copy.deepcopy(v2_cfg),
+                    "scenario": (routine, dynamic),
+                    "model_state": model_state,
+                    "rollout_steps": worker_steps,
+                    "seed": int(rng.randint(0, 2**31 - 1)),
+                })
+            with get_context("spawn").Pool(processes=n_workers) as pool:
+                worker_results = pool.map(_collect_rollout_worker, payloads)
+            worker_results = sorted(worker_results, key=lambda row: row["idx"])
+            metrics = trainer.update_many(
+                [row["buffer"] for row in worker_results],
+                [row["last_global_state"] for row in worker_results],
             )
-        reset = env.reset(options={
-            "routine_missions": copy.deepcopy(routine),
-            "dynamic_schedule": copy.deepcopy(dynamic),
-        })
-        cur_obs = {aid: item[0] for aid, item in reset.items()}
-        cur_info = {aid: item[1] for aid, item in reset.items()}
-        buffer = MultiAgentRolloutBuffer()
-        buffer.init_agents(env.agent_ids)
-        cur_obs, cur_info, reward = trainer.collect_rollout(
-            env, buffer, cfg.meta.rollout_steps, cur_obs, cur_info
-        )
-        metrics = trainer.update(buffer, env.get_global_state())
+            reward = sum(float(row.get("total_reward", 0.0)) for row in worker_results)
+        else:
+            if train_payload is not None:
+                routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
+            else:
+                routine, dynamic = mission_gen.generate_episode_missions(
+                    n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+                    n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+                    n_insertions=cfg.mission.dynamic_insertions_per_day,
+                )
+            reset = env.reset(options={
+                "routine_missions": copy.deepcopy(routine),
+                "dynamic_schedule": copy.deepcopy(dynamic),
+            })
+            cur_obs = {aid: item[0] for aid, item in reset.items()}
+            cur_info = {aid: item[1] for aid, item in reset.items()}
+            buffer = MultiAgentRolloutBuffer()
+            buffer.init_agents(env.agent_ids)
+            _, _, reward = trainer.collect_rollout(
+                env, buffer, cfg.meta.rollout_steps, cur_obs, cur_info
+            )
+            metrics = trainer.update(buffer, env.get_global_state())
         pbar.set_postfix(
             reward=f"{reward:.2f}",
             ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
@@ -343,6 +437,8 @@ def main():
     parser.add_argument("--out_dir", type=str, default="runs/cva_mappo_v2")
     parser.add_argument("--run_name", type=str, default="cva_mappo_v2")
     parser.add_argument("--rollout_steps", type=int, default=256)
+    parser.add_argument("--train_env_workers", type=int, default=1,
+                        help="训练 rollout 并行环境进程数; worker 采样在 CPU, 主进程在 --device 上更新")
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
     parser.add_argument("--vtw_time_step_s", type=float, default=60.0)
