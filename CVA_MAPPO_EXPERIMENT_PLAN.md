@@ -81,6 +81,16 @@ python precompute_scenarios.py \
   --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
 ```
 
+预处理阶段还会为每个 train/eval scenario 生成任务分布地图,用于论文展示:
+
+```text
+runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/maps/
+  train/<stage_name>/*.png
+  eval/*.png
+```
+
+如只需生成场景和 VTW 缓存,可添加 `--no_plot_maps`。
+
 后续训练和消融统一追加:
 
 ```bash

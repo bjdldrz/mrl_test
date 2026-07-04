@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import copy
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
@@ -215,6 +216,154 @@ def warm_vtw_cache(satellites, scenarios, horizon_s: float, time_step_s: float):
             )
 
 
+def _scenario_points(scenario):
+    routine, dynamic_schedule = scenario
+    rows = []
+    for mission in routine:
+        rows.append({
+            "mission_id": int(mission.id),
+            "lat": float(mission.lat),
+            "lon": float(mission.lon),
+            "priority": float(mission.priority),
+            "is_dynamic": False,
+            "arrival_time_s": 0.0,
+            "stage": "routine",
+        })
+    for arrival_time, missions in dynamic_schedule:
+        for mission in missions:
+            rows.append({
+                "mission_id": int(mission.id),
+                "lat": float(mission.lat),
+                "lon": float(mission.lon),
+                "priority": float(mission.priority),
+                "is_dynamic": True,
+                "arrival_time_s": float(arrival_time),
+                "stage": f"dynamic_{int(round(arrival_time))}",
+            })
+    return rows
+
+
+def _setup_matplotlib():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt
+
+
+def plot_scenario_map(scenario, out_path: Path, title: str, dpi: int = 160):
+    plt = _setup_matplotlib()
+    rows = _scenario_points(scenario)
+    routine = [row for row in rows if not row["is_dynamic"]]
+    dynamic = [row for row in rows if row["is_dynamic"]]
+
+    fig, ax = plt.subplots(figsize=(12, 6.2))
+    ax.set_facecolor("#F7FAFC")
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-70, 75)
+    ax.set_xticks(range(-180, 181, 60))
+    ax.set_yticks(range(-60, 76, 30))
+    ax.grid(True, color="#D8DEE9", linewidth=0.6, alpha=0.8)
+    ax.axhline(0, color="#A0AEC0", linewidth=0.8)
+    ax.axvline(0, color="#A0AEC0", linewidth=0.8)
+
+    if routine:
+        ax.scatter(
+            [row["lon"] for row in routine],
+            [row["lat"] for row in routine],
+            s=8,
+            c="#2B6CB0",
+            alpha=0.34,
+            linewidths=0,
+            label=f"Routine ({len(routine)})",
+        )
+    if dynamic:
+        arrivals = sorted({row["arrival_time_s"] for row in dynamic})
+        colors = ["#E53E3E", "#DD6B20", "#C53030", "#9B2C2C", "#B7791F"]
+        for idx, arrival in enumerate(arrivals):
+            points = [row for row in dynamic if row["arrival_time_s"] == arrival]
+            ax.scatter(
+                [row["lon"] for row in points],
+                [row["lat"] for row in points],
+                s=13,
+                c=colors[idx % len(colors)],
+                alpha=0.62,
+                linewidths=0,
+                label=f"Dynamic t={arrival / 3600:.1f}h ({len(points)})",
+            )
+
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title(title)
+    ax.legend(loc="lower left", frameon=True, framealpha=0.92, fontsize=8)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def write_scenario_points_csv(scenario, out_path: Path):
+    rows = _scenario_points(scenario)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "mission_id",
+                "lat",
+                "lon",
+                "priority",
+                "is_dynamic",
+                "arrival_time_s",
+                "stage",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def save_scenario_maps(train_payload, eval_payload, out_dir: Path, max_scenarios: int, dpi: int):
+    maps_dir = out_dir / "maps"
+    n_saved = 0
+    limit = None if max_scenarios <= 0 else int(max_scenarios)
+
+    for stage in train_payload["stages"]:
+        stage_name = stage["name"]
+        for idx, scenario in enumerate(stage["scenarios"]):
+            if limit is not None and idx >= limit:
+                break
+            stem = f"{idx + 1:04d}_{stage_name}"
+            plot_scenario_map(
+                scenario,
+                maps_dir / "train" / stage_name / f"{stem}.png",
+                title=f"Train Scenario {idx + 1} | {stage_name}",
+                dpi=dpi,
+            )
+            write_scenario_points_csv(
+                scenario,
+                maps_dir / "train" / stage_name / f"{stem}.csv",
+            )
+            n_saved += 1
+
+    eval_scenarios = get_eval_scenarios(eval_payload)
+    for idx, scenario in enumerate(eval_scenarios):
+        if limit is not None and idx >= limit:
+            break
+        stem = f"{idx + 1:04d}_eval_full"
+        plot_scenario_map(
+            scenario,
+            maps_dir / "eval" / f"{stem}.png",
+            title=f"Eval Scenario {idx + 1} | full stress",
+            dpi=dpi,
+        )
+        write_scenario_points_csv(
+            scenario,
+            maps_dir / "eval" / f"{stem}.csv",
+        )
+        n_saved += 1
+    logger.info("场景分布地图完成: %s scenario maps under %s", n_saved, maps_dir)
+    return maps_dir, n_saved
+
+
 def main():
     parser = argparse.ArgumentParser(description="预生成 MRL-DMS 训练/评估场景并预热 VTW")
     parser.add_argument("--acled_path", type=str, default=None)
@@ -233,6 +382,12 @@ def main():
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--no_warm_vtw", action="store_true",
                         help="只保存场景, 不主动预热 VTW 磁盘缓存")
+    parser.add_argument("--no_plot_maps", action="store_true",
+                        help="不为每个 train/eval scenario 输出任务分布地图")
+    parser.add_argument("--map_max_scenarios", type=int, default=0,
+                        help="每个 train stage / eval 最多绘制多少个场景; 0 表示全部绘制")
+    parser.add_argument("--map_dpi", type=int, default=160,
+                        help="任务分布地图 PNG 分辨率")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -275,6 +430,16 @@ def main():
 
     train_flat = flatten_train_scenarios(train_payload)
     eval_scenarios = get_eval_scenarios(eval_payload)
+    maps_dir = None
+    n_maps = 0
+    if not args.no_plot_maps:
+        maps_dir, n_maps = save_scenario_maps(
+            train_payload=train_payload,
+            eval_payload=eval_payload,
+            out_dir=out_dir,
+            max_scenarios=args.map_max_scenarios,
+            dpi=args.map_dpi,
+        )
     if not args.no_warm_vtw:
         warm_vtw_cache(
             satellites=cfg.satellites,
@@ -302,10 +467,13 @@ def main():
             for stage in train_payload["stages"]
         ],
         "vtw_cache_dir": str(vtw_cache_dir),
+        "maps_dir": str(maps_dir) if maps_dir is not None else "",
+        "n_maps": n_maps,
         "outputs": {
             "train_scenarios": str(out_dir / "train_scenarios.pkl"),
             "eval_scenarios": str(out_dir / "eval_scenarios.pkl"),
             "manifest": str(out_dir / "manifest.json"),
+            "maps_dir": str(maps_dir) if maps_dir is not None else "",
         },
     }
     with open(out_dir / "manifest.json", "w") as f:
