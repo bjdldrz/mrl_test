@@ -28,9 +28,10 @@ score(satellite, task)
 | A2 | 基础三方案压力对比 | 得到 Single-PPO、Indep-PPO、Vanilla MAPPO 基线 | `runs/compare_vanilla_mappo_stress` |
 | A3 | CVA-MAPPO 完整三方案对比 | 得到最终方法与 Single/Indep 的同表对比 | `runs/compare_cva_mappo_stress` |
 | A4 | CVA 主消融 | 验证 rolling、CVA scorer、上下文 encoder 的贡献 | `runs/ablation_cva_assignment_v1_stress` |
-| A5 | CVA 参数消融 | 验证 mix/context weight 是否稳健 | `runs/ablation_cva_mix_v1_stress` |
+| A5 | 候选动作空间消融 | 验证 Top-K 分层动作空间是否提升扩展性 | `runs/ablation_candidate_action_v1_stress` |
+| A6 | CVA 参数消融 | 验证 mix/context weight 是否稳健 | `runs/ablation_cva_mix_v1_stress` |
 
-建议先跑 A0、A1,确认无报错后再跑 A2-A5。
+建议先跑 A0、A1,确认无报错后再跑 A2-A6。
 
 ---
 
@@ -48,6 +49,7 @@ vtw_time_step_s = 60
 rollout_steps = 256
 ppo_epochs = 2
 ppo_batch_size = 256
+candidate_action_top_k = 128
 seed = 42
 ```
 
@@ -150,6 +152,7 @@ python compare_methods.py \
   --ppo_batch_size 256 \
   --eval_workers 4 \
   --torch_num_threads 4 \
+  --candidate_action_top_k 128 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_cva_mappo_train_eval \
   --run_name cva_mappo_lstm_rolling_stress \
@@ -160,6 +163,7 @@ python compare_methods.py \
 说明:
 
 - A1 只运行 `--methods mappo`,不能使用 `--method_jobs` 并行多个顶层方法。
+- `--candidate_action_top_k 128` 表示低层 MAPPO 只在每颗星当前 Top-128 候选任务 + idle 中决策,底层环境仍保留 2100 个真实任务槽位用于统计。
 - `--eval_workers 4` 只并行训练后的评估 episode。
 - `--torch_num_threads 4` 让单个 MAPPO 训练进程内部的 PyTorch 前向/更新使用更多 CPU 线程。
 - `--no_viz` 会跳过 `*_viz_data.json`,避免并行评估后为了可视化额外串行重跑 1 个 episode;需要画任务分布图和甘特图时去掉这一项。
@@ -241,6 +245,7 @@ python compare_methods.py \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
   --eval_workers 4 \
+  --candidate_action_top_k 128 \
   --vtw_time_step_s 60 \
   --out_dir runs/compare_cva_mappo_stress \
   --run_name cva_mappo_lstm_rolling_stress \
@@ -286,6 +291,7 @@ python run_ablation.py \
   --rollout_steps 256 \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
+  --candidate_action_top_k 128 \
   --vtw_time_step_s 60 \
   --resume_latest \
   --no_viz \
@@ -301,11 +307,58 @@ runs/ablation_cva_assignment_v1_stress/<batch>/ablation_summary.json
 
 ---
 
-## 8. A5: CVA 参数消融
+## 8. A5: 候选动作空间消融
+
+目的:验证分层候选动作空间是否让大规模压力场景更适合 PPO/MAPPO 学习。
+
+对比项:
+
+- `candidate_full`:旧版 full action,动作维度约为全部任务槽位 + idle。
+- `candidate_topk64`:Top-64 候选任务 + idle。
+- `candidate_topk128`:Top-128 候选任务 + idle,当前推荐主方案。
+- `candidate_topk256`:Top-256 候选任务 + idle。
+
+命令:
+
+```bash
+python run_ablation.py \
+  --python python \
+  --preset candidate_action_v1 \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 8 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods mappo \
+  --candidate_action_top_ks 0,64,128,256 \
+  --out_root runs/ablation_candidate_action_v1_stress \
+  --device cpu \
+  --jobs 4 \
+  --eval_workers 4 \
+  --torch_num_threads 2 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --vtw_time_step_s 60 \
+  --resume_latest \
+  --no_viz \
+  --skip_existing
+```
+
+判断标准:
+
+- 如果 Top-K 完成率接近或高于 full action,说明高层候选筛选没有损失关键任务。
+- 如果 Top-K 训练耗时显著下降,说明大动作空间确实是效率瓶颈。
+- 如果 Top-64 掉点明显而 Top-128/256 稳定,主方案优先选 Top-128。
+
+---
+
+## 9. A6: CVA 参数消融
 
 如果 A4 中 `cva_lstm_rolling_mix0p35` 表现较好,再跑一个轻量参数消融,验证主方案不是单个超参数偶然有效。
 
-### 8.1 scorer mix 消融
+### 9.1 scorer mix 消融
 
 ```bash
 python run_ablation.py \
@@ -325,6 +378,7 @@ python run_ablation.py \
   --device cpu \
   --jobs 3 \
   --eval_workers 4 \
+  --candidate_action_top_k 128 \
   --rollout_steps 256 \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
@@ -334,7 +388,7 @@ python run_ablation.py \
   --skip_existing
 ```
 
-### 8.2 encoder 精简消融
+### 9.2 encoder 精简消融
 
 如果时间不够,可以只跑三种最有解释力的编码器:
 
@@ -356,6 +410,7 @@ python run_ablation.py \
   --device cpu \
   --jobs 3 \
   --eval_workers 4 \
+  --candidate_action_top_k 128 \
   --rollout_steps 256 \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
@@ -367,7 +422,7 @@ python run_ablation.py \
 
 ---
 
-## 9. 结果指标读取
+## 10. 结果指标读取
 
 优先看这些字段:
 

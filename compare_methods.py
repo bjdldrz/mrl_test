@@ -416,6 +416,7 @@ def _run_compare_method_worker(job):
             normalize_agent_rewards=args["normalize_agent_rewards"],
             global_state_mode=args["global_state_mode"],
             global_state_task_stats=args["global_state_task_stats"],
+            candidate_action_top_k=args["candidate_action_top_k"],
             satellite_curriculum=args["satellite_curriculum"],
             curriculum_min_satellites=args["curriculum_min_satellites"],
             curriculum_iters=args["curriculum_iters"],
@@ -634,6 +635,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               normalize_agent_rewards=False,
               global_state_mode="mean",
               global_state_task_stats=False,
+              candidate_action_top_k=0,
               satellite_curriculum=False,
               curriculum_min_satellites=1,
               curriculum_iters=10,
@@ -677,6 +679,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         team_completion_bonus=team_completion_bonus if coordinate else 0.0,
         global_state_mode=global_state_mode if coordinate else "mean",
         global_state_task_stats=(coordinate and global_state_task_stats),
+        candidate_action_top_k=candidate_action_top_k,
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -754,6 +757,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             "team_completion_bonus": team_completion_bonus if coordinate else 0.0,
             "global_state_mode": global_state_mode if coordinate else "mean",
             "global_state_task_stats": (coordinate and global_state_task_stats),
+            "candidate_action_top_k": candidate_action_top_k,
         }
         trainer_kwargs = {
             "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
@@ -1023,6 +1027,8 @@ def main():
                         help="MAPPO critic 全局状态聚合: mean=旧实现, concat=拼接各星观测")
     parser.add_argument("--global_state_task_stats", action="store_true",
                         help="MAPPO critic 全局状态追加任务/负载统计")
+    parser.add_argument("--candidate_action_top_k", type=int, default=0,
+                        help="多星候选动作空间大小; 0=full action, >0=Top-K任务+idle")
     parser.add_argument("--run_oracle", action="store_true",
                         help="额外运行 Greedy-Oracle 集中式启发式参考")
     parser.add_argument("--satellite_curriculum", action="store_true",
@@ -1102,6 +1108,12 @@ def main():
         args.assignment_replan_trigger,
         args.assignment_replan_horizon_s,
     )
+    if args.candidate_action_top_k > 0:
+        logger.info(
+            "候选动作空间: Top-K=%s + idle; 底层任务槽位 max_action_dim=%s",
+            args.candidate_action_top_k,
+            cfg.mission.max_action_dim,
+        )
     if args.n_satellites > base_satellite_count:
         logger.info(
             "星座规模扩展: 使用 %s 颗派生卫星 (基础配置 %s 颗)",
@@ -1221,6 +1233,7 @@ def main():
                                          normalize_agent_rewards=args.normalize_agent_rewards,
                                          global_state_mode=args.global_state_mode,
                                          global_state_task_stats=args.global_state_task_stats,
+                                         candidate_action_top_k=args.candidate_action_top_k,
                                          satellite_curriculum=args.satellite_curriculum,
                                          curriculum_min_satellites=args.curriculum_min_satellites,
                                          curriculum_iters=args.curriculum_iters,

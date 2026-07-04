@@ -607,6 +607,43 @@ def build_cva_assignment_v1_specs(context_encoders, scorer_mixes, context_weight
     return specs
 
 
+def build_candidate_action_v1_specs(top_ks):
+    base_args = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+        "--assignment_replan_interval_s", "3600",
+        "--assignment_replan_horizon_s", "7200",
+        "--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline",
+        "--assignment_switch_penalty", "0.05",
+        "--assignment_lock_window_s", "600",
+        "--assignment_max_switches_per_task", "2",
+        *_cva_args("lstm", 0.35, 0.25),
+    ]
+    specs = []
+    for top_k in top_ks:
+        top_k = int(top_k)
+        tag = "candidate_full" if top_k <= 0 else f"candidate_topk{top_k}"
+        extra_args = [*base_args]
+        if top_k > 0:
+            extra_args.extend(["--candidate_action_top_k", str(top_k)])
+        specs.append({
+            "tag": tag,
+            "extra_args": extra_args,
+            "params": {
+                "candidate_variant": tag,
+                "candidate_action_top_k": max(0, top_k),
+                "assignment_scorer": "cva",
+                "assignment_context_encoder": "lstm",
+                "assignment_scorer_mix": 0.35,
+                "assignment_context_weight": 0.25,
+                "assignment_replan_trigger": "periodic,dynamic,stale_owner,deadline",
+                "assignment_replan_horizon_s": 7200.0,
+            },
+        })
+    return specs
+
+
 def build_learned_assignment_v1_specs(
     assignment_scorer_mixes,
     assignment_sequence_scorers,
@@ -825,6 +862,7 @@ def summarize_run(tag, params, out_dir):
         "torch_num_threads",
         "vtw_time_step_s",
         "max_action_dim",
+        "candidate_action_top_k",
         "no_viz",
         "device",
         "assignment_scorer",
@@ -970,7 +1008,7 @@ def main():
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
                                  "train_stability_v1", "communication_v1",
                                  "assignment_rolling_v1", "hier_assignment_v1",
-                                 "cva_assignment_v1",
+                                 "cva_assignment_v1", "candidate_action_v1",
                                  "meta_encoder_v1", "learned_assignment_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
@@ -994,6 +1032,10 @@ def main():
     parser.add_argument("--max_action_dim", type=int, default=None,
                         help="传给 compare_methods.py 的动作空间任务槽位数; "
                              "默认由 compare_methods.py 按任务规模自动扩容")
+    parser.add_argument("--candidate_action_top_k", type=int, default=None,
+                        help="传给 compare_methods.py 的多星候选动作空间大小; 0=full action")
+    parser.add_argument("--candidate_action_top_ks", type=str, default="0,64,128,256",
+                        help="candidate_action_v1 使用的候选动作 Top-K 列表; 0 表示 full action")
     parser.add_argument("--methods", type=str, default="mappo",
                         help="传给 compare_methods.py 的方法列表; 默认 mappo, "
                              "避免消融子实验重复训练不变的 Single/Indep baseline。"
@@ -1134,6 +1176,10 @@ def main():
             scorer_mixes=parse_float_list(args.cva_scorer_mixes),
             context_weight=args.cva_context_weight,
         )
+    elif args.preset == "candidate_action_v1":
+        specs = build_candidate_action_v1_specs(
+            top_ks=[int(x) for x in parse_float_list(args.candidate_action_top_ks)]
+        )
     elif args.preset == "learned_assignment_v1":
         seq_scorers = parse_str_list(args.assignment_sequence_scorers)
         allowed_seq_scorers = {"lstm", "gru"}
@@ -1251,6 +1297,7 @@ def main():
                 "eval_workers",
                 "torch_num_threads",
                 "vtw_time_step_s",
+                "candidate_action_top_k",
             ]:
                 value = getattr(args, arg_name)
                 if value is not None:

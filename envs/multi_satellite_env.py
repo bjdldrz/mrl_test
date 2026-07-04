@@ -70,6 +70,7 @@ class MultiSatelliteEnv:
         team_completion_bonus: float = 0.0,
         global_state_mode: str = "mean",
         global_state_task_stats: bool = False,
+        candidate_action_top_k: int = 0,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -144,6 +145,11 @@ class MultiSatelliteEnv:
         # mean: 兼容旧实现; concat: 保留每颗星完整局部观测, 信息无损但维度随星数增长.
         self.global_state_mode = global_state_mode
         self.global_state_task_stats = global_state_task_stats
+        # --- 分层候选动作空间 (CVA-MAPPO scale-up) ---
+        # 0 表示保持旧版 full action space; >0 时对每颗星只暴露 Top-K 当前可行任务 + idle。
+        # 底层 SatelliteSchedulingEnv 仍保留 max_action_dim 个真实槽位,用于 VTW、统计和结果可视化。
+        self.candidate_action_top_k = max(0, int(candidate_action_top_k or 0))
+        self._candidate_action_maps: Dict[str, List[Optional[int]]] = {}
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -158,8 +164,15 @@ class MultiSatelliteEnv:
 
         # 维度信息 (所有卫星共享相同的 obs/action 维度)
         sample_env = list(self.envs.values())[0]
-        self.local_obs_dim = sample_env.observation_space.shape[0]
-        self.action_dim = sample_env.action_space.n
+        if self._candidate_actions_enabled():
+            self.local_obs_dim = (
+                self.candidate_action_top_k * sample_env._mission_feat_dim
+                + sample_env._sat_feat_dim
+            )
+            self.action_dim = self.candidate_action_top_k + 1
+        else:
+            self.local_obs_dim = sample_env.observation_space.shape[0]
+            self.action_dim = sample_env.action_space.n
         if self.global_state_mode == "concat":
             base_global_dim = self.local_obs_dim * self.n_agents
         else:
@@ -332,6 +345,204 @@ class MultiSatelliteEnv:
     # ===================================================================
     # 核心接口
     # ===================================================================
+    def _candidate_actions_enabled(self) -> bool:
+        return self.candidate_action_top_k > 0
+
+    def _raw_idle_action(self) -> int:
+        return self.max_action_dim
+
+    def _full_action_mask(self, agent_id: str) -> np.ndarray:
+        env = self.envs[agent_id]
+        mask = env._build_action_mask()
+        if self.coordinate and self.episode_assignment:
+            mask = self._apply_ownership_mask(agent_id, mask)
+        return mask
+
+    def _expose_obs_info(self, agent_id: str, full_mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Dict]:
+        """
+        将底层 full-slot 状态转换为对策略暴露的状态/掩码。
+
+        full action: 直接返回原始观测和原始 mask。
+        Top-K action: 选择当前可行任务 Top-K,动作 index 映射到真实任务槽位。
+        """
+        env = self.envs[agent_id]
+        if full_mask is None:
+            full_mask = self._full_action_mask(agent_id)
+        if not self._candidate_actions_enabled():
+            return env._build_observation(), {"action_mask": full_mask}
+
+        mapping = self._select_candidate_actions(agent_id, full_mask)
+        self._candidate_action_maps[agent_id] = mapping
+        obs = self._build_candidate_observation(agent_id, mapping)
+        mask = np.zeros(self.candidate_action_top_k + 1, dtype=np.float32)
+        for idx, raw_action in enumerate(mapping):
+            if raw_action is not None and full_mask[raw_action] > 0:
+                mask[idx] = 1.0
+        mask[self.candidate_action_top_k] = 1.0
+        return obs, {
+            "action_mask": mask,
+            "candidate_action_slots": [
+                int(a) if a is not None else None for a in mapping
+            ],
+        }
+
+    def _select_candidate_actions(self, agent_id: str, full_mask: np.ndarray) -> List[Optional[int]]:
+        current_actions = np.nonzero(full_mask[:self.max_action_dim])[0].tolist()
+        current_scored = [
+            (self._candidate_action_score(agent_id, int(action)), int(action))
+            for action in current_actions
+        ]
+        current_scored = [item for item in current_scored if item[0] is not None]
+        current_scored.sort(key=lambda item: item[0], reverse=True)
+        selected = [action for _, action in current_scored[:self.candidate_action_top_k]]
+
+        # 若当前可行动作不足 K,用未来高价值 owner 任务补齐观测槽。
+        # 这些未来任务在 mask 中仍为 0,只帮助策略判断是否 idle 等待。
+        if len(selected) < self.candidate_action_top_k:
+            selected_set = set(selected)
+            future_scored = []
+            env = self.envs[agent_id]
+            for action, mission in enumerate(env.missions[:self.max_action_dim]):
+                if action in selected_set or mission is None or mission.is_observed:
+                    continue
+                if mission.deadline_s <= env.current_time_s:
+                    continue
+                if self.coordinate and self.episode_assignment:
+                    owner = self.task_owner.get(mission.id)
+                    if owner is not None and owner != agent_id:
+                        continue
+                score = self._candidate_action_score(agent_id, action, allow_future=True)
+                if score is not None:
+                    future_scored.append((score, action))
+            future_scored.sort(key=lambda item: item[0], reverse=True)
+            for _, action in future_scored:
+                if len(selected) >= self.candidate_action_top_k:
+                    break
+                selected.append(action)
+
+        if len(selected) < self.candidate_action_top_k:
+            selected.extend([None] * (self.candidate_action_top_k - len(selected)))
+        return selected
+
+    def _candidate_action_score(
+        self,
+        agent_id: str,
+        action: int,
+        allow_future: bool = False,
+    ) -> Optional[float]:
+        env = self.envs[agent_id]
+        mission = env.missions[action]
+        if mission is None or mission.is_observed:
+            return None
+
+        off_nadir = None
+        wait_s = 0.0
+        for vtw in env.mission_vtw.get(mission.id, []):
+            if vtw.start_time <= env.current_time_s <= vtw.end_time - mission.duration_s:
+                off_nadir = vtw.off_nadir_deg
+                break
+            if allow_future and vtw.end_time > env.current_time_s:
+                obs_start = max(vtw.start_time, env.current_time_s, mission.earliest_time_s)
+                obs_end = obs_start + mission.duration_s
+                if obs_end <= min(vtw.end_time, mission.deadline_s):
+                    off_nadir = vtw.off_nadir_deg
+                    wait_s = max(obs_start - env.current_time_s, 0.0)
+                    break
+        if off_nadir is None:
+            return None
+
+        max_roll = max(env.sat_config.max_roll_deg, 1e-6)
+        quality = 1.0 - min(off_nadir / max_roll, 1.0)
+        priority = np.clip(mission.priority / 10.0, 0.0, 1.0)
+        slack_s = max(mission.deadline_s - max(env.current_time_s, mission.earliest_time_s), 0.0)
+        slack_norm = np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        deadline_pressure = 1.0 - slack_norm
+        dynamic = 1.0 if mission.is_dynamic else 0.0
+        wait_penalty = np.clip(wait_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        owner_bonus = 0.0
+        owner = self.task_owner.get(mission.id)
+        if owner == agent_id:
+            owner_bonus = 0.04
+        elif owner is not None:
+            # 能进入候选集说明 ownership mask 已判定该任务可由当前卫星执行。
+            owner_bonus = 0.12
+
+        base = (
+            0.52 * quality
+            + 0.20 * priority
+            + 0.16 * deadline_pressure
+            + 0.12 * dynamic
+            + owner_bonus
+            - 0.08 * wait_penalty
+            - 0.02 * len(env.schedule_log)
+        )
+        if self.coordinate and self.episode_assignment:
+            # 用当前分配器作为候选排序的价值项;目标容量取当前 backlog 的平滑估计。
+            avg_target = max(
+                (sum(self._assign_load.values()) + 1.0) / max(self.n_agents, 1),
+                1.0,
+            )
+            targets = {aid: avg_target for aid in self.agent_ids}
+            assignment_value = self._assignment_score(
+                agent_id, mission, quality, targets, n_candidates=1
+            )
+            base = 0.65 * base + 0.35 * assignment_value
+        return float(base)
+
+    def _build_candidate_observation(self, agent_id: str, mapping: List[Optional[int]]) -> np.ndarray:
+        env = self.envs[agent_id]
+        mission_feats = np.zeros(
+            (self.candidate_action_top_k, env._mission_feat_dim), dtype=np.float32
+        )
+        for idx, raw_action in enumerate(mapping):
+            if raw_action is None:
+                continue
+            mission = env.missions[raw_action]
+            if mission is None:
+                continue
+            if mission.is_observed:
+                obs_status = 1.0
+            elif mission.obs_start_s > 0:
+                obs_status = 0.5
+            else:
+                obs_status = 0.0
+            w_start, w_end = env._get_next_vtw_times(mission.id)
+            mission_feats[idx] = [
+                obs_status,
+                w_start / env.horizon_s,
+                w_end / env.horizon_s,
+                mission.obs_start_s / env.horizon_s if mission.obs_start_s > 0 else 0.0,
+                mission.obs_end_s / env.horizon_s if mission.obs_end_s > 0 else 0.0,
+                mission.priority / 10.0,
+                1.0 if mission.is_dynamic else 0.0,
+            ]
+
+        sat_state = env.propagator.propagate(env.current_time_s)
+        sat_feats = np.array([
+            env.current_time_s / env.horizon_s,
+            sat_state.latitude_deg / 90.0,
+            sat_state.longitude_deg / 180.0,
+            0.0,
+        ], dtype=np.float32)
+        return np.concatenate([mission_feats.flatten(), sat_feats]).astype(np.float32)
+
+    def _decode_actions(self, actions: Dict[str, int]) -> Dict[str, int]:
+        if not self._candidate_actions_enabled():
+            return dict(actions)
+        raw_actions = {}
+        exposed_idle = self.candidate_action_top_k
+        for aid in self.agent_ids:
+            action = int(actions.get(aid, exposed_idle))
+            if action == exposed_idle:
+                raw_actions[aid] = self._raw_idle_action()
+                continue
+            mapping = self._candidate_action_maps.get(aid, [])
+            if 0 <= action < len(mapping) and mapping[action] is not None:
+                raw_actions[aid] = int(mapping[action])
+            else:
+                raw_actions[aid] = self._raw_idle_action()
+        return raw_actions
+
     def reset(
         self,
         *,
@@ -378,15 +589,16 @@ class MultiSatelliteEnv:
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
+        self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
         if self.coordinate and self.episode_assignment:
             first_env = list(self.envs.values())[0]
             all_missions = [m for m in first_env.missions if m is not None]
             self._assign_tasks(all_missions)
-            # 用所有权掩码重新过滤各星的初始动作掩码
-            for agent_id, env in self.envs.items():
-                obs, info = results[agent_id]
-                mask = self._apply_ownership_mask(agent_id, env._build_action_mask())
-                results[agent_id] = (obs, {**info, "action_mask": mask})
+
+        # 对外暴露 full action 或 Top-K candidate action。
+        for agent_id in self.agent_ids:
+            obs, info = self._expose_obs_info(agent_id)
+            results[agent_id] = (obs, info)
 
         return results
 
@@ -400,6 +612,7 @@ class MultiSatelliteEnv:
         包含冲突检测：如果多颗卫星选择同一任务，
         只允许第一颗执行，其余强制 idle（避免双重奖励）。
         """
+        raw_actions = self._decode_actions(actions)
         results = {}
         prev_load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
         prev_observed = self._observed_mission_ids() if self.coordinate else set()
@@ -407,7 +620,7 @@ class MultiSatelliteEnv:
         # 1) 冲突解决 (优化路线图 A1+A2/A3+B6): 负载感知的贪心拍卖 + 败者改派.
         #    协同模式下用边际价值竞价择优指派, 抢输者改派次优任务;
         #    无协同 baseline 下原样返回各卫星动作 (不去冲突 → 可能重复观测).
-        resolved_actions = self._resolve_actions(actions)
+        resolved_actions = self._resolve_actions(raw_actions)
         action_owner_before = {}
         if self.coordinate and self.episode_assignment:
             for agent_id, action in resolved_actions.items():
@@ -447,17 +660,14 @@ class MultiSatelliteEnv:
 
         # 4) 用同步后的状态重新构建观测和掩码 (协同模式叠加所有权掩码)
         for agent_id, env in self.envs.items():
-            obs = env._build_observation()
-            mask = env._build_action_mask()
-            if self.coordinate and self.episode_assignment:
-                mask = self._apply_ownership_mask(agent_id, mask)
+            obs, info = self._expose_obs_info(agent_id)
             old_result = results[agent_id]
             results[agent_id] = (
                 obs,
                 old_result[1],
                 old_result[2],
                 old_result[3],
-                {**old_result[4], "action_mask": mask},
+                {**old_result[4], **info},
             )
 
         return results
@@ -1550,7 +1760,14 @@ class MultiSatelliteEnv:
         local_obs_list = []
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
-            local_obs_list.append(env._build_observation())
+            if self._candidate_actions_enabled():
+                mapping = self._candidate_action_maps.get(agent_id)
+                if mapping is None:
+                    _, _ = self._expose_obs_info(agent_id)
+                    mapping = self._candidate_action_maps.get(agent_id, [])
+                local_obs_list.append(self._build_candidate_observation(agent_id, mapping))
+            else:
+                local_obs_list.append(env._build_observation())
         if self.global_state_mode == "concat":
             base = np.concatenate(local_obs_list, axis=0)
         else:
@@ -1738,4 +1955,6 @@ class MultiSatelliteEnv:
 
     @property
     def idle_action(self) -> int:
+        if self._candidate_actions_enabled():
+            return self.candidate_action_top_k
         return self.max_action_dim  # 与单星环境一致
