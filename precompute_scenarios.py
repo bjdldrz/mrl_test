@@ -15,6 +15,7 @@ import os
 import copy
 import csv
 from datetime import datetime, timezone
+from multiprocessing import get_all_start_methods, get_context
 from pathlib import Path
 from typing import List, Tuple
 
@@ -36,6 +37,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("precompute_scenarios")
+
+_VTW_WORKER_TARGETS = None
+_VTW_WORKER_HORIZON_S = 86400.0
+_VTW_WORKER_TIME_STEP_S = 60.0
+_VTW_WORKER_CACHE_DIR = ""
 
 
 def expand_satellite_configs(base_satellites, n_satellites):
@@ -190,30 +196,81 @@ def build_eval_payload(
     }
 
 
-def warm_vtw_cache(satellites, scenarios, horizon_s: float, time_step_s: float):
+def _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir):
+    global _VTW_WORKER_TARGETS
+    global _VTW_WORKER_HORIZON_S
+    global _VTW_WORKER_TIME_STEP_S
+    global _VTW_WORKER_CACHE_DIR
+    _VTW_WORKER_TARGETS = targets
+    _VTW_WORKER_HORIZON_S = horizon_s
+    _VTW_WORKER_TIME_STEP_S = time_step_s
+    _VTW_WORKER_CACHE_DIR = cache_dir
+    if cache_dir:
+        os.environ["MRL_DMS_VTW_CACHE_DIR"] = cache_dir
+
+
+def _warm_vtw_satellite_worker(args):
+    idx, total, sat_cfg = args
+    targets = _VTW_WORKER_TARGETS or []
+    if _VTW_WORKER_CACHE_DIR:
+        os.environ["MRL_DMS_VTW_CACHE_DIR"] = _VTW_WORKER_CACHE_DIR
+
+    worker_logger = logging.getLogger("precompute_scenarios")
+    worker_logger.info("预热 VTW [%s/%s]: %s", idx, total, sat_cfg.name)
+    propagator = OrbitPropagator(sat_cfg)
+    for lat, lon in targets:
+        propagator.compute_vtw(
+            lat,
+            lon,
+            horizon_seconds=_VTW_WORKER_HORIZON_S,
+            time_step_s=_VTW_WORKER_TIME_STEP_S,
+        )
+    return {
+        "idx": idx,
+        "satellite": sat_cfg.name,
+        "n_targets": len(targets),
+    }
+
+
+def warm_vtw_cache(
+    satellites,
+    scenarios,
+    horizon_s: float,
+    time_step_s: float,
+    workers: int = 1,
+    cache_dir: str = "",
+):
     missions = list(iter_scenario_missions(scenarios))
     unique = {}
     for mission in missions:
         key = (round(float(mission.lat), 4), round(float(mission.lon), 4))
-        unique.setdefault(key, mission)
-    unique_missions = list(unique.values())
+        unique.setdefault(key, (float(mission.lat), float(mission.lon)))
+    targets = list(unique.values())
+    n_workers = max(1, min(int(workers or 1), len(satellites)))
     logger.info(
-        "预热 VTW: satellites=%s, missions=%s, unique_locations=%s, step=%ss",
+        "预热 VTW: satellites=%s, missions=%s, unique_locations=%s, step=%ss, workers=%s",
         len(satellites),
         len(missions),
-        len(unique_missions),
+        len(targets),
         time_step_s,
+        n_workers,
     )
-    for sat_idx, sat_cfg in enumerate(satellites, start=1):
-        logger.info("预热 VTW [%s/%s]: %s", sat_idx, len(satellites), sat_cfg.name)
-        propagator = OrbitPropagator(sat_cfg)
-        for mission in unique_missions:
-            propagator.compute_vtw(
-                mission.lat,
-                mission.lon,
-                horizon_seconds=horizon_s,
-                time_step_s=time_step_s,
-            )
+    task_args = [
+        (sat_idx, len(satellites), sat_cfg)
+        for sat_idx, sat_cfg in enumerate(satellites, start=1)
+    ]
+    if n_workers <= 1:
+        _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir)
+        results = [_warm_vtw_satellite_worker(args) for args in task_args]
+    else:
+        start_method = "fork" if "fork" in get_all_start_methods() else "spawn"
+        with get_context(start_method).Pool(
+            processes=n_workers,
+            initializer=_init_warm_vtw_worker,
+            initargs=(targets, horizon_s, time_step_s, cache_dir),
+        ) as pool:
+            results = pool.map(_warm_vtw_satellite_worker, task_args)
+    logger.info("VTW 预热完成: %s satellites", len(results))
 
 
 def _scenario_points(scenario):
@@ -382,6 +439,8 @@ def main():
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--no_warm_vtw", action="store_true",
                         help="只保存场景, 不主动预热 VTW 磁盘缓存")
+    parser.add_argument("--vtw_workers", type=int, default=0,
+                        help="VTW 预热并行进程数; 0 表示自动 min(n_satellites, cpu_count)")
     parser.add_argument("--no_plot_maps", action="store_true",
                         help="不为每个 train/eval scenario 输出任务分布地图")
     parser.add_argument("--map_max_scenarios", type=int, default=0,
@@ -432,6 +491,7 @@ def main():
     eval_scenarios = get_eval_scenarios(eval_payload)
     maps_dir = None
     n_maps = 0
+    effective_vtw_workers = 0
     if not args.no_plot_maps:
         maps_dir, n_maps = save_scenario_maps(
             train_payload=train_payload,
@@ -441,11 +501,17 @@ def main():
             dpi=args.map_dpi,
         )
     if not args.no_warm_vtw:
+        vtw_workers = args.vtw_workers
+        if vtw_workers <= 0:
+            vtw_workers = min(len(cfg.satellites), os.cpu_count() or 1)
+        effective_vtw_workers = vtw_workers
         warm_vtw_cache(
             satellites=cfg.satellites,
             scenarios=[*train_flat, *eval_scenarios],
             horizon_s=horizon_s,
             time_step_s=cfg.train.vtw_time_step_s,
+            workers=vtw_workers,
+            cache_dir=str(vtw_cache_dir),
         )
 
     manifest = {
@@ -467,6 +533,8 @@ def main():
             for stage in train_payload["stages"]
         ],
         "vtw_cache_dir": str(vtw_cache_dir),
+        "vtw_workers": args.vtw_workers,
+        "effective_vtw_workers": effective_vtw_workers,
         "maps_dir": str(maps_dir) if maps_dir is not None else "",
         "n_maps": n_maps,
         "outputs": {

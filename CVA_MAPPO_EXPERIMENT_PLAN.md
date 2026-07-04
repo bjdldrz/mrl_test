@@ -78,6 +78,7 @@ python precompute_scenarios.py \
   --n_dynamic 300 \
   --curriculum_stages 300:75,600:150,900:225,1200:300 \
   --vtw_time_step_s 60 \
+  --vtw_workers 12 \
   --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
 ```
 
@@ -90,6 +91,7 @@ runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/maps/
 ```
 
 如只需生成场景和 VTW 缓存,可添加 `--no_plot_maps`。
+`--vtw_workers 12` 表示 12 颗卫星并行预热 VTW;如果机器 CPU 更少,可调小该值。
 
 后续训练和消融统一追加:
 
