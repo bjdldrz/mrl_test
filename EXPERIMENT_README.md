@@ -13,7 +13,7 @@
 |---|---|---|---|
 | S0 | 冒烟测试 | 确认环境、依赖、输出目录可用 | `--train_iters 0/--fast` |
 | S1 | 论文/基础 baseline | 建立 Single-PPO、Indep-PPO、MAPPO 的统一对照 | `--methods single,indep,mappo` |
-| S2 | 任务分配消融 | 比较全局指派、容量、释放窗口、学习式 scorer、滚动重分配 | 默认 `--methods mappo` |
+| S2 | 任务分配消融 | 比较全局指派、学习式 scorer、滚动重分配、CVA-MAPPO 主方案 | 默认 `--methods mappo` |
 | S3 | 协同机制消融 | 比较奖励、critic state、训练稳定性、通信机制 | 默认 `--methods mappo` |
 | S4 | 元学习结构消融 | 比较 LSTM/GRU/MLP/Transformer/Set Transformer 外循环 | `meta_encoder_v1` |
 | S5 | Oracle/上界实验 | 判断 MAPPO 离强启发式上界还有多远 | `--methods mappo,oracle` |
@@ -334,6 +334,49 @@ python run_ablation.py \
 
 - `hier_no_manager`:仅使用滚动/MPC 分配。
 - `hier_rule_manager`:增加规则式高层 assignment manager。
+
+### 5.6 CVA-MAPPO 主方案压力消融
+
+目的:将外循环思想接入任务分配阶段,验证“上下文价值感知 owner 分配 + 滚动重分配 + 低层 MAPPO”是否优于纯规则分配。该组建议作为论文主方法消融。
+
+```bash
+python run_ablation.py \
+  --python python \
+  --preset cva_assignment_v1 \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 8 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods mappo \
+  --out_root runs/ablation_cva_assignment_v1_stress \
+  --device cpu \
+  --jobs 4 \
+  --eval_workers 4 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --vtw_time_step_s 60 \
+  --resume_latest \
+  --skip_existing
+```
+
+默认子实验:
+
+- `heuristic_static`:静态规则 owner 分配。
+- `heuristic_rolling`:规则 owner + rolling replan。
+- `cva_lstm_static`:CVA-LSTM,不启用 rolling,用于隔离 CVA scorer 本身。
+- `cva_mlp_rolling`:无序/无记忆边价值 baseline。
+- `cva_lstm/gru_rolling`:序列外循环上下文。
+- `cva_transformer/set_transformer_rolling`:任务集合/注意力上下文。
+
+主要结论对应:
+
+- `heuristic_static` vs `heuristic_rolling`:滚动重分配收益。
+- `heuristic_rolling` vs `cva_*_rolling`:上下文价值感知分配收益。
+- `cva_lstm_static` vs `cva_lstm_rolling`:CVA 与 rolling 的互补收益。
+- `cva_mlp_rolling` vs 其他 encoder:外循环/上下文编码器收益。
 
 ---
 

@@ -53,6 +53,8 @@ class MultiSatelliteEnv:
         release_before_deadline_s: float = 1800.0,
         assignment_scorer: str = "heuristic",
         assignment_scorer_mix: float = 0.25,
+        assignment_context_encoder: str = "lstm",
+        assignment_context_weight: float = 0.25,
         assignment_mlp_hidden_dim: int = 16,
         assignment_mlp_seed: int = 42,
         assignment_sequence_hidden_dim: int = 16,
@@ -96,6 +98,10 @@ class MultiSatelliteEnv:
         self.assignment_capacity_mode = assignment_capacity_mode
         self.assignment_scorer = assignment_scorer
         self.assignment_scorer_mix = float(np.clip(assignment_scorer_mix, 0.0, 1.0))
+        self.assignment_context_encoder = self._validate_assignment_context_encoder(
+            assignment_context_encoder
+        )
+        self.assignment_context_weight = max(0.0, float(assignment_context_weight))
         self.assignment_mlp_hidden_dim = max(1, int(assignment_mlp_hidden_dim))
         self.assignment_mlp_seed = int(assignment_mlp_seed)
         self.assignment_sequence_hidden_dim = max(1, int(assignment_sequence_hidden_dim))
@@ -166,21 +172,44 @@ class MultiSatelliteEnv:
 
     def _init_assignment_scorer(self):
         """初始化 episode 级任务指派 scorer; 默认 heuristic 完全保持旧逻辑。"""
-        allowed = {"heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"}
+        allowed = {"heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer", "gnn", "cva"}
         if self.assignment_scorer not in allowed:
             raise ValueError(
                 f"未知 assignment_scorer={self.assignment_scorer!r}; "
                 f"可选: {sorted(allowed)}"
             )
-        if self.assignment_scorer != "mlp":
-            if self.assignment_scorer in {"lstm", "gru"}:
-                self._init_assignment_sequence_scorer()
-            elif self.assignment_scorer in {"transformer", "set_transformer"}:
-                self._init_assignment_attention_scorer()
-            elif self.assignment_scorer == "gnn":
-                self._init_assignment_gnn_scorer()
-            return
 
+        context_encoder = self._effective_assignment_context_encoder()
+        needs_mlp = self.assignment_scorer == "mlp" or context_encoder == "mlp"
+        if needs_mlp:
+            self._init_assignment_mlp_scorer()
+        if context_encoder in {"lstm", "gru"}:
+            self._init_assignment_sequence_scorer()
+        elif context_encoder in {"transformer", "set_transformer"}:
+            self._init_assignment_attention_scorer()
+        elif context_encoder == "gnn":
+            self._init_assignment_gnn_scorer()
+
+    @staticmethod
+    def _validate_assignment_context_encoder(encoder: str) -> str:
+        normalized = str(encoder or "lstm").strip().lower()
+        allowed = {"mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"未知 assignment_context_encoder={encoder!r}; 可选: {sorted(allowed)}"
+            )
+        return normalized
+
+    def _effective_assignment_context_encoder(self) -> str:
+        """返回当前 scorer 实际使用的上下文编码器类型。"""
+        if self.assignment_scorer == "cva":
+            return self.assignment_context_encoder
+        if self.assignment_scorer in {"lstm", "gru", "transformer", "set_transformer", "gnn"}:
+            return self.assignment_scorer
+        return "none"
+
+    def _init_assignment_mlp_scorer(self):
+        """初始化确定性 MLP 边价值 scorer。"""
         rng = np.random.RandomState(self.assignment_mlp_seed)
         in_dim = 8
         hidden = self.assignment_mlp_hidden_dim
@@ -230,6 +259,7 @@ class MultiSatelliteEnv:
     def _init_assignment_sequence_scorer(self):
         """初始化确定性 LSTM/GRU 风格序列 scorer 权重。"""
         rng = np.random.RandomState(self.assignment_mlp_seed)
+        encoder = self._effective_assignment_context_encoder()
         in_dim = 7
         hidden = self.assignment_sequence_hidden_dim
         out_dim = 8
@@ -240,7 +270,7 @@ class MultiSatelliteEnv:
             "w_out": init((hidden, out_dim)),
             "b_out": np.zeros(out_dim, dtype=np.float32),
         }
-        if self.assignment_scorer == "lstm":
+        if encoder == "lstm":
             self._assignment_sequence.update({
                 "w_ix": init((in_dim, hidden)), "w_ih": init((hidden, hidden)), "b_i": np.zeros(hidden, dtype=np.float32),
                 "w_fx": init((in_dim, hidden)), "w_fh": init((hidden, hidden)), "b_f": np.ones(hidden, dtype=np.float32),
@@ -257,6 +287,7 @@ class MultiSatelliteEnv:
     def _init_assignment_attention_scorer(self):
         """初始化确定性 Transformer/Set Transformer 风格 scorer 权重。"""
         rng = np.random.RandomState(self.assignment_mlp_seed)
+        encoder = self._effective_assignment_context_encoder()
         in_dim = 7
         hidden = self.assignment_sequence_hidden_dim
         out_dim = 8
@@ -274,7 +305,7 @@ class MultiSatelliteEnv:
             "w_out": init((hidden, out_dim)),
             "b_out": np.zeros(out_dim, dtype=np.float32),
         }
-        if self.assignment_scorer == "transformer":
+        if encoder == "transformer":
             self._assignment_sequence["pos_scale"] = init((hidden,), scale=0.04)
 
     def _init_assignment_gnn_scorer(self):
@@ -485,7 +516,8 @@ class MultiSatelliteEnv:
                     cands.append((aid, q))
             if cands:
                 pending.append((m, cands))
-        if self.assignment_scorer in {"lstm", "gru"}:
+        context_encoder = self._effective_assignment_context_encoder()
+        if context_encoder in {"lstm", "gru"}:
             # 最少候选 + 最早截止优先: 让序列 scorer 先看到最受约束/最紧迫的任务。
             pending.sort(key=lambda x: (len(x[1]), x[0].deadline_s, x[0].earliest_time_s, -x[0].priority))
         else:
@@ -885,6 +917,10 @@ class MultiSatelliteEnv:
         heuristic = quality - self.assign_w_load * load_pressure
         if self.assignment_scorer == "heuristic":
             return heuristic
+        if self.assignment_scorer == "cva":
+            return self._assignment_cva_score(
+                agent_id, mission, quality, load_pressure, n_candidates, heuristic
+            )
 
         if self.assignment_scorer == "mlp":
             learned_score = self._assignment_mlp_score(
@@ -900,14 +936,15 @@ class MultiSatelliteEnv:
         """为序列/集合 scorer 生成任务上下文; 其他 scorer 清空缓存。"""
         self._assignment_sequence_context = {}
         self._assignment_sat_context = {}
-        if self.assignment_scorer not in {"lstm", "gru", "transformer", "set_transformer", "gnn"} or self._assignment_sequence is None:
+        context_encoder = self._effective_assignment_context_encoder()
+        if context_encoder not in {"lstm", "gru", "transformer", "set_transformer", "gnn"} or self._assignment_sequence is None:
             return
 
-        if self.assignment_scorer == "gnn":
+        if context_encoder == "gnn":
             self._prepare_assignment_gnn_context(pending)
             return
 
-        if self.assignment_scorer in {"transformer", "set_transformer"}:
+        if context_encoder in {"transformer", "set_transformer"}:
             self._prepare_assignment_attention_context(pending)
             return
 
@@ -917,7 +954,7 @@ class MultiSatelliteEnv:
         c = np.zeros(hidden, dtype=np.float32)
         for mission, cands in pending:
             x = self._assignment_task_sequence_features(mission, cands)
-            if self.assignment_scorer == "lstm":
+            if context_encoder == "lstm":
                 i = self._sigmoid(x @ w["w_ix"] + h @ w["w_ih"] + w["b_i"])
                 f = self._sigmoid(x @ w["w_fx"] + h @ w["w_fh"] + w["b_f"])
                 o = self._sigmoid(x @ w["w_ox"] + h @ w["w_oh"] + w["b_o"])
@@ -937,12 +974,13 @@ class MultiSatelliteEnv:
         if not pending:
             return
         w = self._assignment_sequence
+        context_encoder = self._effective_assignment_context_encoder()
         feats = np.stack([
             self._assignment_task_sequence_features(mission, cands)
             for mission, cands in pending
         ]).astype(np.float32)
         x = np.tanh(feats @ w["w_embed"] + w["b_embed"])
-        if self.assignment_scorer == "transformer":
+        if context_encoder == "transformer":
             positions = np.linspace(0.0, 1.0, num=x.shape[0], dtype=np.float32).reshape(-1, 1)
             x = x + positions * w["pos_scale"].reshape(1, -1)
 
@@ -953,7 +991,7 @@ class MultiSatelliteEnv:
         attn_logits = (q @ k.T) / scale
         attn = self._softmax(attn_logits, axis=1)
         attended = attn @ v
-        if self.assignment_scorer == "set_transformer":
+        if context_encoder == "set_transformer":
             pooled = attended.mean(axis=0, keepdims=True)
             attended = attended + pooled
         hidden = np.tanh(attended + np.tanh(attended @ w["w_ff"] + w["b_ff"]))
@@ -1054,6 +1092,7 @@ class MultiSatelliteEnv:
         context = self._assignment_sequence_context.get(mission.id)
         if context is None:
             return self._assignment_mlp_score(agent_id, mission, quality, load_pressure, n_candidates)
+        context_encoder = self._effective_assignment_context_encoder()
 
         env = self.envs[agent_id]
         priority_norm = np.clip(mission.priority / 10.0, 0.0, 1.0)
@@ -1069,7 +1108,7 @@ class MultiSatelliteEnv:
             + context[3] * (1.0 - candidate_frac)
             - context[4] * load_pressure
         )
-        if self.assignment_scorer == "gnn":
+        if context_encoder == "gnn":
             sat_context = self._assignment_sat_context.get(agent_id)
             if sat_context is not None:
                 context_term += (
@@ -1078,6 +1117,92 @@ class MultiSatelliteEnv:
                     + sat_context[2] * priority_norm
                 )
         return base - self.assign_w_load * load_pressure + 0.15 * float(context_term)
+
+    def _assignment_cva_score(
+        self,
+        agent_id: str,
+        mission: Mission,
+        quality: float,
+        load_pressure: float,
+        n_candidates: int,
+        heuristic: float,
+    ) -> float:
+        """
+        CVA-MAPPO 的高层上下文价值分配分数。
+
+        该分数保留可解释启发式作为锚点,再加入外循环上下文编码器估计的任务价值。
+        因此第一版无需端到端训练高层策略,但已经能在任务分配阶段显式利用
+        LSTM/GRU/Transformer/Set Transformer/GNN 上下文。
+        """
+        env = self.envs[agent_id]
+        priority_norm = np.clip(mission.priority / 10.0, 0.0, 1.0)
+        duration_norm = np.clip(mission.duration_s / 60.0, 0.0, 1.0)
+        slack_s = max(mission.deadline_s - max(env.current_time_s, mission.earliest_time_s), 0.0)
+        slack_norm = np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+        deadline_pressure = 1.0 - slack_norm
+        dynamic = 1.0 if mission.is_dynamic else 0.0
+        candidate_frac = np.clip(n_candidates / max(self.n_agents, 1), 0.0, 1.0)
+        scarcity = 1.0 - candidate_frac
+        old_owner = self.task_owner.get(mission.id)
+        is_current_owner = 1.0 if old_owner == agent_id else 0.0
+        switch_count_norm = np.clip(
+            self._owner_switch_counts.get(mission.id, 0)
+            / max(self.assignment_max_switches_per_task, 1),
+            0.0,
+            1.0,
+        )
+        owner_stale = (
+            old_owner is not None
+            and not self._has_future_feasible_window(old_owner, mission.id)
+        )
+        stale_rescue = 1.0 if owner_stale and old_owner != agent_id else 0.0
+        stale_keep_penalty = 1.0 if owner_stale and old_owner == agent_id else 0.0
+        released_before = 1.0 if mission.id in self._released_mission_ids else 0.0
+        next_start = self._next_feasible_window_start(agent_id, mission.id, env.current_time_s)
+        if next_start is None:
+            next_window_urgency = 0.0
+        else:
+            wait_s = max(next_start - env.current_time_s, 0.0)
+            next_window_urgency = 1.0 - np.clip(wait_s / max(self.horizon_s, 1.0), 0.0, 1.0)
+
+        # 可解释的边价值: 当前几何质量、任务价值、动态/截止压力和稀缺性,
+        # 同时惩罚超过目标容量的卫星。
+        value_prior = (
+            0.55 * quality
+            + 0.18 * priority_norm
+            + 0.14 * dynamic
+            + 0.14 * deadline_pressure
+            + 0.10 * scarcity
+            + 0.06 * next_window_urgency
+            - self.assign_w_load * load_pressure
+        )
+
+        # 历史/滚动上下文: 保持稳定 owner,但当 owner 失效或临近释放时鼓励救援。
+        history_value = (
+            0.05 * is_current_owner
+            + 0.16 * stale_rescue
+            + 0.06 * released_before
+            - 0.18 * stale_keep_penalty
+            - 0.08 * switch_count_norm
+            - 0.04 * duration_norm
+        )
+
+        context_encoder = self._effective_assignment_context_encoder()
+        if context_encoder == "mlp":
+            context_value = self._assignment_mlp_score(
+                agent_id, mission, quality, load_pressure, n_candidates
+            )
+        else:
+            context_value = self._assignment_context_score(
+                agent_id, mission, quality, load_pressure, n_candidates
+            )
+        contextual_value = (
+            value_prior
+            + history_value
+            + self.assignment_context_weight * context_value
+        )
+        alpha = self.assignment_scorer_mix
+        return (1.0 - alpha) * heuristic + alpha * contextual_value
 
     def _assignment_mlp_score(
         self,

@@ -528,6 +528,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               release_before_deadline_s=1800.0,
               assignment_scorer="heuristic",
               assignment_scorer_mix=0.25,
+              assignment_context_encoder="lstm",
+              assignment_context_weight=0.25,
               assignment_mlp_hidden_dim=16,
               assignment_mlp_seed=42,
               assignment_sequence_hidden_dim=16,
@@ -570,6 +572,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         release_before_deadline_s=release_before_deadline_s,
         assignment_scorer=assignment_scorer if coordinate else "heuristic",
         assignment_scorer_mix=assignment_scorer_mix,
+        assignment_context_encoder=assignment_context_encoder,
+        assignment_context_weight=assignment_context_weight,
         assignment_mlp_hidden_dim=assignment_mlp_hidden_dim,
         assignment_mlp_seed=assignment_mlp_seed,
         assignment_sequence_hidden_dim=assignment_sequence_hidden_dim,
@@ -645,6 +649,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             "release_before_deadline_s": release_before_deadline_s,
             "assignment_scorer": assignment_scorer if coordinate else "heuristic",
             "assignment_scorer_mix": assignment_scorer_mix,
+            "assignment_context_encoder": assignment_context_encoder,
+            "assignment_context_weight": assignment_context_weight,
             "assignment_mlp_hidden_dim": assignment_mlp_hidden_dim,
             "assignment_mlp_seed": assignment_mlp_seed,
             "assignment_sequence_hidden_dim": assignment_sequence_hidden_dim,
@@ -880,10 +886,15 @@ def main():
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0,
                         help="任务截止前多少秒释放所有权给非 owner 接手; 0 表示关闭")
     parser.add_argument("--assignment_scorer", type=str, default="heuristic",
-                        choices=["heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"],
-                        help="episode 级任务指派打分器: heuristic/mlp/lstm/gru/transformer/set_transformer/gnn")
+                        choices=["heuristic", "mlp", "lstm", "gru", "transformer", "set_transformer", "gnn", "cva"],
+                        help="episode 级任务指派打分器: heuristic/mlp/lstm/gru/transformer/set_transformer/gnn/cva")
     parser.add_argument("--assignment_scorer_mix", type=float, default=0.25,
                         help="学习式 scorer 与旧启发式分数的混合比例; 0 等价 heuristic, 1 完全使用学习式分数")
+    parser.add_argument("--assignment_context_encoder", type=str, default="lstm",
+                        choices=["mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"],
+                        help="assignment_scorer=cva 时的上下文价值编码器")
+    parser.add_argument("--assignment_context_weight", type=float, default=0.25,
+                        help="CVA 中上下文编码器价值项权重")
     parser.add_argument("--assignment_mlp_hidden_dim", type=int, default=16,
                         help="assignment_scorer=mlp 时的隐藏层维度")
     parser.add_argument("--assignment_mlp_seed", type=int, default=42,
@@ -986,6 +997,16 @@ def main():
         cfg.train.vtw_time_step_s,
         device,
     )
+    logger.info(
+        "任务分配: scorer=%s, mix=%s, context_encoder=%s, context_weight=%s, "
+        "replan_trigger=%s, replan_horizon_s=%s",
+        args.assignment_scorer,
+        args.assignment_scorer_mix,
+        args.assignment_context_encoder,
+        args.assignment_context_weight,
+        args.assignment_replan_trigger,
+        args.assignment_replan_horizon_s,
+    )
     if args.n_satellites > base_satellite_count:
         logger.info(
             "星座规模扩展: 使用 %s 颗派生卫星 (基础配置 %s 颗)",
@@ -1049,6 +1070,8 @@ def main():
                                      release_before_deadline_s=args.release_before_deadline_s,
                                      assignment_scorer=args.assignment_scorer,
                                      assignment_scorer_mix=args.assignment_scorer_mix,
+                                     assignment_context_encoder=args.assignment_context_encoder,
+                                     assignment_context_weight=args.assignment_context_weight,
                                      assignment_mlp_hidden_dim=args.assignment_mlp_hidden_dim,
                                      assignment_mlp_seed=args.assignment_mlp_seed,
                                      assignment_sequence_hidden_dim=args.assignment_sequence_hidden_dim,

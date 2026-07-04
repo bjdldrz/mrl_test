@@ -277,6 +277,33 @@ python compare_methods.py \
     --device cpu
 ```
 
+CVA-MAPPO 主方案消融:
+
+```bash
+python run_ablation.py \
+    --python python \
+    --preset cva_assignment_v1 \
+    --acled_path ./DynamicMission/DynamicMission.shp \
+    --n_satellites 12 \
+    --train_iters 30 \
+    --eval_episodes 8 \
+    --n_routine 1200 \
+    --n_dynamic 300 \
+    --methods mappo \
+    --out_root runs/ablation_cva_assignment_v1_stress \
+    --device cpu \
+    --jobs 4 \
+    --eval_workers 4 \
+    --rollout_steps 256 \
+    --ppo_epochs 2 \
+    --ppo_batch_size 256 \
+    --vtw_time_step_s 60 \
+    --resume_latest \
+    --skip_existing
+```
+
+`cva_assignment_v1` 将外循环上下文编码器接入任务分配阶段,比较 `heuristic_static`、`heuristic_rolling`、`cva_lstm_static` 和 `cva_mlp/lstm/gru/transformer/set_transformer_rolling`。它是当前建议用于论文主方法的消融入口,重点看 `mappo_n_scheduled`、`mappo_duplicate_rate`、`mappo_load_balance_cv`、`mappo_avg_dynamic_response_s`、`mappo_stale_owner_rate` 和 `mappo_deadline_rescue_rate`。
+
 规则式高层 Assignment Manager 消融:
 
 ```bash
@@ -571,6 +598,14 @@ python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/pytho
 python run_ablation.py --python /Users/zhouzidie/miniconda3/envs/myenv/bin/python \
   --preset hier_assignment_v1 --out_root runs/ablation_hier_assignment_v1 \
   --batch_name step10_hier_assignment --device cpu
+
+# Step 11: CVA-MAPPO 主方案消融
+python run_ablation.py --python python \
+  --preset cva_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 --train_iters 30 --eval_episodes 8 \
+  --n_routine 1200 --n_dynamic 300 --methods mappo \
+  --out_root runs/ablation_cva_assignment_v1_stress \
+  --batch_name step11_cva_assignment --device cpu --jobs 4 --eval_workers 4
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。

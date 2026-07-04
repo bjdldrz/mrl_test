@@ -47,6 +47,11 @@ preset=hier_assignment_v1:
   - rolling horizon without manager
   - rule-based high-level assignment manager
 
+preset=cva_assignment_v1:
+  - heuristic static / rolling assignment baselines
+  - contextual value-aware assignment static ablation
+  - CVA rolling assignment with MLP/LSTM/GRU/Transformer/Set Transformer encoders
+
 preset=meta_encoder_v1:
   - MRL-DMS outer-loop LSTM/GRU/MLP/Transformer/Set Transformer
   - MAPPO + LSTM outer loop
@@ -499,6 +504,109 @@ def build_hier_assignment_v1_specs():
     ]
 
 
+def _cva_args(encoder: str, mix: float, context_weight: float):
+    args = [
+        "--assignment_scorer", "cva",
+        "--assignment_scorer_mix", str(mix),
+        "--assignment_context_encoder", encoder,
+        "--assignment_context_weight", str(context_weight),
+    ]
+    if encoder == "mlp":
+        args.extend(["--assignment_mlp_hidden_dim", "16"])
+    else:
+        args.extend(["--assignment_sequence_hidden_dim", "16"])
+    return args
+
+
+def build_cva_assignment_v1_specs(context_encoders, scorer_mixes, context_weight):
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    rolling_args = [
+        "--assignment_replan_interval_s", "3600",
+        "--assignment_replan_horizon_s", "7200",
+        "--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline",
+        "--assignment_switch_penalty", "0.05",
+        "--assignment_lock_window_s", "600",
+        "--assignment_max_switches_per_task", "2",
+    ]
+    specs = [
+        {
+            "tag": "heuristic_static",
+            "extra_args": [
+                *base_assignment,
+                "--assignment_scorer", "heuristic",
+            ],
+            "params": {
+                "cva_variant": "heuristic_static",
+                "assignment_scorer": "heuristic",
+                "assignment_context_encoder": "",
+                "assignment_scorer_mix": 0.0,
+                "assignment_replan_trigger": "none",
+            },
+        },
+        {
+            "tag": "heuristic_rolling",
+            "extra_args": [
+                *base_assignment,
+                *rolling_args,
+                "--assignment_scorer", "heuristic",
+            ],
+            "params": {
+                "cva_variant": "heuristic_rolling",
+                "assignment_scorer": "heuristic",
+                "assignment_context_encoder": "",
+                "assignment_scorer_mix": 0.0,
+                "assignment_replan_trigger": "periodic,dynamic,stale_owner,deadline",
+                "assignment_replan_horizon_s": 7200.0,
+            },
+        },
+    ]
+
+    if "lstm" in context_encoders:
+        mix = scorer_mixes[0] if scorer_mixes else 0.35
+        specs.append({
+            "tag": f"cva_lstm_static_mix{_float_tag(mix)}",
+            "extra_args": [
+                *base_assignment,
+                *_cva_args("lstm", mix, context_weight),
+            ],
+            "params": {
+                "cva_variant": "cva_static",
+                "assignment_scorer": "cva",
+                "assignment_context_encoder": "lstm",
+                "assignment_scorer_mix": mix,
+                "assignment_context_weight": context_weight,
+                "assignment_replan_trigger": "none",
+            },
+        })
+
+    for encoder in context_encoders:
+        for mix in scorer_mixes:
+            tag = f"cva_{encoder}_rolling_mix{_float_tag(mix)}"
+            specs.append({
+                "tag": tag,
+                "extra_args": [
+                    *base_assignment,
+                    *rolling_args,
+                    *_cva_args(encoder, mix, context_weight),
+                ],
+                "params": {
+                    "cva_variant": "cva_rolling",
+                    "assignment_scorer": "cva",
+                    "assignment_context_encoder": encoder,
+                    "assignment_scorer_mix": mix,
+                    "assignment_context_weight": context_weight,
+                    "assignment_replan_trigger": "periodic,dynamic,stale_owner,deadline",
+                    "assignment_replan_horizon_s": 7200.0,
+                    "assignment_switch_penalty": 0.05,
+                },
+            })
+    return specs
+
+
 def build_learned_assignment_v1_specs(
     assignment_scorer_mixes,
     assignment_sequence_scorers,
@@ -717,6 +825,13 @@ def summarize_run(tag, params, out_dir):
         "vtw_time_step_s",
         "max_action_dim",
         "device",
+        "assignment_scorer",
+        "assignment_scorer_mix",
+        "assignment_context_encoder",
+        "assignment_context_weight",
+        "assignment_replan_interval_s",
+        "assignment_replan_horizon_s",
+        "assignment_replan_trigger",
     ]:
         if key in manifest_args:
             row[key] = manifest_args.get(key)
@@ -853,6 +968,7 @@ def main():
                         choices=["assignment_v2", "reward_v1", "state_v1", "oracle_v1",
                                  "train_stability_v1", "communication_v1",
                                  "assignment_rolling_v1", "hier_assignment_v1",
+                                 "cva_assignment_v1",
                                  "meta_encoder_v1", "learned_assignment_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
@@ -907,6 +1023,13 @@ def main():
                         help="learned_assignment_v1 使用的图 scorer 列表: gnn")
     parser.add_argument("--assignment_graph_mixes", type=str, default="0.25",
                         help="learned_assignment_v1 使用的图 scorer 混合比例列表")
+    parser.add_argument("--cva_context_encoders", type=str,
+                        default="mlp,lstm,gru,transformer,set_transformer",
+                        help="cva_assignment_v1 使用的上下文价值编码器列表")
+    parser.add_argument("--cva_scorer_mixes", type=str, default="0.35",
+                        help="cva_assignment_v1 中 CVA 分数与启发式分数的混合比例列表")
+    parser.add_argument("--cva_context_weight", type=float, default=0.25,
+                        help="cva_assignment_v1 中上下文编码器价值项权重")
     parser.add_argument("--meta_encoder_types", type=str,
                         default="lstm,gru,mlp,transformer,set_transformer",
                         help="meta_encoder_v1 使用的外循环编码器列表")
@@ -991,6 +1114,20 @@ def main():
         specs = build_assignment_rolling_v1_specs()
     elif args.preset == "hier_assignment_v1":
         specs = build_hier_assignment_v1_specs()
+    elif args.preset == "cva_assignment_v1":
+        context_encoders = parse_str_list(args.cva_context_encoders)
+        allowed_cva_encoders = {"mlp", "lstm", "gru", "transformer", "set_transformer", "gnn"}
+        invalid_cva = [e for e in context_encoders if e not in allowed_cva_encoders]
+        if invalid_cva:
+            raise ValueError(
+                f"未知 CVA context encoder: {invalid_cva}; "
+                f"可选: {sorted(allowed_cva_encoders)}"
+            )
+        specs = build_cva_assignment_v1_specs(
+            context_encoders=context_encoders,
+            scorer_mixes=parse_float_list(args.cva_scorer_mixes),
+            context_weight=args.cva_context_weight,
+        )
     elif args.preset == "learned_assignment_v1":
         seq_scorers = parse_str_list(args.assignment_sequence_scorers)
         allowed_seq_scorers = {"lstm", "gru"}

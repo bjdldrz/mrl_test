@@ -563,3 +563,66 @@ python run_ablation.py \
 - communication dry-run: `python3 run_ablation.py --preset communication_v1 --dry_run --train_iters 1 --eval_episodes 1 --n_satellites 2 --n_routine 8 --n_dynamic 1 --out_root runs/ablation_communication_dry_run`。
 - 通信路径冒烟: `/Users/zhouzidie/miniconda3/envs/myenv/bin/python compare_methods.py --n_satellites 2 --train_iters 1 --eval_episodes 1 --n_routine 8 --n_dynamic 1 --out_dir runs/communication_smoke --device cpu --intent_broadcast --intent_replan_rounds 1 --experiment_tag communication_smoke`。
 - 验证输出: `runs/communication_smoke/manifest.json`。该冒烟仅验证训练/评估共用意图广播 action 采样链路,不作为效果结论。
+
+---
+
+### CVA-MAPPO 主方案 v1(2026-07-04)
+
+**论文定位**:将外循环思想从“单独替换 PPO/LSTM 结构”收敛为任务分配阶段的上下文价值建模器。最终方法暂定为 **CVA-MAPPO: Contextual Value-aware Assignment MAPPO**。
+
+**核心框架**:
+1. 高层候选生成:根据 VTW、deadline、任务到达时间和 off-nadir 生成可分配 `(satellite, task)` 边。
+2. 上下文价值编码:使用 `MLP/LSTM/GRU/Transformer/Set Transformer/GNN` 编码任务集合、任务序列和卫星-任务二分图上下文。
+3. CVA 边价值打分:融合观测质量、优先级、动态任务标记、deadline 压力、候选稀缺性、负载压力、owner stale/release/switch 历史和上下文编码器价值。
+4. 约束 owner 分配:保留现有可见性硬约束、容量比例、所有权掩码、switch penalty、lock window 和 deadline release。
+5. 低层 MAPPO 调度:MAPPO 在 owner 约束下执行具体观测动作,负责局部时序调度和协同执行。
+6. 滚动重分配:动态任务到达、周期触发、stale owner 和 deadline 风险时重新计算 CVA owner。
+
+**代码实现**:
+- `envs/multi_satellite_env.py`
+  - 新增 `assignment_scorer="cva"`。
+  - 新增 `assignment_context_encoder` 与 `assignment_context_weight`。
+  - `_assignment_cva_score()` 显式实现上下文价值感知分配分数。
+  - 旧 `heuristic/mlp/lstm/gru/transformer/set_transformer/gnn` scorer 保持兼容。
+- `compare_methods.py`
+  - 新增 CLI: `--assignment_context_encoder`、`--assignment_context_weight`。
+  - manifest 自动记录 CVA 参数。
+- `run_ablation.py`
+  - 新增 `--preset cva_assignment_v1`。
+  - 默认 8 个子实验: `heuristic_static`、`heuristic_rolling`、`cva_lstm_static`、`cva_mlp/gru/lstm/transformer/set_transformer_rolling`。
+  - 支持 `--cva_context_encoders`、`--cva_scorer_mixes`、`--cva_context_weight`。
+
+**推荐压力消融命令**:
+```bash
+python run_ablation.py \
+  --python python \
+  --preset cva_assignment_v1 \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 8 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods mappo \
+  --out_root runs/ablation_cva_assignment_v1_stress \
+  --device cpu \
+  --jobs 4 \
+  --eval_workers 4 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --vtw_time_step_s 60 \
+  --resume_latest \
+  --skip_existing
+```
+
+**论文实验解释**:
+- `heuristic_static -> heuristic_rolling`:验证滚动 owner 重分配收益。
+- `heuristic_rolling -> cva_*_rolling`:验证上下文价值感知分配是否优于规则分配。
+- `cva_lstm_static -> cva_lstm_rolling`:验证 CVA 与滚动重分配的互补性。
+- `cva_mlp/lstm/gru/transformer/set_transformer`:验证外循环/上下文编码器在分配阶段的作用。
+
+**后续研究升级**:
+1. 用 Greedy/ILP/MPC 标签监督训练 CVA scorer,把当前 deterministic encoder 推进为可学习 assignment value model。
+2. 使用 MAPPO critic 或低层 rollout return 作为任务-owner 边价值标签。
+3. 将 `assignment_context_encoder` 参数保存为 checkpoint,允许离线训练后加载权重。
