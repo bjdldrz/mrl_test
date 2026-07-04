@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+import numpy as np
+
+from data.mission_generator import Mission
+from envs.multi_satellite_env import MultiSatelliteEnv
+from .allocator import CapacityAwareTaskAllocator
+from .config import CVAMAPPOV2Config
+from .scorer import CandidateScore, CandidateValueScorer
+
+
+class CVAMAPPOV2Env(MultiSatelliteEnv):
+    """Clean CVA-MAPPO v2 environment.
+
+    It keeps the old low-level scheduling environment but replaces the legacy
+    high-level owner/top-k logic with:
+
+    1. state-aware satellite-task pair scoring;
+    2. task-centered multi-candidate assignment under slot capacity;
+    3. typed fixed-size local action slots;
+    4. periodic and event-triggered candidate repair.
+    """
+
+    def __init__(
+        self,
+        *args,
+        cva_config: Optional[CVAMAPPOV2Config] = None,
+        **kwargs,
+    ):
+        self.v2_cfg = cva_config or CVAMAPPOV2Config()
+        self.v2_cfg.validate()
+        self.task_candidate_owners: Dict[int, List[str]] = {}
+        self._slot_types: Dict[str, List[str]] = {}
+        self._slot_scores: Dict[str, List[float]] = {}
+        self._candidate_score_table: Dict[int, Dict[str, CandidateScore]] = {}
+        kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
+        kwargs["episode_assignment"] = True
+        kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
+        kwargs["assignment_replan_horizon_s"] = self.v2_cfg.replan_horizon_s
+        kwargs["assignment_replan_trigger"] = ",".join(self.v2_cfg.triggers)
+        kwargs["release_before_deadline_s"] = self.v2_cfg.release_before_deadline_s
+        kwargs["assignment_lock_window_s"] = self.v2_cfg.lock_window_s
+        kwargs["assignment_max_switches_per_task"] = self.v2_cfg.max_switches_per_task
+        super().__init__(*args, **kwargs)
+        self.scorer = CandidateValueScorer(self.v2_cfg)
+        self.allocator = CapacityAwareTaskAllocator(self.v2_cfg, self.agent_ids)
+
+    def reset(self, *args, **kwargs):
+        self.task_candidate_owners = {}
+        self._slot_types = {}
+        self._slot_scores = {}
+        self._candidate_score_table = {}
+        return super().reset(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Task-centered candidate assignment
+    # ------------------------------------------------------------------
+    def _assign_tasks(self, missions: list):
+        pending = [
+            m for m in missions
+            if m is not None and not m.is_observed
+        ]
+        if not pending:
+            return
+        current_time = self._current_time_s()
+        self._candidate_score_table = self._build_score_table(pending, current_time)
+        stale = self._stale_task_ids()
+        assignment = self.allocator.allocate(
+            missions=pending,
+            score_table=self._candidate_score_table,
+            current_candidates=self.task_candidate_owners,
+            current_primary=self.task_owner,
+            current_load=self._candidate_load(),
+            current_time_s=current_time,
+            horizon_s=self.horizon_s,
+            stale_tasks=stale,
+        )
+        self.task_candidate_owners.update(assignment.task_candidates)
+        self.task_owner.update(assignment.primary_owner)
+        self._refresh_assignment_load()
+
+    def _reassign_tasks(self, missions: list) -> int:
+        current_time = self._current_time_s()
+        self._candidate_score_table = self._build_score_table(missions, current_time)
+        stale = self._stale_task_ids()
+        assignment = self.allocator.allocate(
+            missions=missions,
+            score_table=self._candidate_score_table,
+            current_candidates=self.task_candidate_owners,
+            current_primary=self.task_owner,
+            current_load=self._candidate_load(exclude_missions={m.id for m in missions}),
+            current_time_s=current_time,
+            horizon_s=self.horizon_s,
+            stale_tasks=stale,
+        )
+        old_primary = dict(self.task_owner)
+        self.task_candidate_owners.update(assignment.task_candidates)
+        self.task_owner.update(assignment.primary_owner)
+        switched = 0
+        for mission in missions:
+            old = old_primary.get(mission.id)
+            new = self.task_owner.get(mission.id)
+            if old is not None and new is not None and old != new:
+                self._owner_switch_counts[mission.id] = self._owner_switch_counts.get(mission.id, 0) + 1
+                switched += 1
+        self._refresh_assignment_load()
+        return switched
+
+    def set_task_owner(self, mission_id: int, agent_id: str, count_switch: bool = True) -> bool:
+        changed = super().set_task_owner(mission_id, agent_id, count_switch=count_switch)
+        if changed:
+            self.task_candidate_owners[mission_id] = [agent_id]
+        return changed
+
+    def _build_score_table(self, missions: List[Mission], current_time_s: float):
+        raw_quality = {}
+        for mission in missions:
+            visible_agents = []
+            for aid in self.agent_ids:
+                q = self._task_quality_window(aid, mission)
+                if q is not None:
+                    visible_agents.append((aid, q))
+            raw_quality[mission.id] = visible_agents
+
+        score_table: Dict[int, Dict[str, CandidateScore]] = {}
+        loads = self._candidate_load()
+        max_load = max(max(loads.values(), default=0), 1)
+        stale = self._stale_task_ids()
+        for mission in missions:
+            agent_scores = {}
+            visible_agents = raw_quality.get(mission.id, [])
+            for aid, _ in visible_agents:
+                env = self.envs[aid]
+                load_pressure = loads.get(aid, 0) / max_load
+                score = self.scorer.score_pair(
+                    env=env,
+                    agent_id=aid,
+                    mission=mission,
+                    current_time_s=current_time_s,
+                    load_pressure=load_pressure,
+                    n_visible_agents=len(visible_agents),
+                    n_agents=self.n_agents,
+                    current_owner=self.task_owner.get(mission.id),
+                    owner_stale=mission.id in stale,
+                    allow_future=True,
+                )
+                if score is not None:
+                    agent_scores[aid] = score
+            if agent_scores:
+                score_table[mission.id] = agent_scores
+        return score_table
+
+    def _candidate_load(self, exclude_missions: Optional[set] = None) -> Dict[str, int]:
+        exclude_missions = exclude_missions or set()
+        load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
+        for mission_id, owners in self.task_candidate_owners.items():
+            if mission_id in exclude_missions:
+                continue
+            for aid in owners:
+                if aid in load:
+                    load[aid] += 1
+        return load
+
+    def _stale_task_ids(self) -> set:
+        stale = set()
+        for mission_id, owner in self.task_owner.items():
+            if owner is not None and not self._has_future_feasible_window(owner, mission_id):
+                stale.add(mission_id)
+        return stale
+
+    def _current_time_s(self) -> float:
+        first_env = list(self.envs.values())[0]
+        return float(first_env.current_time_s)
+
+    # ------------------------------------------------------------------
+    # Candidate ownership masks and typed slots
+    # ------------------------------------------------------------------
+    def _apply_ownership_mask(self, agent_id: str, mask: np.ndarray) -> np.ndarray:
+        env = self.envs[agent_id]
+        for i in range(self.max_action_dim):
+            mission = env.missions[i]
+            if mission is None:
+                continue
+            candidates = self.task_candidate_owners.get(mission.id)
+            if candidates and agent_id not in candidates and not self._ownership_released(agent_id, mission):
+                mask[i] = 0.0
+        return mask
+
+    def _ownership_released(self, agent_id: str, mission) -> bool:
+        if mission.is_observed:
+            return True
+        candidates = self.task_candidate_owners.get(mission.id, [])
+        if agent_id in candidates:
+            return True
+        owner = self.task_owner.get(mission.id)
+        if owner is None:
+            return False
+        env = self.envs[agent_id]
+        near_deadline = env.current_time_s >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+        owner_stale = not self._has_future_feasible_window(owner, mission.id)
+        released = near_deadline or owner_stale
+        if released:
+            self._released_mission_ids.add(mission.id)
+            if near_deadline:
+                self._deadline_release_mission_ids.add(mission.id)
+        return released
+
+    def _select_candidate_actions(self, agent_id: str, full_mask: np.ndarray) -> List[Optional[int]]:
+        routine = self._rank_slot_group(agent_id, full_mask, group="routine")
+        dynamic = self._rank_slot_group(agent_id, full_mask, group="dynamic")
+        flex = self._rank_slot_group(agent_id, full_mask, group="flex")
+
+        selected: List[Optional[int]] = []
+        slot_types: List[str] = []
+        slot_scores: List[float] = []
+        used = set()
+
+        def take(group_items, n, slot_type):
+            for score, action in group_items:
+                if len([t for t in slot_types if t == slot_type]) >= n:
+                    break
+                if action in used:
+                    continue
+                selected.append(action)
+                slot_types.append(slot_type)
+                slot_scores.append(float(score))
+                used.add(action)
+
+        take(routine, self.v2_cfg.slots.routine_slots, "routine")
+        take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
+        # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
+        flex_count = self.v2_cfg.slots.flex_slots
+        for score, action in flex:
+            if len([t for t in slot_types if t == "flex"]) >= flex_count:
+                break
+            if action in used:
+                continue
+            selected.append(action)
+            slot_types.append("flex")
+            slot_scores.append(float(score))
+            used.add(action)
+
+        while len(selected) < self.v2_cfg.slots.total_slots:
+            selected.append(None)
+            slot_types.append("empty")
+            slot_scores.append(0.0)
+
+        self._slot_types[agent_id] = slot_types
+        self._slot_scores[agent_id] = slot_scores
+        return selected[:self.v2_cfg.slots.total_slots]
+
+    def _rank_slot_group(self, agent_id: str, full_mask: np.ndarray, group: str):
+        env = self.envs[agent_id]
+        items = []
+        for action, mission in enumerate(env.missions[:self.max_action_dim]):
+            if mission is None or mission.is_observed:
+                continue
+            candidates = self.task_candidate_owners.get(mission.id)
+            if candidates and agent_id not in candidates and not self._ownership_released(agent_id, mission):
+                continue
+            is_currently_available = full_mask[action] > 0
+            score = self._candidate_action_score(agent_id, action, allow_future=True)
+            if score is None:
+                continue
+            if not self._belongs_to_group(mission, group):
+                continue
+            if is_currently_available:
+                score += 0.25
+            items.append((float(score), int(action)))
+        items.sort(key=lambda x: x[0], reverse=True)
+        return items
+
+    def _belongs_to_group(self, mission: Mission, group: str) -> bool:
+        if group == "routine":
+            return not mission.is_dynamic
+        if group == "dynamic":
+            return mission.is_dynamic
+        if group == "flex":
+            current_time = self._current_time_s()
+            near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+            stale = mission.id in self._stale_task_ids()
+            return mission.is_dynamic or near_deadline or stale or mission.priority >= 7.5
+        return False
+
+    def _candidate_action_score(
+        self,
+        agent_id: str,
+        action: int,
+        allow_future: bool = False,
+    ) -> Optional[float]:
+        env = self.envs[agent_id]
+        mission = env.missions[action]
+        if mission is None or mission.is_observed:
+            return None
+        score = self.scorer.score_pair(
+            env=env,
+            agent_id=agent_id,
+            mission=mission,
+            current_time_s=env.current_time_s,
+            load_pressure=self._candidate_load().get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1),
+            n_visible_agents=len(self.task_candidate_owners.get(mission.id, [])) or 1,
+            n_agents=self.n_agents,
+            current_owner=self.task_owner.get(mission.id),
+            owner_stale=mission.id in self._stale_task_ids(),
+            allow_future=allow_future,
+        )
+        return None if score is None else score.score
+
+    def _expose_obs_info(self, agent_id: str, full_mask: Optional[np.ndarray] = None):
+        obs, info = super()._expose_obs_info(agent_id, full_mask=full_mask)
+        if self._candidate_actions_enabled():
+            info = {
+                **info,
+                "slot_types": list(self._slot_types.get(agent_id, [])),
+                "slot_scores": list(self._slot_scores.get(agent_id, [])),
+                "task_candidate_owners": {
+                    int(k): list(v)
+                    for k, v in self.task_candidate_owners.items()
+                },
+            }
+        return obs, info

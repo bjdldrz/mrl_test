@@ -1,0 +1,85 @@
+# CVA-MAPPO v2 Ablation Presets
+
+All commands use the standalone v2 runner.  Keep baseline experiments in the
+legacy scripts, and use this folder only for the new paper method.
+
+Base command:
+
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_workers 4 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --device cuda:0
+```
+
+## A1 Slot Scale
+
+Purpose: verify that a fixed typed action space can replace the global task
+pool without losing too much completion rate.
+
+```bash
+# K=64
+... --routine_slots 32 --dynamic_slots 16 --flex_slots 16 \
+    --run_name cva_v2_slots64 --out_dir runs/cva_mappo_v2_slots
+
+# K=128
+... --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
+    --run_name cva_v2_slots128 --out_dir runs/cva_mappo_v2_slots
+
+# K=256
+... --routine_slots 128 --dynamic_slots 64 --flex_slots 64 \
+    --run_name cva_v2_slots256 --out_dir runs/cva_mappo_v2_slots
+```
+
+## A2 Candidate Owner Count
+
+Purpose: routine tasks should usually have one owner, while dynamic/urgent tasks
+benefit from multi-candidate rescue.
+
+```bash
+# strict ownership
+... --routine_candidate_owners 1 --dynamic_candidate_owners 1 \
+    --urgent_candidate_owners 1 --stale_candidate_owners 1 \
+    --run_name cva_v2_owner_strict --out_dir runs/cva_mappo_v2_owner
+
+# default multi-candidate dynamic rescue
+... --routine_candidate_owners 1 --dynamic_candidate_owners 2 \
+    --urgent_candidate_owners 3 --stale_candidate_owners 3 \
+    --run_name cva_v2_owner_default --out_dir runs/cva_mappo_v2_owner
+```
+
+## A3 Typed Slots
+
+Purpose: test whether reserving dynamic slots improves dynamic response.
+
+```bash
+# no explicit dynamic reservation
+... --routine_slots 96 --dynamic_slots 0 --flex_slots 32 \
+    --run_name cva_v2_no_dynamic_slots --out_dir runs/cva_mappo_v2_typed_slots
+
+# balanced typed slots
+... --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
+    --run_name cva_v2_typed_default --out_dir runs/cva_mappo_v2_typed_slots
+```
+
+## A4 Reassignment Triggers
+
+Purpose: separate static candidate ownership from event-triggered repair.
+
+```bash
+# static only
+... --assignment_replan_trigger "" --assignment_replan_interval_s 0 \
+    --run_name cva_v2_static --out_dir runs/cva_mappo_v2_replan
+
+# event-triggered repair
+... --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+    --assignment_replan_interval_s 3600 --assignment_replan_horizon_s 7200 \
+    --run_name cva_v2_event_repair --out_dir runs/cva_mappo_v2_replan
+```
