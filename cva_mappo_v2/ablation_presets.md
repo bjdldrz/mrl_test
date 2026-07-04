@@ -12,10 +12,15 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
-  --eval_workers 4 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
+  --eval_episodes 20 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
+  --no_viz \
   --device cuda:0
 ```
 

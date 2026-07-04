@@ -292,12 +292,14 @@ python run_ablation.py \
     --n_dynamic 300 \
     --methods mappo \
     --out_root runs/ablation_cva_assignment_v1_stress \
-    --device cpu \
-    --jobs 4 \
+    --device cuda:0 \
+    --jobs 2 \
     --eval_workers 4 \
-    --rollout_steps 256 \
-    --ppo_epochs 2 \
-    --ppo_batch_size 256 \
+    --train_env_workers 4 \
+    --torch_num_threads 1 \
+    --rollout_steps 512 \
+    --ppo_epochs 4 \
+    --ppo_batch_size 512 \
     --vtw_time_step_s 60 \
     --resume_latest \
     --skip_existing
@@ -483,11 +485,11 @@ python run_ablation.py \
     --num_workers 8 \
     --meta_batch_size 8 \
     --inner_steps 2 \
-    --rollout_steps 256 \
+    --rollout_steps 512 \
     --eval_interval 20 \
-    --eval_workers 4 \
+    --eval_workers 8 \
     --out_root runs/profile_mrl_dms_throughput \
-    --device cpu
+    --device cuda:0
 ```
 
 判断方式:如果 `worker_map_s` 占主要耗时,瓶颈在环境 rollout/VTW/CPU worker;如果 `eval_s` 很大,调大 `--eval_interval`;如果 `sample_s` 或 `modulation_s` 很大,减少任务规模或检查数据读取。
@@ -505,14 +507,16 @@ python run_ablation.py \
     --n_routine 1200 \
     --n_dynamic 300 \
     --methods mappo \
-    --rollout_steps 256 \
-    --ppo_epochs 2 \
-    --ppo_batch_size 256 \
+    --rollout_steps 512 \
+    --ppo_epochs 4 \
+    --ppo_batch_size 512 \
+    --train_env_workers 4 \
+    --torch_num_threads 1 \
     --eval_workers 4 \
     --vtw_time_step_s 60 \
     --out_root runs/ablation_assignment_v2_stress \
-    --device cpu \
-    --jobs 4
+    --device cuda:0 \
+    --jobs 2
 ```
 
 只对比 LSTM / GRU / Transformer 三种单星外循环编码器:
@@ -606,7 +610,8 @@ python run_ablation.py --python python \
   --n_satellites 12 --train_iters 30 --eval_episodes 8 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
   --out_root runs/ablation_cva_assignment_v1_stress \
-  --batch_name step11_cva_assignment --device cpu --jobs 4 --eval_workers 4
+  --batch_name step11_cva_assignment --device cuda:0 --jobs 2 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512
 ```
 
 每个结果目录下的 `comparison_results.json` 含完成率、可观测任务数、重复率、负载均衡等指标;`manifest.json` 记录参数和 git commit;`*_viz_data.json` 可用于画任务分布图和调度甘特图。

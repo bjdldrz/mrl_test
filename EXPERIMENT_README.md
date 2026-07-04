@@ -292,16 +292,18 @@ python run_ablation.py \
   --n_dynamic 300 \
   --methods mappo \
   --out_root runs/ablation_assignment_rolling_v1_stress \
-  --device cpu \
-  --jobs 4 \
+  --device cuda:0 \
+  --jobs 2 \
   --eval_workers 4 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
+  --train_env_workers 4 \
+  --torch_num_threads 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
   --vtw_time_step_s 60
 ```
 
-说明:`assignment_rolling_v1` 属于普通消融,单个子实验内的 MAPPO 训练是串行策略更新;训练阶段用 `--jobs` 并行多个子实验,评估阶段用 `--eval_workers` 并行多个 eval episode。`--eval_workers` 的有效上限是 `--eval_episodes`。
+说明:`assignment_rolling_v1` 属于普通消融;批量压力测试建议用 `--jobs 2 --train_env_workers 4 --eval_workers 4`,避免 16 核机器过载。`--eval_workers` 的有效上限是 `--eval_episodes`。
 
 重点新增指标:
 
@@ -351,12 +353,14 @@ python run_ablation.py \
   --n_dynamic 300 \
   --methods mappo \
   --out_root runs/ablation_cva_assignment_v1_stress \
-  --device cpu \
-  --jobs 4 \
+  --device cuda:0 \
+  --jobs 2 \
   --eval_workers 4 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
+  --train_env_workers 4 \
+  --torch_num_threads 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
   --vtw_time_step_s 60 \
   --resume_latest \
   --skip_existing
@@ -497,17 +501,19 @@ python run_ablation.py \
   --num_workers 8 \
   --meta_batch_size 8 \
   --inner_steps 2 \
-  --rollout_steps 256 \
-  --eval_workers 4 \
+  --rollout_steps 512 \
+  --eval_workers 8 \
   --eval_interval 20 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
   --out_root runs/ablation_meta_encoder_v1_eval \
-  --device cpu
+  --device cuda:0
 ```
 
 说明:
 
-- 默认是快速配置,适合验证接口和小规模趋势。
-- MRL-DMS 的瓶颈通常在 CPU 环境 rollout、VTW 和评估,不是 GPU;训练型消融优先用 `--device cpu`、`--num_workers/--meta_batch_size` 和 `--eval_workers` 控制吞吐。
+- 默认是高吞吐配置,适合验证接口和中等规模趋势。
+- MRL-DMS 的瓶颈通常在 CPU 环境 rollout、VTW 和评估;训练型消融优先用 `--num_workers/--meta_batch_size`、`--eval_workers` 和更大的 PPO 更新批量控制吞吐。
 - `train_log.csv` 会记录 `sample_s`、`modulation_s`、`worker_map_s`、`meta_apply_s`、`meta_opt_s`、`eval_s`。若 `worker_map_s` 占比最高,说明主要卡在 worker 内的环境模拟/VTW;若 `eval_s` 高,调大 `--eval_interval`。
 - `--fast` 下评估间隔为 5;`--meta_iterations 2` 不会触发评估,短跑主要看 `best_train_reward`、`last_train_reward` 和 `last_train_dynamic_rate`。
 - 若要比较评估奖励,将 `--meta_iterations` 提高到至少 6;此时重点看 `best_eval_reward` / `best_reward`。
@@ -660,33 +666,33 @@ python compare_methods.py --acled_path ./DynamicMission/DynamicMission.shp --met
 python run_ablation.py --python python --preset assignment_v2 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_assignment_v2_stress --device cuda:0
 
 # 4. 学习式任务分配 scorer
 python run_ablation.py --python python --preset learned_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_learned_assignment_v1_stress --device cuda:0
 
 # 5. 滚动重分配 + 层级 manager
 python run_ablation.py --python python --preset assignment_rolling_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_assignment_rolling_v1_stress --device cuda:0
 python run_ablation.py --python python --preset hier_assignment_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_hier_assignment_v1_stress --device cuda:0
 
 # 6. Oracle gap
 python run_ablation.py --python python --preset oracle_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo,oracle \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_oracle_v1_stress --device cuda:0
 ```
 
@@ -696,22 +702,23 @@ python run_ablation.py --python python --preset oracle_v1 --acled_path ./Dynamic
 python run_ablation.py --python python --preset reward_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_reward_v1_stress --device cuda:0
 python run_ablation.py --python python --preset state_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_state_v1_stress --device cuda:0
 python run_ablation.py --python python --preset communication_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --n_satellites 12 --train_iters 30 --eval_episodes 5 \
   --n_routine 1200 --n_dynamic 300 --methods mappo \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 --eval_workers 4 --vtw_time_step_s 60 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 --train_env_workers 4 --torch_num_threads 1 --eval_workers 4 --vtw_time_step_s 60 \
   --out_root runs/ablation_communication_v1_stress --device cuda:0
 python run_ablation.py --python python --preset meta_encoder_v1 --acled_path ./DynamicMission/DynamicMission.shp \
   --meta_iterations 12 --n_routine 200 --n_dynamic 50 \
-  --num_workers 8 --meta_batch_size 8 --inner_steps 2 --rollout_steps 256 --eval_workers 4 --eval_interval 20 \
-  --out_root runs/ablation_meta_encoder_v1 --device cpu
+  --num_workers 8 --meta_batch_size 8 --inner_steps 2 --rollout_steps 512 --eval_workers 8 --eval_interval 20 \
+  --ppo_epochs 4 --ppo_batch_size 512 \
+  --out_root runs/ablation_meta_encoder_v1 --device cuda:0
 ```
 
 ---

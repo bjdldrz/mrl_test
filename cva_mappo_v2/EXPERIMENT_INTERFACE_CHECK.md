@@ -4,12 +4,14 @@
 
 ## 0. 评估设备说明
 
-当前支持两种评估方式:
+当前推荐使用高吞吐配置:
 
-- GPU 串行评估: `--device cuda:0 --eval_device same --eval_workers 1`。适合模型推理占比高、希望确认评估使用 GPU 的实验。
-- CPU 多进程评估: `--device cuda:0 --eval_device cpu --eval_workers 8`。适合环境步进、VTW、mask 构建占主要瓶颈的实验。
+- 训练 rollout: `--train_env_workers 8 --torch_num_threads 1`, 多 CPU 进程并行采样环境。
+- 策略更新: `--device cuda:0`, 主进程在 GPU 上进行 MAPPO update。
+- 评估: `--eval_device cpu --eval_workers 8`, 多 CPU 进程并行评估 episode。
+- 更新强度: `--rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512`, 增大每次 GPU update 的批量, 减少 GPU 只短暂闪一下的问题。
 
-注意: 单卡 GPU 不建议多个评估进程同时使用。代码中如果检测到 `eval_device` 非 CPU 且 `eval_workers > 1`, 会自动降为 1。
+注意: 单卡 GPU 不建议多个评估进程同时使用。若显式设置 `--eval_device same/cuda:0` 且 `eval_workers > 1`, 代码会自动降为 1。
 
 ## 1. 场景预生成
 
@@ -75,13 +77,13 @@ python compare_methods.py \
   --n_routine 1200 \
   --n_dynamic 300 \
   --methods oracle \
-  --eval_device cpu \
-  --eval_workers 16 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/oracle \
   --run_name greedy_oracle_stress \
   --no_viz \
-  --device cpu
+  --device cpu \
+  --eval_device cpu \
+  --eval_workers 16
 ```
 
 ### 3.2 Indep-PPO
@@ -96,11 +98,13 @@ python compare_methods.py \
   --n_routine 1200 \
   --n_dynamic 300 \
   --methods indep \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
-  --eval_device same \
-  --eval_workers 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/indep \
   --run_name indep_ppo_stress \
@@ -122,11 +126,13 @@ python compare_methods.py \
   --methods mappo \
   --no_episode_assignment \
   --candidate_action_top_k 0 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
-  --eval_device same \
-  --eval_workers 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/vanilla_mappo \
   --run_name vanilla_mappo_full_action_stress \
@@ -148,11 +154,13 @@ python compare_methods.py \
   --methods mappo \
   --no_episode_assignment \
   --candidate_action_top_k 128 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
-  --eval_device same \
-  --eval_workers 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/mixed_topk \
   --run_name mappo_mixed_topk128_stress \
@@ -175,11 +183,13 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
-  --rollout_steps 256 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
-  --eval_device same \
-  --eval_workers 1 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/cva_mappo_v2 \
   --run_name cva_mappo_v2_stress \
@@ -199,8 +209,9 @@ python compare_methods.py \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
   --candidate_action_top_k 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/action_space/full_action \
   --run_name full_action \
   --no_viz --device cuda:0
@@ -214,8 +225,9 @@ python compare_methods.py \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
   --candidate_action_top_k 128 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/action_space/mixed_topk128 \
   --run_name mixed_topk128 \
   --no_viz --device cuda:0
@@ -228,8 +240,9 @@ python -m cva_mappo_v2.run_experiment \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/action_space/typed_no_flex \
   --run_name typed_no_flex \
   --no_viz --device cuda:0
@@ -242,8 +255,9 @@ python -m cva_mappo_v2.run_experiment \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/action_space/typed_flex \
   --run_name typed_flex \
   --no_viz --device cuda:0
@@ -260,8 +274,9 @@ python -m cva_mappo_v2.run_experiment \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 56 --dynamic_slots 8 --flex_slots 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/slot_ratio/r56_d8_f0 \
   --run_name r56_d8_f0 \
   --no_viz --device cuda:0
@@ -290,8 +305,9 @@ python -m cva_mappo_v2.run_experiment \
   --stale_candidate_owners 1 \
   --assignment_replan_trigger none \
   --assignment_replan_interval_s 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/ownership/hard_single_owner \
   --run_name hard_single_owner \
   --no_viz --device cuda:0
@@ -311,8 +327,9 @@ python -m cva_mappo_v2.run_experiment \
   --stale_candidate_owners 3 \
   --assignment_replan_trigger none \
   --assignment_replan_interval_s 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/ownership/static_multi_owner \
   --run_name static_multi_owner \
   --no_viz --device cuda:0
@@ -334,8 +351,9 @@ python -m cva_mappo_v2.run_experiment \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 0 --w_priority 1 --w_deadline 0 --w_dynamic 0 \
   --w_scarcity 0 --w_future_opportunity_loss 0 --w_load 0 --w_owner_stability 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/scorer/priority_only \
   --run_name priority_only \
   --no_viz --device cuda:0
@@ -351,8 +369,9 @@ python -m cva_mappo_v2.run_experiment \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 1 --w_priority 0 --w_deadline 0 --w_dynamic 0 \
   --w_scarcity 0 --w_future_opportunity_loss 0 --w_load 0 --w_owner_stability 0 \
-  --rollout_steps 256 --ppo_epochs 2 --ppo_batch_size 256 \
-  --eval_device same --eval_workers 1 \
+  --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
+  --train_env_workers 8 --torch_num_threads 1 \
+  --eval_device cpu --eval_workers 8 \
   --out_dir runs/ablation_v2/scorer/quality_only \
   --run_name quality_only \
   --no_viz --device cuda:0
