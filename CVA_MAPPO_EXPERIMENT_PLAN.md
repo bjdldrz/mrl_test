@@ -66,6 +66,28 @@ seed = 42
 ./DynamicMission/DynamicMission.shp
 ```
 
+正式实验建议先预生成训练/评估场景和 VTW 缓存。训练集采用简单到复杂 curriculum,评估集使用独立 seed,不可与训练集相同:
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
+```
+
+后续训练和消融统一追加:
+
+```bash
+--scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
+--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache
+```
+
 ---
 
 ## 3. A0: Dry-run 检查
@@ -154,7 +176,8 @@ python compare_methods.py \
   --train_env_workers 4 \
   --eval_workers 4 \
   --torch_num_threads 4 \
-  --vtw_cache_dir runs/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --candidate_action_top_k 128 \
   --vtw_time_step_s 60 \
   --out_dir runs/main_cva_mappo_train_eval \
@@ -168,7 +191,8 @@ python compare_methods.py \
 - A1 只运行 `--methods mappo`,不能使用 `--method_jobs` 并行多个顶层方法。
 - `--candidate_action_top_k 128` 表示低层 MAPPO 只在每颗星当前 Top-128 候选任务 + idle 中决策,底层环境仍保留 2100 个真实任务槽位用于统计。
 - `--train_env_workers 4` 会把单个 MAPPO 训练迭代的 rollout 拆到 4 个环境进程中并行采样,主进程合并 buffer 后统一 PPO 更新。
-- `--vtw_cache_dir runs/vtw_cache` 会跨进程复用已计算过的卫星-任务可见时间窗口。
+- `--scenario_cache_dir` 会读取预生成的 curriculum 训练集和独立评估集。
+- `--vtw_cache_dir` 会跨进程复用预热过的卫星-任务可见时间窗口。
 - `--eval_workers 4` 只并行训练后的评估 episode。
 - `--torch_num_threads 4` 让单个 MAPPO 训练进程内部的 PyTorch 前向/更新使用更多 CPU 线程。
 - `--no_viz` 会跳过 `*_viz_data.json`,避免并行评估后为了可视化额外串行重跑 1 个 episode;需要画任务分布图和甘特图时去掉这一项。
@@ -293,7 +317,8 @@ python run_ablation.py \
   --device cpu \
   --jobs 4 \
   --eval_workers 4 \
-  --vtw_cache_dir runs/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --rollout_steps 256 \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
@@ -343,7 +368,8 @@ python run_ablation.py \
   --jobs 4 \
   --eval_workers 4 \
   --torch_num_threads 2 \
-  --vtw_cache_dir runs/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --rollout_steps 256 \
   --ppo_epochs 2 \
   --ppo_batch_size 256 \
@@ -390,7 +416,8 @@ python run_ablation.py \
   --eval_workers 4 \
   --train_env_workers 2 \
   --torch_num_threads 2 \
-  --vtw_cache_dir runs/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --candidate_action_top_k 128 \
   --rollout_steps 256 \
   --ppo_epochs 2 \

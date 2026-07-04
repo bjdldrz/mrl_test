@@ -45,6 +45,12 @@ from config import SatelliteConfig
 from data.mission_generator import MissionGenerator, load_acled_shapefile
 from utils.experiment_dirs import unique_dir, safe_name
 from utils.json_utils import dump_json
+from utils.scenario_cache import (
+    get_eval_scenarios,
+    load_scenario_cache,
+    scenario_summary,
+    select_train_scenario,
+)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -443,6 +449,7 @@ def _run_compare_method_worker(job):
     cfg = job["cfg"]
     mission_gen = job["mission_gen"]
     scenarios = job["scenarios"]
+    train_scenarios = job.get("train_scenarios")
     args = job["args"]
     out_dir = Path(args["out_dir"])
     device = torch.device(args["device"])
@@ -459,11 +466,13 @@ def _run_compare_method_worker(job):
     if method_name == "Single-PPO":
         metrics = run_single_ppo(
             cfg, mission_gen, scenarios, args["train_iters"], device,
+            train_scenarios=train_scenarios,
             eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir)
     elif method_name == "Indep-PPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             coordinate=False,
+            train_scenarios=train_scenarios,
             method_name="Indep-PPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir)
@@ -503,6 +512,7 @@ def _run_compare_method_worker(job):
             intent_broadcast=args["intent_broadcast"],
             intent_replan_rounds=args["intent_replan_rounds"],
             train_env_workers=args["train_env_workers"],
+            train_scenarios=train_scenarios,
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir)
@@ -593,6 +603,7 @@ def _save_multi_viz_data(env, out_dir: Path, method_name: str):
 # 方案 1: 单星 PPO
 # =======================================================================
 def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
+                   train_scenarios=None,
                    eval_workers: int = 1, viz_out_dir: Path = None):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
@@ -614,13 +625,18 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                      ppo_epochs=cfg.ppo.ppo_epochs, batch_size=cfg.ppo.batch_size,
                      device=str(device))
 
-    # 训练: 在随机采样场景上跑 PPO
+    # 训练: 默认随机采样; 若提供 scenario cache,则按 curriculum 从训练集采样。
     for it in range(train_iters):
-        routine, dynamic = mission_gen.generate_episode_missions(
-            n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
-            n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-            n_insertions=cfg.mission.dynamic_insertions_per_day,
-        )
+        if train_scenarios is not None:
+            routine, dynamic = select_train_scenario(
+                train_scenarios, it, train_iters, np.random
+            )
+        else:
+            routine, dynamic = mission_gen.generate_episode_missions(
+                n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
+                n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
+                n_insertions=cfg.mission.dynamic_insertions_per_day,
+            )
         opts = {"routine_missions": copy.deepcopy(routine),
                 "dynamic_schedule": copy.deepcopy(dynamic)}
         obs, info = env.reset(options=opts)
@@ -723,6 +739,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               intent_broadcast=False,
               intent_replan_rounds=1,
               train_env_workers: int = 1,
+              train_scenarios=None,
               method_name="MAPPO",
               eval_workers: int = 1,
               viz_out_dir: Path = None):
@@ -831,11 +848,16 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             model_state_np = _torch_state_to_numpy(model.state_dict())
             task_args = []
             for wi, worker_steps in enumerate(step_counts):
-                routine, dynamic = mission_gen.generate_episode_missions(
-                    n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
-                    n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-                    n_insertions=cfg.mission.dynamic_insertions_per_day,
-                )
+                if train_scenarios is not None:
+                    routine, dynamic = select_train_scenario(
+                        train_scenarios, it, train_iters, np.random
+                    )
+                else:
+                    routine, dynamic = mission_gen.generate_episode_missions(
+                        n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
+                        n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
+                        n_insertions=cfg.mission.dynamic_insertions_per_day,
+                    )
                 task_args.append({
                     "idx": wi,
                     "cfg": copy.deepcopy(cfg),
@@ -865,11 +887,16 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             last_states = [r["last_global_state"] for r in worker_results]
             trainer.update_many(buffers, last_states)
         else:
-            routine, dynamic = mission_gen.generate_episode_missions(
-                n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
-                n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-                n_insertions=cfg.mission.dynamic_insertions_per_day,
-            )
+            if train_scenarios is not None:
+                routine, dynamic = select_train_scenario(
+                    train_scenarios, it, train_iters, np.random
+                )
+            else:
+                routine, dynamic = mission_gen.generate_episode_missions(
+                    n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
+                    n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
+                    n_insertions=cfg.mission.dynamic_insertions_per_day,
+                )
             opts = {"routine_missions": copy.deepcopy(routine),
                     "dynamic_schedule": copy.deepcopy(dynamic)}
             res = env.reset(options=opts)
@@ -1090,6 +1117,8 @@ def main():
                         help="覆盖 VTW 采样步长; 越小越精确但 CPU 更重")
     parser.add_argument("--vtw_cache_dir", type=str, default=None,
                         help="VTW 磁盘缓存目录; 为空则只使用进程内缓存")
+    parser.add_argument("--scenario_cache_dir", type=str, default=None,
+                        help="预生成场景缓存目录; 需包含 train_scenarios.pkl 和 eval_scenarios.pkl")
     parser.add_argument("--methods", type=str, default="single,indep,mappo",
                         help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
@@ -1259,11 +1288,31 @@ def main():
     acled = load_acled_shapefile(args.acled_path) if args.acled_path else None
     mission_gen = MissionGenerator(acled_df=acled, seed=args.seed)
 
-    # 固定测试集 (三方案共用)
-    scenarios = make_test_scenarios(mission_gen, args.eval_episodes,
-                                    args.n_routine, args.n_dynamic,
-                                    n_insertions=cfg.mission.dynamic_insertions_per_day,
-                                    seed=args.seed + 1000)
+    train_scenarios = None
+    if args.scenario_cache_dir:
+        cache_payload = load_scenario_cache(args.scenario_cache_dir)
+        train_scenarios = cache_payload["train"]
+        scenarios = get_eval_scenarios(cache_payload["eval"])
+        summary = scenario_summary(cache_payload)
+        logger.info(
+            "场景缓存: root=%s, train_scenarios=%s, train_stages=%s, eval_scenarios=%s",
+            summary["root"],
+            summary["train_scenarios"],
+            summary["train_stages"],
+            summary["eval_scenarios"],
+        )
+        if len(scenarios) != args.eval_episodes:
+            logger.info(
+                "使用场景缓存评估集: 实际 eval episodes=%s, 命令行 --eval_episodes=%s 仅用于兼容/命名上游批次",
+                len(scenarios),
+                args.eval_episodes,
+            )
+    else:
+        # 固定测试集 (三方案共用)
+        scenarios = make_test_scenarios(mission_gen, args.eval_episodes,
+                                        args.n_routine, args.n_dynamic,
+                                        n_insertions=cfg.mission.dynamic_insertions_per_day,
+                                        seed=args.seed + 1000)
     logger.info(
         "测试场景数: %s, 每个 %s routine + %s×%s dynamic",
         len(scenarios),
@@ -1280,9 +1329,11 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         assignment_tag = "assign_on" if args.episode_assignment else "assign_off"
+        effective_eval_episodes = len(scenarios)
         run_name = args.run_name or (
             f"{args.experiment_tag}_sat{args.n_satellites}_"
-            f"iter{args.train_iters}_{assignment_tag}_seed{args.seed}"
+            f"iter{args.train_iters}_eval{effective_eval_episodes}_"
+            f"{assignment_tag}_seed{args.seed}"
         )
         out_dir = unique_dir(args.out_dir, safe_name(run_name))
         args.out_dir = str(out_dir)
@@ -1308,6 +1359,7 @@ def main():
                 "cfg": copy.deepcopy(cfg),
                 "mission_gen": copy.deepcopy(mission_gen),
                 "scenarios": copy.deepcopy(scenarios),
+                "train_scenarios": train_scenarios,
                 "args": args_dict,
             }
             for method_name in method_names
@@ -1331,6 +1383,7 @@ def main():
             logger.info(f"=== [{step_idx}/{step_total}] 单星 PPO ===")
             results["Single-PPO"] = run_single_ppo(
                 cfg, mission_gen, scenarios, args.train_iters, device,
+                train_scenarios=train_scenarios,
                 eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
             step_idx += 1
 
@@ -1338,6 +1391,7 @@ def main():
             logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
             results["Indep-PPO"] = run_multi(
                 cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
+                train_scenarios=train_scenarios,
                 method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir)
             step_idx += 1
 
@@ -1376,6 +1430,7 @@ def main():
                                          intent_broadcast=args.intent_broadcast,
                                          intent_replan_rounds=args.intent_replan_rounds,
                                          train_env_workers=args.train_env_workers,
+                                         train_scenarios=train_scenarios,
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
                                          viz_out_dir=viz_out_dir)

@@ -948,6 +948,7 @@ def summarize_run(tag, params, out_dir):
         "torch_num_threads",
         "vtw_time_step_s",
         "vtw_cache_dir",
+        "scenario_cache_dir",
         "max_action_dim",
         "candidate_action_top_k",
         "no_viz",
@@ -1199,6 +1200,8 @@ def main():
                         help="meta_encoder_v1 透传给 train.py 的 VTW 采样步长")
     parser.add_argument("--vtw_cache_dir", type=str, default=None,
                         help="普通消融透传给 compare_methods.py 的 VTW 磁盘缓存目录")
+    parser.add_argument("--scenario_cache_dir", type=str, default=None,
+                        help="普通消融透传给 compare_methods.py 的预生成场景缓存目录")
     parser.add_argument("--no_profile_timing", action="store_true",
                         help="meta_encoder_v1 关闭 train.py 阶段耗时 profile")
     parser.add_argument("--no_viz", action="store_true",
@@ -1395,6 +1398,7 @@ def main():
                 "torch_num_threads",
                 "vtw_time_step_s",
                 "vtw_cache_dir",
+                "scenario_cache_dir",
                 "candidate_action_top_k",
             ]:
                 value = getattr(args, arg_name)
