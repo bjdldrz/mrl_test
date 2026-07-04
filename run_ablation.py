@@ -858,9 +858,11 @@ def summarize_run(tag, params, out_dir):
         "rollout_steps",
         "ppo_epochs",
         "ppo_batch_size",
+        "train_env_workers",
         "eval_workers",
         "torch_num_threads",
         "vtw_time_step_s",
+        "vtw_cache_dir",
         "max_action_dim",
         "candidate_action_top_k",
         "no_viz",
@@ -1097,6 +1099,8 @@ def main():
                         help="透传给 train.py/compare_methods.py 的 PPO epoch 数")
     parser.add_argument("--ppo_batch_size", type=int, default=None,
                         help="透传给 train.py/compare_methods.py 的 PPO minibatch 大小")
+    parser.add_argument("--train_env_workers", type=int, default=None,
+                        help="透传给 compare_methods.py 的 MAPPO 训练 rollout 并行环境进程数")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
     parser.add_argument("--eval_workers", type=int, default=None,
@@ -1107,6 +1111,8 @@ def main():
                         help="meta_encoder_v1 透传给 train.py 的 checkpoint 间隔")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
                         help="meta_encoder_v1 透传给 train.py 的 VTW 采样步长")
+    parser.add_argument("--vtw_cache_dir", type=str, default=None,
+                        help="普通消融透传给 compare_methods.py 的 VTW 磁盘缓存目录")
     parser.add_argument("--no_profile_timing", action="store_true",
                         help="meta_encoder_v1 关闭 train.py 阶段耗时 profile")
     parser.add_argument("--no_viz", action="store_true",
@@ -1294,9 +1300,11 @@ def main():
                 "rollout_steps",
                 "ppo_epochs",
                 "ppo_batch_size",
+                "train_env_workers",
                 "eval_workers",
                 "torch_num_threads",
                 "vtw_time_step_s",
+                "vtw_cache_dir",
                 "candidate_action_top_k",
             ]:
                 value = getattr(args, arg_name)

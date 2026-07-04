@@ -11,12 +11,52 @@
 """
 
 import numpy as np
+import os
+import pickle
+import hashlib
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_GLOBAL_VTW_CACHE = {}
+
+
+def _vtw_disk_cache_path(cache_dir: str, key) -> str:
+    digest = hashlib.sha1(repr(key).encode("utf-8")).hexdigest()
+    return os.path.join(cache_dir, f"{digest}.pkl")
+
+
+def _load_vtw_disk_cache(key):
+    cache_dir = os.environ.get("MRL_DMS_VTW_CACHE_DIR", "").strip()
+    if not cache_dir:
+        return None
+    path = _vtw_disk_cache_path(cache_dir, key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
+def _save_vtw_disk_cache(key, windows):
+    cache_dir = os.environ.get("MRL_DMS_VTW_CACHE_DIR", "").strip()
+    if not cache_dir:
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        path = _vtw_disk_cache_path(cache_dir, key)
+        tmp_path = f"{path}.{os.getpid()}.tmp"
+        with open(tmp_path, "wb") as f:
+            pickle.dump(windows, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, path)
+    except Exception:
+        return
 
 try:
     from sgp4.api import Satrec, WGS84
@@ -111,6 +151,17 @@ class OrbitPropagator:
         # VTW 缓存: (lat_rounded, lon_rounded, horizon_s_int, step_int) → List[VTW]
         # 同一任务在内循环和评估中被 reset 两次，缓存后第二次直接返回
         self._vtw_cache: dict = {}
+        self._sat_cache_key = (
+            getattr(sat_config, "name", ""),
+            round(float(self.sma_km), 6),
+            round(float(self.ecc), 8),
+            round(float(self.inc_deg), 6),
+            round(float(self.raan_deg), 6),
+            round(float(self.argp_deg), 6),
+            round(float(self.ma_deg), 6),
+            round(float(self.max_roll_deg), 6),
+            round(float(self.fov_deg), 6),
+        )
 
     def _init_sgp4(self):
         """从轨道根数构造 SGP4 卫星对象"""
@@ -255,11 +306,23 @@ class OrbitPropagator:
                      int(horizon_seconds), int(time_step_s))
         if cache_key in self._vtw_cache:
             return self._vtw_cache[cache_key]
+        global_key = (self._sat_cache_key, *cache_key)
+        if global_key in _GLOBAL_VTW_CACHE:
+            windows = _GLOBAL_VTW_CACHE[global_key]
+            self._vtw_cache[cache_key] = windows
+            return windows
+        windows = _load_vtw_disk_cache(global_key)
+        if windows is not None:
+            self._vtw_cache[cache_key] = windows
+            _GLOBAL_VTW_CACHE[global_key] = windows
+            return windows
 
         target_ecef = self._geodetic_to_ecef(target_lat, target_lon)
         windows = self._compute_vtw_vectorized(target_ecef, horizon_seconds, time_step_s)
 
         self._vtw_cache[cache_key] = windows
+        _GLOBAL_VTW_CACHE[global_key] = windows
+        _save_vtw_disk_cache(global_key, windows)
         return windows
 
     def _compute_vtw_vectorized(

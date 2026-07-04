@@ -360,6 +360,83 @@ def _eval_multi_worker(args):
     return {"idx": idx, "metrics": env.get_metrics()}
 
 
+def _collect_multi_rollout_worker(args):
+    from envs.multi_satellite_env import MultiSatelliteEnv
+    from models.mappo import MAPPOActorCritic
+    from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
+
+    seed = int(args["seed"])
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.set_num_threads(1)
+
+    cfg = args["cfg"]
+    routine, dynamic = args["scenario"]
+    model_state = args["model_state"]
+    env_kwargs = args["env_kwargs"]
+    trainer_kwargs = args["trainer_kwargs"]
+    n_steps = int(args["rollout_steps"])
+    active_agent_ids = args.get("active_agent_ids")
+
+    n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
+    env = MultiSatelliteEnv(
+        satellite_configs=cfg.satellites[:n_sat],
+        max_action_dim=cfg.mission.max_action_dim,
+        reward_config=cfg.reward,
+        vtw_time_step_s=cfg.train.vtw_time_step_s,
+        **env_kwargs,
+    )
+    model = MAPPOActorCritic(
+        local_obs_dim=env.local_obs_dim,
+        action_dim=env.action_dim,
+        global_state_dim=env.global_state_dim,
+        actor_hidden_dims=cfg.network.hidden_layers,
+        critic_hidden_dims=cfg.mappo.critic_hidden_dims,
+    ).to("cpu")
+    model.load_state_dict(_numpy_state_to_torch(model_state))
+    trainer = MAPPOTrainer(
+        model,
+        lr=cfg.ppo.learning_rate,
+        gamma=cfg.ppo.discount_factor,
+        gae_lambda=cfg.ppo.gae_lambda,
+        clip_ratio=cfg.ppo.clip_ratio,
+        entropy_coeff=cfg.ppo.entropy_coeff,
+        value_loss_coeff=cfg.ppo.value_loss_coeff,
+        ppo_epochs=cfg.ppo.ppo_epochs,
+        batch_size=cfg.ppo.batch_size,
+        device="cpu",
+        **trainer_kwargs,
+    )
+
+    opts = {
+        "routine_missions": copy.deepcopy(routine),
+        "dynamic_schedule": copy.deepcopy(dynamic),
+    }
+    res = env.reset(options=opts)
+    cur_obs = {a: r[0] for a, r in res.items()}
+    cur_info = {a: r[1] for a, r in res.items()}
+    buf = MultiAgentRolloutBuffer()
+    buf.init_agents(active_agent_ids or env.agent_ids)
+    cur_obs, cur_info, total_reward = trainer.collect_rollout(
+        env,
+        buf,
+        n_steps,
+        cur_obs,
+        cur_info,
+        active_agent_ids=active_agent_ids,
+        joint_explore_prob=args["joint_explore_prob"],
+        intent_broadcast=args["intent_broadcast"],
+        intent_replan_rounds=args["intent_replan_rounds"],
+    )
+    return {
+        "idx": args["idx"],
+        "buffer": buf,
+        "last_global_state": env.get_global_state(),
+        "total_reward": total_reward,
+        "steps": len(buf),
+    }
+
+
 def _run_compare_method_worker(job):
     """Run one top-level comparison method in a separate process."""
     method_name = job["method_name"]
@@ -370,6 +447,8 @@ def _run_compare_method_worker(job):
     out_dir = Path(args["out_dir"])
     device = torch.device(args["device"])
     viz_out_dir = None if args.get("no_viz", False) else out_dir
+    if args.get("vtw_cache_dir"):
+        os.environ["MRL_DMS_VTW_CACHE_DIR"] = str(args["vtw_cache_dir"])
     _configure_torch_threads(args.get("torch_num_threads"))
 
     # Each method process gets a deterministic but separate RNG stream.
@@ -423,6 +502,7 @@ def _run_compare_method_worker(job):
             joint_explore_prob=args["joint_explore_prob"],
             intent_broadcast=args["intent_broadcast"],
             intent_replan_rounds=args["intent_replan_rounds"],
+            train_env_workers=args["train_env_workers"],
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir)
@@ -642,6 +722,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               joint_explore_prob=0.0,
               intent_broadcast=False,
               intent_replan_rounds=1,
+              train_env_workers: int = 1,
               method_name="MAPPO",
               eval_workers: int = 1,
               viz_out_dir: Path = None):
@@ -697,6 +778,38 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         normalize_agent_rewards=(coordinate and normalize_agent_rewards),
     )
 
+    env_kwargs = {
+        "coordinate": coordinate,
+        "episode_assignment": (coordinate and episode_assignment),
+        "assign_w_load": assign_w_load,
+        "assignment_capacity_mode": assignment_capacity_mode,
+        "release_before_deadline_s": release_before_deadline_s,
+        "assignment_scorer": assignment_scorer if coordinate else "heuristic",
+        "assignment_scorer_mix": assignment_scorer_mix,
+        "assignment_context_encoder": assignment_context_encoder,
+        "assignment_context_weight": assignment_context_weight,
+        "assignment_mlp_hidden_dim": assignment_mlp_hidden_dim,
+        "assignment_mlp_seed": assignment_mlp_seed,
+        "assignment_sequence_hidden_dim": assignment_sequence_hidden_dim,
+        "assignment_replan_interval_s": assignment_replan_interval_s if coordinate else 0.0,
+        "assignment_replan_horizon_s": assignment_replan_horizon_s if coordinate else 0.0,
+        "assignment_replan_trigger": assignment_replan_trigger if coordinate else "none",
+        "assignment_switch_penalty": assignment_switch_penalty,
+        "assignment_lock_window_s": assignment_lock_window_s,
+        "assignment_max_switches_per_task": assignment_max_switches_per_task,
+        "assignment_manager_mode": assignment_manager_mode if coordinate else "none",
+        "team_reward_mix": team_reward_mix if coordinate else 0.0,
+        "load_balance_reward_coeff": load_balance_reward_coeff if coordinate else 0.0,
+        "team_completion_bonus": team_completion_bonus if coordinate else 0.0,
+        "global_state_mode": global_state_mode if coordinate else "mean",
+        "global_state_task_stats": (coordinate and global_state_task_stats),
+        "candidate_action_top_k": candidate_action_top_k,
+    }
+    trainer_kwargs = {
+        "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
+    }
+    train_env_workers = max(1, int(train_env_workers or 1))
+
     for it in range(train_iters):
         active_agent_ids = None
         if coordinate and satellite_curriculum:
@@ -710,58 +823,70 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                 active_n = max(min_sat, min(n_sat, active_n))
             active_agent_ids = env.agent_ids[:active_n]
 
-        routine, dynamic = mission_gen.generate_episode_missions(
-            n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
-            n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
-            n_insertions=cfg.mission.dynamic_insertions_per_day,
-        )
-        opts = {"routine_missions": copy.deepcopy(routine),
-                "dynamic_schedule": copy.deepcopy(dynamic)}
-        res = env.reset(options=opts)
-        cur_obs = {a: r[0] for a, r in res.items()}
-        cur_info = {a: r[1] for a, r in res.items()}
-        buf = MultiAgentRolloutBuffer()
-        buf.init_agents(active_agent_ids or env.agent_ids)
-        cur_obs, cur_info, _ = trainer.collect_rollout(
-            env, buf, cfg.meta.rollout_steps, cur_obs, cur_info,
-            active_agent_ids=active_agent_ids,
-            joint_explore_prob=(joint_explore_prob if coordinate else 0.0),
-            intent_broadcast=(coordinate and intent_broadcast),
-            intent_replan_rounds=intent_replan_rounds)
-        trainer.update(buf, env.get_global_state())
+        n_workers = min(train_env_workers, max(int(cfg.meta.rollout_steps), 1))
+        if n_workers > 1:
+            step_counts = [cfg.meta.rollout_steps // n_workers] * n_workers
+            for wi in range(cfg.meta.rollout_steps % n_workers):
+                step_counts[wi] += 1
+            model_state_np = _torch_state_to_numpy(model.state_dict())
+            task_args = []
+            for wi, worker_steps in enumerate(step_counts):
+                routine, dynamic = mission_gen.generate_episode_missions(
+                    n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
+                    n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
+                    n_insertions=cfg.mission.dynamic_insertions_per_day,
+                )
+                task_args.append({
+                    "idx": wi,
+                    "cfg": copy.deepcopy(cfg),
+                    "scenario": (routine, dynamic),
+                    "model_state": model_state_np,
+                    "env_kwargs": env_kwargs,
+                    "trainer_kwargs": trainer_kwargs,
+                    "rollout_steps": worker_steps,
+                    "active_agent_ids": active_agent_ids,
+                    "joint_explore_prob": joint_explore_prob if coordinate else 0.0,
+                    "intent_broadcast": (coordinate and intent_broadcast),
+                    "intent_replan_rounds": intent_replan_rounds,
+                    "seed": int(np.random.randint(0, 2**31 - 1)),
+                })
+            logger.info(
+                "%s 训练并行 rollout: iter=%s/%s, train_env_workers=%s, steps=%s",
+                method_name,
+                it + 1,
+                train_iters,
+                n_workers,
+                step_counts,
+            )
+            with get_context("spawn").Pool(processes=n_workers) as pool:
+                worker_results = pool.map(_collect_multi_rollout_worker, task_args)
+            worker_results = sorted(worker_results, key=lambda r: r["idx"])
+            buffers = [r["buffer"] for r in worker_results]
+            last_states = [r["last_global_state"] for r in worker_results]
+            trainer.update_many(buffers, last_states)
+        else:
+            routine, dynamic = mission_gen.generate_episode_missions(
+                n_routine=int(np.random.choice(cfg.mission.routine_pool_sizes)),
+                n_dynamic_per_insertion=int(np.random.choice(cfg.mission.dynamic_pool_sizes)),
+                n_insertions=cfg.mission.dynamic_insertions_per_day,
+            )
+            opts = {"routine_missions": copy.deepcopy(routine),
+                    "dynamic_schedule": copy.deepcopy(dynamic)}
+            res = env.reset(options=opts)
+            cur_obs = {a: r[0] for a, r in res.items()}
+            cur_info = {a: r[1] for a, r in res.items()}
+            buf = MultiAgentRolloutBuffer()
+            buf.init_agents(active_agent_ids or env.agent_ids)
+            cur_obs, cur_info, _ = trainer.collect_rollout(
+                env, buf, cfg.meta.rollout_steps, cur_obs, cur_info,
+                active_agent_ids=active_agent_ids,
+                joint_explore_prob=(joint_explore_prob if coordinate else 0.0),
+                intent_broadcast=(coordinate and intent_broadcast),
+                intent_replan_rounds=intent_replan_rounds)
+            trainer.update(buf, env.get_global_state())
 
     # 评估
     if eval_workers > 1:
-        env_kwargs = {
-            "coordinate": coordinate,
-            "episode_assignment": (coordinate and episode_assignment),
-            "assign_w_load": assign_w_load,
-            "assignment_capacity_mode": assignment_capacity_mode,
-            "release_before_deadline_s": release_before_deadline_s,
-            "assignment_scorer": assignment_scorer if coordinate else "heuristic",
-            "assignment_scorer_mix": assignment_scorer_mix,
-            "assignment_context_encoder": assignment_context_encoder,
-            "assignment_context_weight": assignment_context_weight,
-            "assignment_mlp_hidden_dim": assignment_mlp_hidden_dim,
-            "assignment_mlp_seed": assignment_mlp_seed,
-            "assignment_sequence_hidden_dim": assignment_sequence_hidden_dim,
-            "assignment_replan_interval_s": assignment_replan_interval_s if coordinate else 0.0,
-            "assignment_replan_horizon_s": assignment_replan_horizon_s if coordinate else 0.0,
-            "assignment_replan_trigger": assignment_replan_trigger if coordinate else "none",
-            "assignment_switch_penalty": assignment_switch_penalty,
-            "assignment_lock_window_s": assignment_lock_window_s,
-            "assignment_max_switches_per_task": assignment_max_switches_per_task,
-            "assignment_manager_mode": assignment_manager_mode if coordinate else "none",
-            "team_reward_mix": team_reward_mix if coordinate else 0.0,
-            "load_balance_reward_coeff": load_balance_reward_coeff if coordinate else 0.0,
-            "team_completion_bonus": team_completion_bonus if coordinate else 0.0,
-            "global_state_mode": global_state_mode if coordinate else "mean",
-            "global_state_task_stats": (coordinate and global_state_task_stats),
-            "candidate_action_top_k": candidate_action_top_k,
-        }
-        trainer_kwargs = {
-            "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
-        }
         task_args = [
             {
                 "idx": ep_idx,
@@ -943,6 +1068,8 @@ def main():
     parser.add_argument("--eval_episodes", type=int, default=5)
     parser.add_argument("--eval_workers", type=int, default=1,
                         help="评估 episode 并行 worker 数; 1 为串行")
+    parser.add_argument("--train_env_workers", type=int, default=1,
+                        help="MAPPO 训练 rollout 并行环境进程数; 1 为旧版串行采样")
     parser.add_argument("--torch_num_threads", type=int, default=None,
                         help="单个训练进程内 PyTorch CPU 线程数; 默认沿用环境设置")
     parser.add_argument("--n_routine", type=int, default=200)
@@ -961,6 +1088,8 @@ def main():
                         help="覆盖 PPO/MAPPO update minibatch 大小")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
                         help="覆盖 VTW 采样步长; 越小越精确但 CPU 更重")
+    parser.add_argument("--vtw_cache_dir", type=str, default=None,
+                        help="VTW 磁盘缓存目录; 为空则只使用进程内缓存")
     parser.add_argument("--methods", type=str, default="single,indep,mappo",
                         help="逗号分隔选择运行方法: single,indep,mappo,oracle,all; "
                              "默认运行 Single-PPO/Indep-PPO/MAPPO")
@@ -1049,6 +1178,10 @@ def main():
     method_names = parse_methods(args.methods, run_oracle=args.run_oracle)
     args.methods = ",".join(method_names)
     _configure_torch_threads(args.torch_num_threads)
+    if args.vtw_cache_dir:
+        os.environ["MRL_DMS_VTW_CACHE_DIR"] = args.vtw_cache_dir
+        Path(args.vtw_cache_dir).mkdir(parents=True, exist_ok=True)
+        logger.info("VTW 磁盘缓存: %s", args.vtw_cache_dir)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -1089,11 +1222,13 @@ def main():
     )
     logger.info(
         "训练配置: train_iters=%s, rollout_steps=%s, ppo_epochs=%s, "
-        "ppo_batch_size=%s, eval_workers=%s, vtw_time_step_s=%s, device=%s",
+        "ppo_batch_size=%s, train_env_workers=%s, eval_workers=%s, "
+        "vtw_time_step_s=%s, device=%s",
         args.train_iters,
         cfg.meta.rollout_steps,
         cfg.ppo.ppo_epochs,
         cfg.ppo.batch_size,
+        args.train_env_workers,
         args.eval_workers,
         cfg.train.vtw_time_step_s,
         device,
@@ -1240,6 +1375,7 @@ def main():
                                          joint_explore_prob=args.joint_explore_prob,
                                          intent_broadcast=args.intent_broadcast,
                                          intent_replan_rounds=args.intent_replan_rounds,
+                                         train_env_workers=args.train_env_workers,
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
                                          viz_out_dir=viz_out_dir)

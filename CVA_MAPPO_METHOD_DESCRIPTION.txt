@@ -264,10 +264,13 @@ owner 分配提供稳定分工,rolling reallocation、deadline release 和 stale
 
 5. 并行环境 rollout 与 GPU 批量训练
 
-目前主要瓶颈仍在环境 rollout、VTW 计算和 action mask 构建。未来可以进一步:
+目前主要瓶颈仍在环境 rollout、VTW 计算和 action mask 构建。当前代码已经加入基础版 VTW 磁盘缓存和 MAPPO 训练 rollout 并行接口:
 
-- 并行化训练环境;
-- 缓存或预计算 VTW;
+- `--vtw_cache_dir`:跨进程复用已计算过的卫星-目标可见时间窗口;
+- `--train_env_workers`:将单个 MAPPO 训练迭代的 rollout 拆到多个环境进程中并行采样,再由主进程合并 buffer 统一更新。
+
+未来还可以进一步:
+
 - 批量化 action mask;
 - 使用向量化环境提升 CPU 利用率。
 

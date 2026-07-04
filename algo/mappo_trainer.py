@@ -419,26 +419,27 @@ class MAPPOTrainer:
         buffer: MultiAgentRolloutBuffer,
         last_global_state: np.ndarray,
     ) -> Dict[str, float]:
+        return self.update_many([buffer], [last_global_state])
+
+    def update_many(
+        self,
+        buffers: List[MultiAgentRolloutBuffer],
+        last_global_states: List[np.ndarray],
+    ) -> Dict[str, float]:
         """
         MAPPO 更新：聚合所有智能体的经验。
 
         关键区别: GAE 使用集中式 Critic 的价值，
         但策略梯度来自每个智能体的局部动作/观测。
         """
-        agent_ids = list(buffer.local_obs.keys())
-        n_steps = len(buffer)
+        valid = [
+            (buffer, last_global_state)
+            for buffer, last_global_state in zip(buffers, last_global_states)
+            if len(buffer) > 0
+        ]
 
-        if n_steps == 0:
+        if not valid:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
-
-        # 全局数据
-        global_states = np.array(buffer.global_states, dtype=np.float32)
-        values = np.array(buffer.values, dtype=np.float32)
-
-        # 用集中式 Critic 计算最后一步的价值
-        with torch.no_grad():
-            gs_t = torch.FloatTensor(last_global_state).unsqueeze(0).to(self.device)
-            last_value = self.model.get_values(gs_t).cpu().item()
 
         # 聚合所有智能体的经验，用共享的全局价值计算 GAE
         all_obs = []
@@ -449,23 +450,33 @@ class MAPPOTrainer:
         all_returns = []
         all_global_states = []
 
-        for aid in agent_ids:
-            rewards = np.array(buffer.rewards[aid], dtype=np.float32)
-            dones = np.array(buffer.dones[aid], dtype=np.float32)
-            if self.normalize_agent_rewards and rewards.size > 1:
-                rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        for buffer, last_global_state in valid:
+            agent_ids = list(buffer.local_obs.keys())
+            global_states = np.array(buffer.global_states, dtype=np.float32)
+            values = np.array(buffer.values, dtype=np.float32)
 
-            # 所有智能体共享同一 Critic 价值
-            advantages, returns = self.compute_gae(rewards, values, dones, last_value)
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # 每条并行 rollout 有自己的 bootstrap 状态,不能共用一个 last_value。
+            with torch.no_grad():
+                gs_t = torch.FloatTensor(last_global_state).unsqueeze(0).to(self.device)
+                last_value = self.model.get_values(gs_t).cpu().item()
 
-            all_obs.append(np.array(buffer.local_obs[aid], dtype=np.float32))
-            all_actions.append(np.array(buffer.actions[aid], dtype=np.int64))
-            all_old_lps.append(np.array(buffer.log_probs[aid], dtype=np.float32))
-            all_masks.append(np.array(buffer.action_masks[aid], dtype=np.float32))
-            all_advantages.append(advantages)
-            all_returns.append(returns)
-            all_global_states.append(global_states)
+            for aid in agent_ids:
+                rewards = np.array(buffer.rewards[aid], dtype=np.float32)
+                dones = np.array(buffer.dones[aid], dtype=np.float32)
+                if self.normalize_agent_rewards and rewards.size > 1:
+                    rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+
+                # 所有智能体共享同一 Critic 价值
+                advantages, returns = self.compute_gae(rewards, values, dones, last_value)
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                all_obs.append(np.array(buffer.local_obs[aid], dtype=np.float32))
+                all_actions.append(np.array(buffer.actions[aid], dtype=np.int64))
+                all_old_lps.append(np.array(buffer.log_probs[aid], dtype=np.float32))
+                all_masks.append(np.array(buffer.action_masks[aid], dtype=np.float32))
+                all_advantages.append(advantages)
+                all_returns.append(returns)
+                all_global_states.append(global_states)
 
         # 拼接所有智能体的数据 (参数共享 → 所有智能体的梯度叠加)
         obs_all = torch.FloatTensor(np.concatenate(all_obs)).to(self.device)
