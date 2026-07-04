@@ -56,6 +56,10 @@ except ImportError:
 
 
 def _build_v2_config(args) -> CVAMAPPOV2Config:
+    triggers = tuple(
+        x for x in args.assignment_replan_trigger.split(",")
+        if x and x.lower() != "none"
+    )
     cfg = CVAMAPPOV2Config(
         slots=CandidateSlotConfig(
             routine_slots=args.routine_slots,
@@ -74,7 +78,15 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         release_before_deadline_s=args.release_before_deadline_s,
         lock_window_s=args.assignment_lock_window_s,
         max_switches_per_task=args.assignment_max_switches_per_task,
-        triggers=tuple(x for x in args.assignment_replan_trigger.split(",") if x),
+        triggers=triggers,
+        w_quality=args.w_quality,
+        w_priority=args.w_priority,
+        w_deadline=args.w_deadline,
+        w_dynamic=args.w_dynamic,
+        w_scarcity=args.w_scarcity,
+        w_future_opportunity_loss=args.w_future_opportunity_loss,
+        w_load=args.w_load,
+        w_owner_stability=args.w_owner_stability,
     )
     cfg.validate()
     return cfg
@@ -99,6 +111,7 @@ def _eval_worker(payload):
     v2_cfg = payload["v2_cfg"]
     routine, dynamic = payload["scenario"]
     model_state = payload["model_state"]
+    eval_device = torch.device(payload.get("eval_device", "cpu"))
 
     env = _make_env(cfg, args, v2_cfg)
     model = MAPPOActorCritic(
@@ -107,7 +120,7 @@ def _eval_worker(payload):
         global_state_dim=env.global_state_dim,
         actor_hidden_dims=cfg.network.hidden_layers,
         critic_hidden_dims=cfg.mappo.critic_hidden_dims,
-    ).to("cpu")
+    ).to(eval_device)
     model.load_state_dict(_numpy_state_to_torch(model_state))
     trainer = MAPPOTrainer(
         model,
@@ -119,7 +132,7 @@ def _eval_worker(payload):
         value_loss_coeff=cfg.ppo.value_loss_coeff,
         ppo_epochs=cfg.ppo.ppo_epochs,
         batch_size=cfg.ppo.batch_size,
-        device="cpu",
+        device=str(eval_device),
     )
 
     env.set_eval_mode(True)
@@ -145,6 +158,15 @@ def _parallel_eval(cfg, args, v2_cfg, model, scenarios, show_progress=True):
     from multiprocessing import get_context
 
     n_workers = max(1, min(args.eval_workers, len(scenarios)))
+    eval_device = args.eval_device
+    if eval_device == "same":
+        eval_device = args.device
+    if str(eval_device) != "cpu" and n_workers > 1:
+        print(
+            f"评估设备为 {eval_device}; 单卡 GPU 评估将 eval_workers 从 {n_workers} 降为 1, "
+            "避免多个进程抢占同一张 GPU。"
+        )
+        n_workers = 1
     model_state = _torch_state_to_numpy(model.state_dict())
     payloads = [
         {
@@ -154,6 +176,7 @@ def _parallel_eval(cfg, args, v2_cfg, model, scenarios, show_progress=True):
             "v2_cfg": copy.deepcopy(v2_cfg),
             "scenario": scenario,
             "model_state": model_state,
+            "eval_device": eval_device,
         }
         for idx, scenario in enumerate(scenarios)
     ]
@@ -311,6 +334,8 @@ def main():
     parser.add_argument("--train_iters", type=int, default=30)
     parser.add_argument("--eval_episodes", type=int, default=8)
     parser.add_argument("--eval_workers", type=int, default=4)
+    parser.add_argument("--eval_device", type=str, default="same",
+                        help="评估设备: cpu 使用多进程 CPU 并行; cuda:0/same 使用单 GPU 串行评估")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
@@ -330,6 +355,14 @@ def main():
     parser.add_argument("--stale_candidate_owners", type=int, default=3)
     parser.add_argument("--capacity_slack_ratio", type=float, default=0.05)
     parser.add_argument("--cva_load_penalty", type=float, default=0.15)
+    parser.add_argument("--w_quality", type=float, default=0.42)
+    parser.add_argument("--w_priority", type=float, default=0.18)
+    parser.add_argument("--w_deadline", type=float, default=0.14)
+    parser.add_argument("--w_dynamic", type=float, default=0.10)
+    parser.add_argument("--w_scarcity", type=float, default=0.10)
+    parser.add_argument("--w_future_opportunity_loss", type=float, default=0.08)
+    parser.add_argument("--w_load", type=float, default=0.16)
+    parser.add_argument("--w_owner_stability", type=float, default=0.04)
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0)
     parser.add_argument("--assignment_replan_interval_s", type=float, default=3600.0)
     parser.add_argument("--assignment_replan_horizon_s", type=float, default=7200.0)
@@ -403,6 +436,19 @@ def main():
             "dynamic_candidate_owners": v2_cfg.dynamic_candidate_owners,
             "urgent_candidate_owners": v2_cfg.urgent_candidate_owners,
             "stale_candidate_owners": v2_cfg.stale_candidate_owners,
+            "capacity_slack_ratio": v2_cfg.capacity_slack_ratio,
+            "load_penalty": v2_cfg.load_penalty,
+            "score_weights": {
+                "w_quality": v2_cfg.w_quality,
+                "w_priority": v2_cfg.w_priority,
+                "w_deadline": v2_cfg.w_deadline,
+                "w_dynamic": v2_cfg.w_dynamic,
+                "w_scarcity": v2_cfg.w_scarcity,
+                "w_future_opportunity_loss": v2_cfg.w_future_opportunity_loss,
+                "w_load": v2_cfg.w_load,
+                "w_owner_stability": v2_cfg.w_owner_stability,
+            },
+            "triggers": list(v2_cfg.triggers),
         },
         "git": _git_metadata(),
         "results": results,

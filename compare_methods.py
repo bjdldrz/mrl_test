@@ -263,6 +263,7 @@ def _eval_single_worker(args):
     cfg = args["cfg"]
     routine, dynamic = args["scenario"]
     model_state = args["model_state"]
+    eval_device = torch.device(args.get("eval_device", "cpu"))
 
     sat = cfg.satellites[0]
     env = SatelliteSchedulingEnv(
@@ -275,7 +276,7 @@ def _eval_single_worker(args):
     act_dim = env.action_space.n
     model = ActorCritic(
         obs_dim, act_dim, cfg.network.hidden_layers, cfg.network.activation
-    ).to("cpu")
+    ).to(eval_device)
     model.load_state_dict(_numpy_state_to_torch(model_state))
 
     opts = {
@@ -291,8 +292,8 @@ def _eval_single_worker(args):
         mask = info.get("action_mask", np.ones(act_dim))
         with torch.no_grad():
             a, _, _, _ = model.get_action_and_value(
-                torch.FloatTensor(obs).unsqueeze(0),
-                torch.FloatTensor(mask).unsqueeze(0),
+                torch.FloatTensor(obs).unsqueeze(0).to(eval_device),
+                torch.FloatTensor(mask).unsqueeze(0).to(eval_device),
             )
         obs, _, term, trunc, info = env.step(a.cpu().item())
         done = term or trunc
@@ -310,6 +311,7 @@ def _eval_multi_worker(args):
     model_state = args["model_state"]
     env_kwargs = args["env_kwargs"]
     trainer_kwargs = args["trainer_kwargs"]
+    eval_device = torch.device(args.get("eval_device", "cpu"))
 
     n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
     env = MultiSatelliteEnv(
@@ -325,7 +327,7 @@ def _eval_multi_worker(args):
         global_state_dim=env.global_state_dim,
         actor_hidden_dims=cfg.network.hidden_layers,
         critic_hidden_dims=cfg.mappo.critic_hidden_dims,
-    ).to("cpu")
+    ).to(eval_device)
     model.load_state_dict(_numpy_state_to_torch(model_state))
     trainer = MAPPOTrainer(
         model,
@@ -337,7 +339,7 @@ def _eval_multi_worker(args):
         value_loss_coeff=cfg.ppo.value_loss_coeff,
         ppo_epochs=cfg.ppo.ppo_epochs,
         batch_size=cfg.ppo.batch_size,
-        device="cpu",
+        device=str(eval_device),
         **trainer_kwargs,
     )
 
@@ -469,7 +471,8 @@ def _run_compare_method_worker(job):
             cfg, mission_gen, scenarios, args["train_iters"], device,
             train_scenarios=train_scenarios,
             eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
-            show_progress=not args.get("no_progress", False))
+            show_progress=not args.get("no_progress", False),
+            eval_device=args.get("eval_device", "same"))
     elif method_name == "Indep-PPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -478,7 +481,8 @@ def _run_compare_method_worker(job):
             method_name="Indep-PPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
-            show_progress=not args.get("no_progress", False))
+            show_progress=not args.get("no_progress", False),
+            eval_device=args.get("eval_device", "same"))
     elif method_name == "MAPPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -519,7 +523,8 @@ def _run_compare_method_worker(job):
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
-            show_progress=not args.get("no_progress", False))
+            show_progress=not args.get("no_progress", False),
+            eval_device=args.get("eval_device", "same"))
     elif method_name == "Greedy-Oracle":
         metrics = run_greedy_oracle(
             cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
@@ -617,7 +622,8 @@ def _save_multi_viz_data(env, out_dir: Path, method_name: str):
 def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                    train_scenarios=None,
                    eval_workers: int = 1, viz_out_dir: Path = None,
-                   show_progress: bool = True):
+                   show_progress: bool = True,
+                   eval_device: str = "same"):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
     from algo.ppo import PPOTrainer, RolloutBuffer
@@ -671,21 +677,36 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
             loss=f"{metrics.get('policy_loss', 0.0):.3f}",
         )
 
-    # 评估
-    if eval_workers > 1:
+    # 评估。单卡 GPU 不适合多个评估进程同时抢占, CPU 评估才使用 eval_workers。
+    eval_device_obj = device if eval_device == "same" else torch.device(eval_device)
+    effective_eval_workers = int(eval_workers)
+    if str(eval_device_obj) != "cpu" and effective_eval_workers > 1:
+        logger.warning(
+            "%s 评估设备为 %s, eval_workers=%s 将降为 1 以避免多个进程抢占同一张 GPU",
+            "Single-PPO",
+            eval_device_obj,
+            effective_eval_workers,
+        )
+        effective_eval_workers = 1
+    if eval_device_obj != device:
+        model.to(eval_device_obj)
+        ppo.device = eval_device_obj
+
+    if effective_eval_workers > 1:
         task_args = [
             {
                 "idx": ep_idx,
                 "cfg": cfg,
                 "scenario": scenario,
                 "model_state": _torch_state_to_numpy(model.state_dict()),
+                "eval_device": str(eval_device_obj),
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
         avg = _parallel_eval(
             _eval_single_worker,
             task_args,
-            eval_workers,
+            effective_eval_workers,
             "Single-PPO",
             show_progress=show_progress,
         )
@@ -704,8 +725,8 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                     mask = info.get("action_mask", np.ones(act_dim))
                     with torch.no_grad():
                         a, _, _, _ = model.get_action_and_value(
-                            torch.FloatTensor(obs).unsqueeze(0).to(device),
-                            torch.FloatTensor(mask).unsqueeze(0).to(device))
+                            torch.FloatTensor(obs).unsqueeze(0).to(eval_device_obj),
+                            torch.FloatTensor(mask).unsqueeze(0).to(eval_device_obj))
                     obs, _, term, trunc, info = env.step(a.cpu().item())
                     done = term or trunc
                 _save_single_viz_data(env, viz_out_dir, "Single-PPO")
@@ -730,8 +751,8 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
             mask = info.get("action_mask", np.ones(act_dim))
             with torch.no_grad():
                 a, _, _, _ = model.get_action_and_value(
-                    torch.FloatTensor(obs).unsqueeze(0).to(device),
-                    torch.FloatTensor(mask).unsqueeze(0).to(device))
+                    torch.FloatTensor(obs).unsqueeze(0).to(eval_device_obj),
+                    torch.FloatTensor(mask).unsqueeze(0).to(eval_device_obj))
             obs, r, term, trunc, info = env.step(a.cpu().item())
             done = term or trunc
         metrics_list.append(env.get_metrics())
@@ -779,7 +800,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               method_name="MAPPO",
               eval_workers: int = 1,
               viz_out_dir: Path = None,
-              show_progress: bool = True):
+              show_progress: bool = True,
+              eval_device: str = "same"):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -962,8 +984,22 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             vloss=f"{metrics.get('value_loss', 0.0):.3f}",
         )
 
-    # 评估
-    if eval_workers > 1:
+    # 评估。单卡 GPU 不适合多个评估进程同时抢占, CPU 评估才使用 eval_workers。
+    eval_device_obj = device if eval_device == "same" else torch.device(eval_device)
+    effective_eval_workers = int(eval_workers)
+    if str(eval_device_obj) != "cpu" and effective_eval_workers > 1:
+        logger.warning(
+            "%s 评估设备为 %s, eval_workers=%s 将降为 1 以避免多个进程抢占同一张 GPU",
+            method_name,
+            eval_device_obj,
+            effective_eval_workers,
+        )
+        effective_eval_workers = 1
+    if eval_device_obj != device:
+        model.to(eval_device_obj)
+        trainer.device = eval_device_obj
+
+    if effective_eval_workers > 1:
         task_args = [
             {
                 "idx": ep_idx,
@@ -974,13 +1010,14 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                 "trainer_kwargs": trainer_kwargs,
                 "intent_broadcast": (coordinate and intent_broadcast),
                 "intent_replan_rounds": intent_replan_rounds,
+                "eval_device": str(eval_device_obj),
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
         avg = _parallel_eval(
             _eval_multi_worker,
             task_args,
-            eval_workers,
+            effective_eval_workers,
             method_name,
             show_progress=show_progress,
         )
@@ -1175,6 +1212,8 @@ def main():
     parser.add_argument("--eval_episodes", type=int, default=5)
     parser.add_argument("--eval_workers", type=int, default=1,
                         help="评估 episode 并行 worker 数; 1 为串行")
+    parser.add_argument("--eval_device", type=str, default="same",
+                        help="评估设备: same=沿用 --device; cpu=CPU 多进程评估; cuda:0=单 GPU 评估")
     parser.add_argument("--train_env_workers", type=int, default=1,
                         help="MAPPO 训练 rollout 并行环境进程数; 1 为旧版串行采样")
     parser.add_argument("--torch_num_threads", type=int, default=None,
@@ -1334,7 +1373,7 @@ def main():
     logger.info(
         "训练配置: train_iters=%s, rollout_steps=%s, ppo_epochs=%s, "
         "ppo_batch_size=%s, train_env_workers=%s, eval_workers=%s, "
-        "vtw_time_step_s=%s, device=%s",
+        "vtw_time_step_s=%s, device=%s, eval_device=%s",
         args.train_iters,
         cfg.meta.rollout_steps,
         cfg.ppo.ppo_epochs,
@@ -1343,6 +1382,7 @@ def main():
         args.eval_workers,
         cfg.train.vtw_time_step_s,
         device,
+        args.eval_device,
     )
     logger.info(
         "任务分配: scorer=%s, mix=%s, context_encoder=%s, context_weight=%s, "
@@ -1467,7 +1507,8 @@ def main():
                 cfg, mission_gen, scenarios, args.train_iters, device,
                 train_scenarios=train_scenarios,
                 eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
-                show_progress=not args.no_progress)
+                show_progress=not args.no_progress,
+                eval_device=args.eval_device)
             step_idx += 1
 
         if "Indep-PPO" in method_names:
@@ -1476,7 +1517,8 @@ def main():
                 cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
                 train_scenarios=train_scenarios,
                 method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
-                show_progress=not args.no_progress)
+                show_progress=not args.no_progress,
+                eval_device=args.eval_device)
             step_idx += 1
 
         if "MAPPO" in method_names:
@@ -1518,7 +1560,8 @@ def main():
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
                                          viz_out_dir=viz_out_dir,
-                                         show_progress=not args.no_progress)
+                                         show_progress=not args.no_progress,
+                                         eval_device=args.eval_device)
             step_idx += 1
 
         if "Greedy-Oracle" in method_names:
