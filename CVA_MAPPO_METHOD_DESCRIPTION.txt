@@ -126,6 +126,15 @@ Top-K 候选集的构造方式是:
 - 相比 Indep-PPO,CVA-MAPPO 能显著降低重复观测率;
 - 相比 Vanilla MAPPO,CVA-MAPPO 在大规模压力场景下有更好的调度效率、动态响应和负载均衡。
 
+同时需要加入 owner 预分配效果对比:
+
+- no-owner independent PPO:各卫星分开执行,最后统一统计,没有 owner 预分配,用于暴露重复观测和资源浪费;
+- no-owner MAPPO:使用低层 MAPPO 协同,但不使用 owner 预分配,用于区分低层协同和高层 owner 的贡献;
+- owner heuristic static:使用静态 owner 分配,验证预分配本身能否降低重复观测;
+- owner CVA rolling:最终方案,验证价值感知 owner 和滚动修复是否进一步提升动态任务表现。
+
+该对比用于证明:预先分配任务 owner 可以给多星系统提供稳定的任务责任边界,从源头降低重复观测率,避免多颗卫星围绕同一高价值任务重复消耗资源。
+
 2. 候选动作空间消融
 
 对比:

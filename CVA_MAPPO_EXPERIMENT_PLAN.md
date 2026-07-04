@@ -29,9 +29,10 @@ score(satellite, task)
 | A3 | CVA-MAPPO 完整三方案对比 | 得到最终方法与 Single/Indep 的同表对比 | `runs/compare_cva_mappo_stress` |
 | A4 | CVA 主消融 | 验证 rolling、CVA scorer、上下文 encoder 的贡献 | `runs/ablation_cva_assignment_v1_stress` |
 | A5 | 候选动作空间消融 | 验证 Top-K 分层动作空间是否提升扩展性 | `runs/ablation_candidate_action_v1_stress` |
-| A6 | CVA 参数消融 | 验证 mix/context weight 是否稳健 | `runs/ablation_cva_mix_v1_stress` |
+| A6 | Owner 预分配效果消融 | 验证预分配是否降低重复观测和资源浪费 | `runs/ablation_owner_effect_v1_stress` |
+| A7 | CVA 参数消融 | 验证 mix/context weight 是否稳健 | `runs/ablation_cva_mix_v1_stress` |
 
-建议先跑 A0、A1,确认无报错后再跑 A2-A6。
+建议先跑 A0、A1,确认无报错后再跑 A2-A7。
 
 ---
 
@@ -360,11 +361,60 @@ python run_ablation.py \
 
 ---
 
-## 9. A6: CVA 参数消融
+## 9. A6: Owner 预分配效果消融
+
+目的:单独验证 owner 预分配是否能降低重复观测率,避免多颗卫星在没有任务归属约束时重复消耗资源。
+
+对比项:
+
+- `no_owner_indep_ppo`:无 owner、各星独立执行、统一评估,最能暴露重复观测。
+- `no_owner_mappo`:无 owner,但使用 MAPPO 协同和冲突处理,用于区分低层协同与高层 owner 的作用。
+- `owner_heuristic_static`:静态 owner 分配。
+- `owner_cva_lstm_rolling`:最终 CVA rolling owner 分配。
+
+命令:
+
+```bash
+python run_ablation.py \
+  --python python \
+  --preset owner_effect_v1 \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 8 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --out_root runs/ablation_owner_effect_v1_stress \
+  --device cpu \
+  --jobs 2 \
+  --eval_workers 4 \
+  --train_env_workers 2 \
+  --torch_num_threads 2 \
+  --vtw_cache_dir runs/vtw_cache \
+  --candidate_action_top_k 128 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --vtw_time_step_s 60 \
+  --resume_latest \
+  --no_viz \
+  --skip_existing
+```
+
+判断标准:
+
+- `no_owner_indep_ppo` 的 `duplicate_rate` 和 `n_duplicates` 应显著高于 owner 分配方案。
+- `owner_heuristic_static` 相比 no-owner 应明显降低重复观测,证明预分配本身有效。
+- `owner_cva_lstm_rolling` 应在低重复率基础上提升动态完成率、响应延迟、stale owner 和 deadline rescue 指标。
+- `no_owner_mappo` 用来说明:仅有低层协同/冲突处理还不等于高层资源预分配,owner 分配能提供更稳定的任务责任边界。
+
+---
+
+## 10. A7: CVA 参数消融
 
 如果 A4 中 `cva_lstm_rolling_mix0p35` 表现较好,再跑一个轻量参数消融,验证主方案不是单个超参数偶然有效。
 
-### 9.1 scorer mix 消融
+### 10.1 scorer mix 消融
 
 ```bash
 python run_ablation.py \
@@ -394,7 +444,7 @@ python run_ablation.py \
   --skip_existing
 ```
 
-### 9.2 encoder 精简消融
+### 10.2 encoder 精简消融
 
 如果时间不够,可以只跑三种最有解释力的编码器:
 
@@ -428,7 +478,7 @@ python run_ablation.py \
 
 ---
 
-## 10. 结果指标读取
+## 11. 结果指标读取
 
 优先看这些字段:
 

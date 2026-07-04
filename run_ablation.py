@@ -52,6 +52,12 @@ preset=cva_assignment_v1:
   - contextual value-aware assignment static ablation
   - CVA rolling assignment with MLP/LSTM/GRU/Transformer/Set Transformer encoders
 
+preset=owner_effect_v1:
+  - no-owner independent multi-satellite execution
+  - no-owner MAPPO with shared evaluation but no owner pre-assignment
+  - static owner assignment
+  - CVA rolling owner assignment
+
 preset=meta_encoder_v1:
   - MRL-DMS outer-loop LSTM/GRU/MLP/Transformer/Set Transformer
   - MAPPO + LSTM outer loop
@@ -644,6 +650,85 @@ def build_candidate_action_v1_specs(top_ks):
     return specs
 
 
+def build_owner_effect_v1_specs():
+    base_assignment = [
+        "--assignment_capacity_mode", "proportional",
+        "--assign_w_load", "0.1",
+        "--release_before_deadline_s", "1800",
+    ]
+    rolling_args = [
+        "--assignment_replan_interval_s", "3600",
+        "--assignment_replan_horizon_s", "7200",
+        "--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline",
+        "--assignment_switch_penalty", "0.05",
+        "--assignment_lock_window_s", "600",
+        "--assignment_max_switches_per_task", "2",
+    ]
+    return [
+        {
+            "tag": "no_owner_indep_ppo",
+            "extra_args": [
+                "--methods", "indep",
+                "--no_episode_assignment",
+            ],
+            "params": {
+                "owner_effect_variant": "no_owner_indep_ppo",
+                "methods": "indep",
+                "episode_assignment": False,
+                "coordinate": False,
+            },
+        },
+        {
+            "tag": "no_owner_mappo",
+            "extra_args": [
+                "--methods", "mappo",
+                "--no_episode_assignment",
+            ],
+            "params": {
+                "owner_effect_variant": "no_owner_mappo",
+                "methods": "mappo",
+                "episode_assignment": False,
+                "coordinate": True,
+            },
+        },
+        {
+            "tag": "owner_heuristic_static",
+            "extra_args": [
+                "--methods", "mappo",
+                *base_assignment,
+                "--assignment_scorer", "heuristic",
+            ],
+            "params": {
+                "owner_effect_variant": "owner_heuristic_static",
+                "methods": "mappo",
+                "episode_assignment": True,
+                "assignment_scorer": "heuristic",
+                "assignment_replan_trigger": "none",
+            },
+        },
+        {
+            "tag": "owner_cva_lstm_rolling",
+            "extra_args": [
+                "--methods", "mappo",
+                *base_assignment,
+                *rolling_args,
+                *_cva_args("lstm", 0.35, 0.25),
+            ],
+            "params": {
+                "owner_effect_variant": "owner_cva_lstm_rolling",
+                "methods": "mappo",
+                "episode_assignment": True,
+                "assignment_scorer": "cva",
+                "assignment_context_encoder": "lstm",
+                "assignment_scorer_mix": 0.35,
+                "assignment_context_weight": 0.25,
+                "assignment_replan_trigger": "periodic,dynamic,stale_owner,deadline",
+                "assignment_replan_horizon_s": 7200.0,
+            },
+        },
+    ]
+
+
 def build_learned_assignment_v1_specs(
     assignment_scorer_mixes,
     assignment_sequence_scorers,
@@ -1011,6 +1096,7 @@ def main():
                                  "train_stability_v1", "communication_v1",
                                  "assignment_rolling_v1", "hier_assignment_v1",
                                  "cva_assignment_v1", "candidate_action_v1",
+                                 "owner_effect_v1",
                                  "meta_encoder_v1", "learned_assignment_v1"])
     parser.add_argument("--python", type=str, default=sys.executable,
                         help="运行 compare_methods.py 的 Python 解释器")
@@ -1186,6 +1272,8 @@ def main():
         specs = build_candidate_action_v1_specs(
             top_ks=[int(x) for x in parse_float_list(args.candidate_action_top_ks)]
         )
+    elif args.preset == "owner_effect_v1":
+        specs = build_owner_effect_v1_specs()
     elif args.preset == "learned_assignment_v1":
         seq_scorers = parse_str_list(args.assignment_sequence_scorers)
         allowed_seq_scorers = {"lstm", "gru"}
@@ -1278,6 +1366,7 @@ def main():
             if args.acled_path:
                 cmd.extend(["--acled_path", args.acled_path])
         else:
+            has_method_override = "--methods" in spec["extra_args"]
             cmd = [
                 args.python,
                 str(ROOT / "compare_methods.py"),
@@ -1289,11 +1378,12 @@ def main():
                 "--seed", str(args.seed),
                 "--out_dir", str(out_dir),
                 "--device", args.device,
-                "--methods", args.methods,
                 "--experiment_tag", tag,
                 "--flat_out_dir",
-                *spec["extra_args"],
             ]
+            if not has_method_override:
+                cmd.extend(["--methods", args.methods])
+            cmd.extend(spec["extra_args"])
             if args.max_action_dim is not None:
                 cmd.extend(["--max_action_dim", str(args.max_action_dim)])
             for arg_name in [
