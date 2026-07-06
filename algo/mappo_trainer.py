@@ -302,6 +302,36 @@ class MAPPOTrainer:
         }
         return actions, log_probs
 
+    def select_eval_actions(
+        self,
+        multi_env,
+        current_obs: Dict,
+        current_infos: Dict,
+        agent_ids: Optional[List[str]] = None,
+        deterministic: bool = False,
+    ) -> Dict[str, int]:
+        """Select actions for evaluation without training-only bookkeeping."""
+        agent_ids = agent_ids or multi_env.agent_ids
+        masks = [
+            current_infos[aid].get("action_mask", np.ones(multi_env.action_dim))
+            for aid in agent_ids
+        ]
+        with torch.no_grad():
+            obs_t = torch.FloatTensor(
+                np.stack([current_obs[aid] for aid in agent_ids], axis=0)
+            ).to(self.device)
+            mask_t = torch.FloatTensor(np.stack(masks, axis=0)).to(self.device)
+            dist = self.model.actor.forward(obs_t, mask_t)
+            if deterministic:
+                action_t = torch.argmax(dist.logits, dim=-1)
+            else:
+                action_t = dist.sample()
+        action_np = action_t.cpu().numpy()
+        return {
+            aid: int(action_np[idx])
+            for idx, aid in enumerate(agent_ids)
+        }
+
     def _sample_one_action(
         self,
         obs: np.ndarray,

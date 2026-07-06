@@ -106,6 +106,7 @@ def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
 
 
 def _eval_worker(payload):
+    torch.set_num_threads(1)
     cfg = payload["cfg"]
     args = payload["args"]
     v2_cfg = payload["v2_cfg"]
@@ -144,7 +145,12 @@ def _eval_worker(payload):
     cur_info = {aid: item[1] for aid, item in reset.items()}
     max_steps = int(env.horizon_s / 10.0) + 100
     for _ in range(max_steps):
-        actions, _, _, _ = trainer.sample_actions(env, cur_obs, cur_info)
+        actions = trainer.select_eval_actions(
+            env,
+            cur_obs,
+            cur_info,
+            deterministic=payload.get("eval_deterministic", False),
+        )
         step_res = env.step(actions)
         for aid, (obs, _, _, _, info) in step_res.items():
             cur_obs[aid] = obs
@@ -177,6 +183,7 @@ def _parallel_eval(cfg, args, v2_cfg, model, scenarios, show_progress=True):
             "scenario": scenario,
             "model_state": model_state,
             "eval_device": eval_device,
+            "eval_deterministic": args.eval_deterministic,
         }
         for idx, scenario in enumerate(scenarios)
     ]
@@ -414,7 +421,12 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
         cur_info = {aid: item[1] for aid, item in reset.items()}
         max_steps = int(env.horizon_s / 10.0) + 100
         for _ in range(max_steps):
-            actions, _, _, _ = trainer.sample_actions(env, cur_obs, cur_info)
+            actions = trainer.select_eval_actions(
+                env,
+                cur_obs,
+                cur_info,
+                deterministic=args.eval_deterministic,
+            )
             step_res = env.step(actions)
             for aid, (obs, _, _, _, info) in step_res.items():
                 cur_obs[aid] = obs
@@ -437,6 +449,8 @@ def main():
     parser.add_argument("--eval_workers", type=int, default=4)
     parser.add_argument("--eval_device", type=str, default="same",
                         help="评估设备: cpu 使用多进程 CPU 并行; cuda:0/same 使用单 GPU 串行评估")
+    parser.add_argument("--eval_deterministic", action="store_true",
+                        help="评估时使用 actor argmax, 减少随机采样开销并提高复现稳定性")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)

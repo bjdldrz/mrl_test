@@ -206,6 +206,19 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._v2_step_cache[key] = lookup
         return lookup
 
+    def _action_by_mission_id(self, agent_id: str) -> Dict[int, int]:
+        key = ("action_by_mission_id", agent_id)
+        cached = self._v2_step_cache.get(key)
+        if cached is not None:
+            return cached
+        lookup = {
+            int(m.id): int(action)
+            for action, m in enumerate(self.envs[agent_id].missions[:self.max_action_dim])
+            if m is not None
+        }
+        self._v2_step_cache[key] = lookup
+        return lookup
+
     def _has_future_feasible_window(self, agent_id: str, mission_id: int) -> bool:
         env = self.envs[agent_id]
         mission = self._mission_by_id(agent_id).get(int(mission_id))
@@ -343,11 +356,36 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         stale = self._stale_task_ids()
         loads = self._candidate_load()
         load_pressure = loads.get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1)
+        action_lookup = self._action_by_mission_id(agent_id)
+        candidate_ids = {
+            int(mid)
+            for mid, owners in self.task_candidate_owners.items()
+            if agent_id in owners
+        }
+        if candidate_ids:
+            # Released urgent/stale tasks may be taken by non-candidate agents.
+            for mid, owner in self.task_owner.items():
+                if mid in candidate_ids:
+                    continue
+                mission = self._mission_by_id(agent_id).get(int(mid))
+                if mission is None or mission.is_observed:
+                    continue
+                near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+                if near_deadline or mid in stale:
+                    candidate_ids.add(int(mid))
+            action_iter = [
+                action_lookup[mid]
+                for mid in candidate_ids
+                if mid in action_lookup
+            ]
+        else:
+            action_iter = range(self.max_action_dim)
 
         routine = []
         dynamic = []
         flex = []
-        for action, mission in enumerate(env.missions[:self.max_action_dim]):
+        for action in action_iter:
+            mission = env.missions[action]
             if mission is None or mission.is_observed:
                 continue
             candidates = self.task_candidate_owners.get(mission.id)
