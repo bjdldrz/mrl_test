@@ -120,3 +120,6 @@ Watch these metrics together:
 - `observation_success_rate`, `dynamic_completion_rate`
 - `avg_valid_slots`, `avg_valid_dynamic_slots`, `slot_valid_ratio`
 - `owner_churn_rate`, `n_owner_switches`, `stale_owner_rate`
+- `eval_steps`, `eval_end_time_s`, `eval_idle_action_rate`,
+  `eval_avg_valid_action_count` to check whether evaluation is ending early or
+  mostly idling.

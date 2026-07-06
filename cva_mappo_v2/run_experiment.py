@@ -149,20 +149,41 @@ def _eval_worker(payload):
     cur_obs = {aid: item[0] for aid, item in reset.items()}
     cur_info = {aid: item[1] for aid, item in reset.items()}
     max_steps = int(env.horizon_s / 10.0) + 100
+    n_steps = 0
+    n_idle_actions = 0
+    n_agent_actions = 0
+    valid_action_sum = 0.0
     for _ in range(max_steps):
+        for aid in env.agent_ids:
+            mask = cur_info[aid].get("action_mask")
+            if mask is not None:
+                # Exclude the always-valid idle action.
+                valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
         actions = trainer.select_eval_actions(
             env,
             cur_obs,
             cur_info,
             deterministic=payload.get("eval_deterministic", False),
         )
+        n_steps += 1
+        n_agent_actions += len(actions)
+        n_idle_actions += sum(1 for action in actions.values() if int(action) == env.idle_action)
         step_res = env.step(actions)
         for aid, (obs, _, _, _, info) in step_res.items():
             cur_obs[aid] = obs
             cur_info[aid] = info
         if env.is_done():
             break
-    return {"idx": payload["idx"], "metrics": env.get_metrics()}
+    metrics = env.get_metrics()
+    current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
+    metrics.update({
+        "eval_steps": float(n_steps),
+        "eval_end_time_s": float(np.mean(current_times)) if current_times else 0.0,
+        "eval_finished_early": 1.0 if n_steps < max_steps else 0.0,
+        "eval_idle_action_rate": n_idle_actions / max(n_agent_actions, 1),
+        "eval_avg_valid_action_count": valid_action_sum / max(n_agent_actions, 1),
+    })
+    return {"idx": payload["idx"], "metrics": metrics}
 
 
 def _parallel_eval(cfg, args, v2_cfg, model, scenarios, show_progress=True):

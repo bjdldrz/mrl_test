@@ -125,3 +125,6 @@ Compare:
 - completion rate and dynamic response delay;
 - `avg_valid_slots` / `avg_valid_dynamic_slots`;
 - duplicate rate, load balance, and owner churn.
+- `eval_steps`, `eval_end_time_s`, `eval_idle_action_rate`, and
+  `eval_avg_valid_action_count` to rule out early termination or idle-heavy
+  evaluation.
