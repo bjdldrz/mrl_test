@@ -481,8 +481,12 @@ def main():
     parser.add_argument("--eval_workers", type=int, default=4)
     parser.add_argument("--eval_device", type=str, default="same",
                         help="评估设备: cpu 使用多进程 CPU 并行; cuda:0/same 使用单 GPU 串行评估")
-    parser.add_argument("--eval_deterministic", action="store_true",
+    parser.add_argument("--eval_deterministic", dest="eval_deterministic",
+                        action="store_true", default=True,
                         help="评估时使用 actor argmax, 减少随机采样开销并提高复现稳定性")
+    parser.add_argument("--eval_stochastic", dest="eval_deterministic",
+                        action="store_false",
+                        help="评估时按策略分布随机采样动作, 用于检查策略鲁棒性")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
@@ -554,11 +558,19 @@ def main():
     acled = load_acled_shapefile(args.acled_path) if args.acled_path else None
     mission_gen = MissionGenerator(acled_df=acled, seed=args.seed)
     train_payload = None
+    cache_summary = None
     if args.scenario_cache_dir:
         cache = load_scenario_cache(args.scenario_cache_dir)
         train_payload = cache["train"]
         eval_scenarios = get_eval_scenarios(cache["eval"])
-        print("场景缓存:", scenario_summary(cache))
+        cache_summary = scenario_summary(cache)
+        print("场景缓存:", cache_summary)
+        if len(eval_scenarios) != args.eval_episodes:
+            print(
+                "使用场景缓存评估集: "
+                f"实际 eval episodes={len(eval_scenarios)}, "
+                f"命令行 --eval_episodes={args.eval_episodes} 仅保留为运行记录"
+            )
     else:
         eval_scenarios = make_test_scenarios(
             mission_gen,
@@ -588,6 +600,9 @@ def main():
         "elapsed_s": elapsed,
         "args": vars(args),
         "eval_deterministic": bool(args.eval_deterministic),
+        "requested_eval_episodes": int(args.eval_episodes),
+        "actual_eval_episodes": int(len(eval_scenarios)),
+        "scenario_cache_summary": cache_summary,
         "v2_config": {
             "routine_slots": v2_cfg.slots.routine_slots,
             "dynamic_slots": v2_cfg.slots.dynamic_slots,

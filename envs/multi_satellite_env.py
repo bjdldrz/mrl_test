@@ -591,9 +591,7 @@ class MultiSatelliteEnv:
         self._deadline_rescue_mission_ids = set()
         self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
         if self.coordinate and self.episode_assignment:
-            first_env = list(self.envs.values())[0]
-            all_missions = [m for m in first_env.missions if m is not None]
-            self._assign_tasks(all_missions)
+            self._assign_tasks(self._all_known_missions())
 
         # 对外暴露 full action 或 Top-K candidate action。
         for agent_id in self.agent_ids:
@@ -646,9 +644,10 @@ class MultiSatelliteEnv:
         # 3.5) 动态任务到达后做增量指派 (在当前负载基础上继续均衡)
         new_missions = []
         if self.coordinate and self.episode_assignment:
-            first_env = list(self.envs.values())[0]
-            new_missions = [m for m in first_env.missions
-                            if m is not None and m.id not in self.task_owner]
+            new_missions = [
+                m for m in self._all_known_missions()
+                if m.id not in self.task_owner
+            ]
             if new_missions:
                 self._refresh_assignment_load()
                 self._assign_tasks(new_missions)
@@ -682,6 +681,57 @@ class MultiSatelliteEnv:
     # ===================================================================
     # 全局 episode 级任务指派 (优化路线图 A3-episode / G24)
     # ===================================================================
+    def _team_current_time_s(self) -> float:
+        """全体卫星的当前调度前沿时间。"""
+        if not self.envs:
+            return 0.0
+        return float(max(env.current_time_s for env in self.envs.values()))
+
+    def _all_known_missions_by_id(self) -> Dict[int, Any]:
+        """返回所有卫星已经插入/知道的任务, 按 mission_id 去重。"""
+        missions: Dict[int, Any] = {}
+        for env in self.envs.values():
+            for mission in env.missions:
+                if mission is None:
+                    continue
+                current = missions.get(int(mission.id))
+                if current is None or (mission.is_observed and not current.is_observed):
+                    missions[int(mission.id)] = mission
+        return missions
+
+    def _all_known_missions(self) -> List[Any]:
+        return list(self._all_known_missions_by_id().values())
+
+    def _mission_from_any_env(self, mission_id: int):
+        return self._all_known_missions_by_id().get(int(mission_id))
+
+    def _mission_for_agent(self, agent_id: str, mission_id: int):
+        env = self.envs[agent_id]
+        for mission in env.missions:
+            if mission is not None and mission.id == mission_id:
+                return mission
+        return self._mission_from_any_env(mission_id)
+
+    def _mission_observed_anywhere(self, mission_id: int) -> bool:
+        for env in self.envs.values():
+            for mission in env.missions:
+                if mission is not None and mission.id == mission_id and mission.is_observed:
+                    return True
+        return False
+
+    def _ensure_mission_vtw(self, agent_id: str, mission) -> None:
+        """确保某颗卫星已经为已知任务计算 VTW。"""
+        if mission is None:
+            return
+        env = self.envs[agent_id]
+        if mission.id not in env.mission_vtw:
+            env._compute_vtw_for_missions([mission])
+
+    def _mission_alive_for_any_agent(self, mission) -> bool:
+        if mission is None:
+            return False
+        return any(env.current_time_s < mission.deadline_s for env in self.envs.values())
+
     def _task_quality(self, agent_id: str, mission) -> Optional[float]:
         """
         卫星 agent_id 在整个 horizon 内对 mission 的观测质量 (∈[0,1], 越大越好);
@@ -689,6 +739,7 @@ class MultiSatelliteEnv:
         质量取所有可行窗口中最小 off-nadir 对应的值 (最佳成像几何)。
         """
         env = self.envs[agent_id]
+        self._ensure_mission_vtw(agent_id, mission)
         best_off = None
         for vtw in env.mission_vtw.get(mission.id, []):
             if vtw.end_time - vtw.start_time < mission.duration_s:
@@ -759,8 +810,7 @@ class MultiSatelliteEnv:
             return
 
         self._n_replan_checks += 1
-        first_env = list(self.envs.values())[0]
-        current_time = first_env.current_time_s
+        current_time = self._team_current_time_s()
         elapsed_since_replan = current_time - self._last_replan_time_s
         periodic_enabled = (
             self.assignment_replan_interval_s > 0
@@ -810,8 +860,7 @@ class MultiSatelliteEnv:
         """
         if not self.coordinate or not self.episode_assignment:
             return 0
-        first_env = list(self.envs.values())[0]
-        current_time = first_env.current_time_s
+        current_time = self._team_current_time_s()
         missions = self._eligible_replan_missions(current_time)
         if mission_ids is not None:
             allowed_ids = set(mission_ids)
@@ -831,8 +880,7 @@ class MultiSatelliteEnv:
         """
         if agent_id not in self.agent_ids:
             raise ValueError(f"未知 agent_id={agent_id!r}; 可选: {self.agent_ids}")
-        first_env = list(self.envs.values())[0]
-        mission = next((m for m in first_env.missions if m is not None and m.id == mission_id), None)
+        mission = self._mission_from_any_env(mission_id)
         if mission is None or mission.is_observed:
             return False
         if self._task_quality_window(agent_id, mission) is None:
@@ -858,12 +906,11 @@ class MultiSatelliteEnv:
         The state is JSON-like and intentionally framework-neutral, so it can be
         consumed by a rule manager today and by a trainable manager later.
         """
-        first_env = list(self.envs.values())[0]
-        current_time = first_env.current_time_s
+        current_time = self._team_current_time_s()
         if pending is None:
             if missions is None:
                 missions = [
-                    m for m in first_env.missions
+                    m for m in self._all_known_missions()
                     if m is not None and not m.is_observed and m.id in self.task_owner
                 ]
             pending = []
@@ -941,18 +988,19 @@ class MultiSatelliteEnv:
 
     def _eligible_replan_missions(self, current_time: float) -> list:
         """筛选允许滚动重分配的未完成任务。"""
-        first_env = list(self.envs.values())[0]
         missions = []
-        for mission in first_env.missions:
+        for mission in self._all_known_missions():
             if mission is None or mission.is_observed or mission.id not in self.task_owner:
                 continue
-            if current_time >= mission.deadline_s:
+            if not self._mission_alive_for_any_agent(mission):
                 continue
             if self.assignment_max_switches_per_task == 0:
                 continue
             if self._owner_switch_counts.get(mission.id, 0) >= self.assignment_max_switches_per_task:
                 continue
-            if self._is_replan_locked(mission, current_time):
+            owner = self.task_owner.get(mission.id)
+            owner_time = self.envs[owner].current_time_s if owner in self.envs else current_time
+            if self._is_replan_locked(mission, owner_time):
                 continue
             missions.append(mission)
         return missions
@@ -975,9 +1023,10 @@ class MultiSatelliteEnv:
     def _next_feasible_window_start(self, agent_id: str, mission_id: int, from_t: float) -> Optional[float]:
         """返回 agent 对任务从 from_t 起的下一次可完成窗口开始时间。"""
         env = self.envs[agent_id]
-        mission = next((m for m in env.missions if m is not None and m.id == mission_id), None)
-        if mission is None or mission.is_observed:
+        mission = self._mission_for_agent(agent_id, mission_id)
+        if mission is None or self._mission_observed_anywhere(mission_id):
             return None
+        self._ensure_mission_vtw(agent_id, mission)
         starts = []
         for vtw in env.mission_vtw.get(mission.id, []):
             obs_start = max(vtw.start_time, from_t, mission.earliest_time_s)
@@ -1050,6 +1099,7 @@ class MultiSatelliteEnv:
         assignment_replan_horizon_s=0 表示看到任务 deadline/horizon 结束。
         """
         env = self.envs[agent_id]
+        self._ensure_mission_vtw(agent_id, mission)
         from_t = max(env.current_time_s, mission.earliest_time_s)
         horizon_end = self.horizon_s
         if self.assignment_replan_horizon_s > 0:
@@ -1069,8 +1119,7 @@ class MultiSatelliteEnv:
 
     def _has_stale_owner(self) -> bool:
         """是否存在 owner 已无未来可行窗口的未完成任务。"""
-        first_env = list(self.envs.values())[0]
-        for mission in first_env.missions:
+        for mission in self._all_known_missions():
             if mission is None or mission.is_observed:
                 continue
             owner = self.task_owner.get(mission.id)
@@ -1082,13 +1131,13 @@ class MultiSatelliteEnv:
         """是否存在进入 release 窗口但尚未完成的任务。"""
         if self.release_before_deadline_s <= 0:
             return False
-        first_env = list(self.envs.values())[0]
-        current_time = first_env.current_time_s
-        for mission in first_env.missions:
+        for mission in self._all_known_missions():
             if mission is None or mission.is_observed or mission.id not in self.task_owner:
                 continue
-            if current_time >= mission.deadline_s - self.release_before_deadline_s:
-                return True
+            for env in self.envs.values():
+                if env.current_time_s >= mission.deadline_s - self.release_before_deadline_s:
+                    if env.current_time_s < mission.deadline_s:
+                        return True
         return False
 
     def _assignment_load_cv(self) -> float:
@@ -1494,8 +1543,7 @@ class MultiSatelliteEnv:
         后续动态任务会参考真实执行负载, 不被初始 owner 表误导。
         """
         load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
-        first_env = list(self.envs.values())[0]
-        for m in first_env.missions:
+        for m in self._all_known_missions():
             if m is None or m.is_observed:
                 continue
             owner = self.task_owner.get(m.id)
@@ -1542,9 +1590,10 @@ class MultiSatelliteEnv:
     def _has_future_feasible_window(self, agent_id: str, mission_id: int) -> bool:
         """owner 从当前时刻起是否仍有机会在 deadline 前完成该任务。"""
         env = self.envs[agent_id]
-        mission = next((m for m in env.missions if m is not None and m.id == mission_id), None)
-        if mission is None or mission.is_observed:
+        mission = self._mission_for_agent(agent_id, mission_id)
+        if mission is None or self._mission_observed_anywhere(mission_id):
             return False
+        self._ensure_mission_vtw(agent_id, mission)
         from_t = max(env.current_time_s, mission.earliest_time_s)
         for vtw in env.mission_vtw.get(mission.id, []):
             obs_start = max(vtw.start_time, from_t)
@@ -1786,8 +1835,7 @@ class MultiSatelliteEnv:
           load CV
           duplicate rate so far
         """
-        first_env = list(self.envs.values())[0]
-        missions = [m for m in first_env.missions if m is not None]
+        missions = self._all_known_missions()
         total = max(len(missions), 1)
         observed = sum(1 for m in missions if m.is_observed)
         pending = sum(1 for m in missions if not m.is_observed)
@@ -1832,18 +1880,20 @@ class MultiSatelliteEnv:
             for record in env.schedule_log:
                 all_scheduled_ids.add(record.mission_id)
 
-        # 基于共享任务池统计
-        # 使用第一颗卫星的任务列表作为基准 (它们的 id 相同)
-        first_env = list(self.envs.values())[0]
-        all_missions = [m for m in first_env.missions if m is not None]
+        # 基于共享任务池统计: 动态任务可能先被某一颗卫星插入,
+        # 因此用所有卫星已知任务的并集作为基准。
+        all_missions = self._all_known_missions()
         total_missions = len(all_missions)
 
         # feasible 划分 (论文 Table 4 口径): 任意一颗卫星对该任务有可用 VTW 即可行
         def _feasible_any(mission_id):
-            for env in self.envs.values():
-                for m in env.missions:
-                    if m is not None and m.id == mission_id and env._is_feasible(m):
-                        return True
+            for aid, env in self.envs.items():
+                mission = self._mission_for_agent(aid, mission_id)
+                if mission is None:
+                    continue
+                self._ensure_mission_vtw(aid, mission)
+                if env._is_feasible(mission):
+                    return True
             return False
 
         feasible_routine = [m for m in all_missions if not m.is_dynamic and _feasible_any(m.id)]

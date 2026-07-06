@@ -233,9 +233,10 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
     def _has_future_feasible_window(self, agent_id: str, mission_id: int) -> bool:
         env = self.envs[agent_id]
-        mission = self._mission_by_id(agent_id).get(int(mission_id))
-        if mission is None or mission.is_observed:
+        mission = self._mission_for_agent(agent_id, mission_id)
+        if mission is None or self._mission_observed_anywhere(mission_id):
             return False
+        self._ensure_mission_vtw(agent_id, mission)
         from_t = max(env.current_time_s, mission.earliest_time_s)
         for vtw in env.mission_vtw.get(mission.id, []):
             obs_start = max(vtw.start_time, from_t)
@@ -245,8 +246,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         return False
 
     def _current_time_s(self) -> float:
-        first_env = list(self.envs.values())[0]
-        return float(first_env.current_time_s)
+        return self._team_current_time_s()
 
     # ------------------------------------------------------------------
     # Candidate ownership masks and typed slots
@@ -520,7 +520,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             score = self._candidate_action_score(agent_id, action, allow_future=True)
             if score is None:
                 continue
-            if not self._belongs_to_group(mission, group):
+            if not self._belongs_to_group(mission, group, env.current_time_s):
                 continue
             if is_currently_available:
                 score += 0.25
@@ -528,13 +528,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         items.sort(key=lambda x: x[0], reverse=True)
         return items
 
-    def _belongs_to_group(self, mission: Mission, group: str) -> bool:
+    def _belongs_to_group(self, mission: Mission, group: str, current_time: Optional[float] = None) -> bool:
         if group == "routine":
             return not mission.is_dynamic
         if group == "dynamic":
             return mission.is_dynamic
         if group == "flex":
-            current_time = self._current_time_s()
+            if current_time is None:
+                current_time = self._current_time_s()
             return self._belongs_to_flex_group(mission, current_time, self._stale_task_ids())
         return False
 

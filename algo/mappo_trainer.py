@@ -428,7 +428,7 @@ class MAPPOTrainer:
         for t in reversed(range(T)):
             if t == T - 1:
                 next_value = last_value
-                next_done = 0.0
+                next_done = float(dones[t])
             else:
                 next_value = values[t + 1]
                 next_done = float(dones[t])
