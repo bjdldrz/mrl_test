@@ -166,7 +166,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     env=env,
                     agent_id=aid,
                     mission=mission,
-                    current_time_s=current_time_s,
+                    current_time_s=float(env.current_time_s),
                     load_pressure=load_pressure,
                     n_visible_agents=len(visible_agents),
                     n_agents=self.n_agents,
@@ -407,7 +407,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         every environment step.
         """
         env = self.envs[agent_id]
-        current_time = self._current_time_s()
+        current_time = float(env.current_time_s)
         stale = self._stale_task_ids()
         loads = self._candidate_load()
         load_pressure = loads.get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1)
