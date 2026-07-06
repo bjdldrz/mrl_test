@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-07-06 CVA-MAPPO v2 压力场景修正记录
+
+压力测试中出现 `avg_filled_slots` 上升但 `avg_valid_slots` 仍接近 0 的问题,说明扩大候选 owner 只增加了未来候选任务,没有增加当前可执行动作;同时 `owner_churn_rate` 过高,导致低层 MAPPO 面对非平稳槽位语义。
+
+本轮实现:
+
+- **Executable-first slot exposure**:构造类型化候选槽位时,强制把当前 action mask 允许执行的任务纳入候选排序池,避免未来高分任务挤掉当前可执行任务。
+- **Dynamic short-window broadcast**:动态任务到达后的短窗口内,当前可执行卫星即使不是 owner 也可以临时看到该任务,提高动态任务响应概率。
+- **Stable primary owner margin**:重分配时保留旧 owner,除非新 owner 的容量修正分数超过 `owner_switch_margin + switch_penalty`,降低 owner churn。
+- **诊断指标增强**:增加 routine/dynamic/flex 分类型槽位有效率和平均有效槽位数,用于区分“槽位填充不足”和“填充了但不可执行”。
+
+新增消融接口:
+
+- `--dynamic_broadcast_window_s`:0 表示关闭动态短时广播,建议对比 0/1800/3600。
+- `--owner_switch_margin`:0 表示允许更频繁切换,建议对比 0/0.08/0.12。
+
+重点观察指标:
+
+- `dynamic_completion_rate`, `avg_dynamic_response_s`
+- `avg_valid_slots`, `avg_valid_dynamic_slots`
+- `owner_churn_rate`, `n_owner_switches`, `duplicate_rate`
+
 ## 一、对比结果暴露的 4 个真问题
 
 | 现象 | 数据(smoke 测试) | 说明 |

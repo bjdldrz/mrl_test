@@ -39,6 +39,9 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_valid_sum = 0
         self._slot_filled_sum = 0
         self._slot_exposure_count = 0
+        self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -59,6 +62,9 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_valid_sum = 0
         self._slot_filled_sum = 0
         self._slot_exposure_count = 0
+        self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._clear_v2_step_cache()
         result = super().reset(*args, **kwargs)
         self._clear_v2_step_cache()
@@ -258,6 +264,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 candidates
                 and agent_id not in candidates
                 and not self._ownership_released_with_context(agent_id, mission, current_time, stale)
+                and not (mask[i] > 0 and self._dynamic_broadcast_open(mission, current_time))
             ):
                 mask[i] = 0.0
         return mask
@@ -268,10 +275,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         candidates = self.task_candidate_owners.get(mission.id, [])
         if agent_id in candidates:
             return True
+        env = self.envs[agent_id]
         owner = self.task_owner.get(mission.id)
+        if self._dynamic_broadcast_open(mission, env.current_time_s):
+            return True
         if owner is None:
             return False
-        env = self.envs[agent_id]
         near_deadline = env.current_time_s >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
         owner_stale = not self._has_future_feasible_window(owner, mission.id)
         released = near_deadline or owner_stale
@@ -292,6 +301,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             return True
         candidates = self.task_candidate_owners.get(mission.id, [])
         if agent_id in candidates:
+            return True
+        if self._dynamic_broadcast_open(mission, current_time):
             return True
         owner = self.task_owner.get(mission.id)
         if owner is None:
@@ -354,6 +365,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         )
         self._slot_filled_sum += sum(1 for action in selected if action is not None)
         self._slot_exposure_count += 1
+        for slot_type in ("routine", "dynamic", "flex"):
+            self._slot_type_capacity_sum[slot_type] += int(getattr(self.v2_cfg.slots, f"{slot_type}_slots"))
+        for slot_type, action in zip(slot_types, selected):
+            if slot_type not in self._slot_type_valid_sum or action is None:
+                continue
+            self._slot_type_filled_sum[slot_type] += 1
+            if full_mask[action] > 0:
+                self._slot_type_valid_sum[slot_type] += 1
         return selected[:self.v2_cfg.slots.total_slots]
 
     def _rank_all_slot_groups(self, agent_id: str, full_mask: np.ndarray):
@@ -386,6 +405,13 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
                 if near_deadline or mid in stale:
                     candidate_ids.add(int(mid))
+            # Always expose currently executable tasks allowed by the mask.
+            # This prevents future-only high-score candidates from hiding the
+            # few actions the satellite can actually execute at this step.
+            for action in np.nonzero(full_mask[:self.max_action_dim])[0].tolist():
+                mission = env.missions[action]
+                if mission is not None and not mission.is_observed:
+                    candidate_ids.add(int(mission.id))
             action_iter = [
                 action_lookup[mid]
                 for mid in candidate_ids
@@ -471,6 +497,13 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
         return mission.is_dynamic or near_deadline or mission.id in stale or mission.priority >= 7.5
 
+    def _dynamic_broadcast_open(self, mission: Mission, current_time: float) -> bool:
+        window_s = float(self.v2_cfg.dynamic_broadcast_window_s or 0.0)
+        if window_s <= 0 or not mission.is_dynamic or mission.is_observed:
+            return False
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        return arrival_s <= current_time <= min(arrival_s + window_s, mission.deadline_s)
+
     def _candidate_action_score(
         self,
         agent_id: str,
@@ -535,4 +568,19 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             "avg_valid_slots": self._slot_valid_sum / max(self._slot_exposure_count, 1),
             "avg_filled_slots": self._slot_filled_sum / max(self._slot_exposure_count, 1),
         })
+        for slot_type in ("routine", "dynamic", "flex"):
+            capacity = max(self._slot_type_capacity_sum.get(slot_type, 0), 1)
+            exposures = max(self._slot_exposure_count, 1)
+            metrics[f"{slot_type}_slot_valid_ratio"] = (
+                self._slot_type_valid_sum.get(slot_type, 0) / capacity
+            )
+            metrics[f"{slot_type}_slot_filled_ratio"] = (
+                self._slot_type_filled_sum.get(slot_type, 0) / capacity
+            )
+            metrics[f"avg_valid_{slot_type}_slots"] = (
+                self._slot_type_valid_sum.get(slot_type, 0) / exposures
+            )
+            metrics[f"avg_filled_{slot_type}_slots"] = (
+                self._slot_type_filled_sum.get(slot_type, 0) / exposures
+            )
         return metrics

@@ -73,9 +73,11 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         capacity_slack_ratio=args.capacity_slack_ratio,
         load_penalty=args.cva_load_penalty,
         switch_penalty=args.assignment_switch_penalty,
+        owner_switch_margin=args.owner_switch_margin,
         replan_interval_s=args.assignment_replan_interval_s,
         replan_horizon_s=args.assignment_replan_horizon_s,
         release_before_deadline_s=args.release_before_deadline_s,
+        dynamic_broadcast_window_s=args.dynamic_broadcast_window_s,
         lock_window_s=args.assignment_lock_window_s,
         max_switches_per_task=args.assignment_max_switches_per_task,
         triggers=triggers,
@@ -481,10 +483,14 @@ def main():
     parser.add_argument("--w_load", type=float, default=0.16)
     parser.add_argument("--w_owner_stability", type=float, default=0.04)
     parser.add_argument("--release_before_deadline_s", type=float, default=1800.0)
+    parser.add_argument("--dynamic_broadcast_window_s", type=float, default=1800.0,
+                        help="动态任务到达后的短时广播窗口; 窗口内当前可执行卫星可临时接手, 0 表示关闭")
     parser.add_argument("--assignment_replan_interval_s", type=float, default=3600.0)
     parser.add_argument("--assignment_replan_horizon_s", type=float, default=7200.0)
     parser.add_argument("--assignment_replan_trigger", type=str, default="periodic,dynamic,stale_owner,deadline")
     parser.add_argument("--assignment_switch_penalty", type=float, default=0.05)
+    parser.add_argument("--owner_switch_margin", type=float, default=0.08,
+                        help="新 owner 分数至少超过旧 owner 的额外门槛; 用于降低 owner churn")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--torch_num_threads", type=int, default=None)
@@ -556,6 +562,9 @@ def main():
             "stale_candidate_owners": v2_cfg.stale_candidate_owners,
             "capacity_slack_ratio": v2_cfg.capacity_slack_ratio,
             "load_penalty": v2_cfg.load_penalty,
+            "switch_penalty": v2_cfg.switch_penalty,
+            "owner_switch_margin": v2_cfg.owner_switch_margin,
+            "dynamic_broadcast_window_s": v2_cfg.dynamic_broadcast_window_s,
             "score_weights": {
                 "w_quality": v2_cfg.w_quality,
                 "w_priority": v2_cfg.w_priority,

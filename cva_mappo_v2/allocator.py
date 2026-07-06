@@ -69,10 +69,18 @@ class CapacityAwareTaskAllocator:
                 stale=mission.id in stale_tasks,
             )
             old_primary = assignment.primary_owner.get(mission.id)
-            ranked = sorted(
-                agent_scores.values(),
-                key=lambda s: self._capacity_adjusted_score(s, load, capacities),
+            ranked_pairs = sorted(
+                (
+                    (score, self._capacity_adjusted_score(score, load, capacities))
+                    for score in agent_scores.values()
+                ),
+                key=lambda item: item[1],
                 reverse=True,
+            )
+            ranked = self._stabilize_primary(
+                ranked_pairs=ranked_pairs,
+                old_primary=old_primary,
+                stale=mission.id in stale_tasks,
             )
             chosen = self._choose_candidates(ranked, target_k, load, capacities)
             if not chosen:
@@ -147,3 +155,32 @@ class CapacityAwareTaskAllocator:
         # If all candidates are at capacity, keep the best candidate rather than
         # dropping the task entirely.
         return [ranked[0].agent_id] if ranked else []
+
+    def _stabilize_primary(
+        self,
+        ranked_pairs: List[Tuple[CandidateScore, float]],
+        old_primary: Optional[str],
+        stale: bool,
+    ) -> List[CandidateScore]:
+        if not ranked_pairs:
+            return []
+        if old_primary is None or stale:
+            return [score for score, _ in ranked_pairs]
+
+        best_score, best_adjusted = ranked_pairs[0]
+        if best_score.agent_id == old_primary:
+            return [score for score, _ in ranked_pairs]
+
+        old_pair = next(
+            ((score, adjusted) for score, adjusted in ranked_pairs if score.agent_id == old_primary),
+            None,
+        )
+        if old_pair is None:
+            return [score for score, _ in ranked_pairs]
+
+        old_score, old_adjusted = old_pair
+        required_gain = max(0.0, self.cfg.owner_switch_margin + self.cfg.switch_penalty)
+        if best_adjusted < old_adjusted + required_gain:
+            rest = [score for score, _ in ranked_pairs if score.agent_id != old_primary]
+            return [old_score] + rest
+        return [score for score, _ in ranked_pairs]

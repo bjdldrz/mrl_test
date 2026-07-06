@@ -18,6 +18,8 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
   --torch_num_threads 1 \
+  --dynamic_broadcast_window_s 1800 \
+  --owner_switch_margin 0.08 \
   --eval_device cpu \
   --eval_workers 8 \
   --no_viz \
@@ -88,3 +90,28 @@ Purpose: separate static candidate ownership from event-triggered repair.
     --assignment_replan_interval_s 3600 --assignment_replan_horizon_s 7200 \
     --run_name cva_v2_event_repair --out_dir runs/cva_mappo_v2_replan
 ```
+
+## A5 Executable Exposure and Owner Stability
+
+Purpose: verify that the new pressure-test fix improves currently executable
+slot exposure without reintroducing duplicate observations.
+
+```bash
+# old behavior: no dynamic broadcast, no switch margin
+... --dynamic_broadcast_window_s 0 --owner_switch_margin 0 \
+    --run_name cva_v2_no_exec_rescue --out_dir runs/cva_mappo_v2_stability
+
+# default stability upgrade
+... --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
+    --run_name cva_v2_exec_rescue_stable --out_dir runs/cva_mappo_v2_stability
+
+# stronger dynamic rescue, stricter owner stability
+... --dynamic_broadcast_window_s 3600 --owner_switch_margin 0.12 \
+    --run_name cva_v2_exec_rescue_strong --out_dir runs/cva_mappo_v2_stability
+```
+
+Compare:
+
+- dynamic completion and dynamic response delay;
+- `avg_valid_slots` / `avg_valid_dynamic_slots`;
+- `owner_churn_rate` and duplicate rate.

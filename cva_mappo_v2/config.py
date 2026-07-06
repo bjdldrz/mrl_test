@@ -33,11 +33,13 @@ class CVAMAPPOV2Config:
     capacity_slack_ratio: float = 0.05
     load_penalty: float = 0.15
     switch_penalty: float = 0.05
+    owner_switch_margin: float = 0.08
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
     replan_horizon_s: float = 7200.0
     release_before_deadline_s: float = 1800.0
+    dynamic_broadcast_window_s: float = 1800.0
     lock_window_s: float = 600.0
     max_switches_per_task: int = 2
     triggers: Tuple[str, ...] = ("periodic", "dynamic", "stale_owner", "deadline")
@@ -63,3 +65,7 @@ class CVAMAPPOV2Config:
         ]:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} 必须大于 0")
+        if self.owner_switch_margin < 0:
+            raise ValueError("owner_switch_margin 必须大于等于 0")
+        if self.dynamic_broadcast_window_s < 0:
+            raise ValueError("dynamic_broadcast_window_s 必须大于等于 0")

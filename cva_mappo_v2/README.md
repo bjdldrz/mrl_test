@@ -55,6 +55,9 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
+  --dynamic_broadcast_window_s 1800 \
+  --owner_switch_margin 0.08 \
+  --assignment_switch_penalty 0.05 \
   --rollout_steps 512 \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
@@ -69,3 +72,32 @@ python -m cva_mappo_v2.run_experiment \
 ```
 
 For a cleaner background log, add `--no_progress`.
+
+## Current Stability Upgrade
+
+The v2 runner now exposes two knobs for the latest pressure-test issue:
+
+- `--dynamic_broadcast_window_s`: after a dynamic task arrives, satellites that
+  can execute it immediately may temporarily see it even if they are not its
+  assigned owner.  This targets `avg_valid_slots` and dynamic completion.
+- `--owner_switch_margin`: keeps the current primary owner unless a new owner is
+  clearly better.  This targets `owner_churn_rate` and slot non-stationarity.
+
+Recommended diagnostic comparison:
+
+```bash
+# Disable the new mechanisms.
+... --dynamic_broadcast_window_s 0 --owner_switch_margin 0
+
+# Default stability upgrade.
+... --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08
+
+# More aggressive dynamic rescue, still with stable routine ownership.
+... --dynamic_broadcast_window_s 3600 --owner_switch_margin 0.12
+```
+
+Watch these metrics together:
+
+- `observation_success_rate`, `dynamic_completion_rate`
+- `avg_valid_slots`, `avg_valid_dynamic_slots`, `slot_valid_ratio`
+- `owner_churn_rate`, `n_owner_switches`, `stale_owner_rate`
