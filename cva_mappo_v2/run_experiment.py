@@ -314,6 +314,12 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
     )
 
     rng = np.random.RandomState(args.seed + 500)
+    max_train_workers = max(1, min(int(args.train_env_workers or 1), int(cfg.meta.rollout_steps)))
+    train_pool = None
+    if max_train_workers > 1:
+        from multiprocessing import get_context
+
+        train_pool = get_context("spawn").Pool(processes=max_train_workers)
     pbar = tqdm(
         range(args.train_iters),
         desc="train CVA-MAPPO-v2",
@@ -321,71 +327,72 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
         dynamic_ncols=True,
         disable=args.no_progress,
     )
-    for it in pbar:
-        n_workers = max(1, min(int(args.train_env_workers or 1), int(cfg.meta.rollout_steps)))
-        if n_workers > 1:
-            from multiprocessing import get_context
-
-            step_counts = [cfg.meta.rollout_steps // n_workers] * n_workers
-            for wi in range(cfg.meta.rollout_steps % n_workers):
-                step_counts[wi] += 1
-            model_state = _torch_state_to_numpy(model.state_dict())
-            payloads = []
-            for wi, worker_steps in enumerate(step_counts):
+    try:
+        for it in pbar:
+            if max_train_workers > 1:
+                step_counts = [cfg.meta.rollout_steps // max_train_workers] * max_train_workers
+                for wi in range(cfg.meta.rollout_steps % max_train_workers):
+                    step_counts[wi] += 1
+                model_state = _torch_state_to_numpy(model.state_dict())
+                payloads = []
+                for wi, worker_steps in enumerate(step_counts):
+                    if train_payload is not None:
+                        routine, dynamic = select_train_scenario(
+                            train_payload, it, args.train_iters, rng
+                        )
+                    else:
+                        routine, dynamic = mission_gen.generate_episode_missions(
+                            n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+                            n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+                            n_insertions=cfg.mission.dynamic_insertions_per_day,
+                        )
+                    payloads.append({
+                        "idx": wi,
+                        "cfg": copy.deepcopy(cfg),
+                        "args": args,
+                        "v2_cfg": copy.deepcopy(v2_cfg),
+                        "scenario": (routine, dynamic),
+                        "model_state": model_state,
+                        "rollout_steps": worker_steps,
+                        "seed": int(rng.randint(0, 2**31 - 1)),
+                    })
+                worker_results = train_pool.map(_collect_rollout_worker, payloads)
+                worker_results = sorted(worker_results, key=lambda row: row["idx"])
+                metrics = trainer.update_many(
+                    [row["buffer"] for row in worker_results],
+                    [row["last_global_state"] for row in worker_results],
+                )
+                reward = sum(float(row.get("total_reward", 0.0)) for row in worker_results)
+            else:
                 if train_payload is not None:
-                    routine, dynamic = select_train_scenario(
-                        train_payload, it, args.train_iters, rng
-                    )
+                    routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
                 else:
                     routine, dynamic = mission_gen.generate_episode_missions(
                         n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
                         n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
                         n_insertions=cfg.mission.dynamic_insertions_per_day,
                     )
-                payloads.append({
-                    "idx": wi,
-                    "cfg": copy.deepcopy(cfg),
-                    "args": args,
-                    "v2_cfg": copy.deepcopy(v2_cfg),
-                    "scenario": (routine, dynamic),
-                    "model_state": model_state,
-                    "rollout_steps": worker_steps,
-                    "seed": int(rng.randint(0, 2**31 - 1)),
+                reset = env.reset(options={
+                    "routine_missions": copy.deepcopy(routine),
+                    "dynamic_schedule": copy.deepcopy(dynamic),
                 })
-            with get_context("spawn").Pool(processes=n_workers) as pool:
-                worker_results = pool.map(_collect_rollout_worker, payloads)
-            worker_results = sorted(worker_results, key=lambda row: row["idx"])
-            metrics = trainer.update_many(
-                [row["buffer"] for row in worker_results],
-                [row["last_global_state"] for row in worker_results],
-            )
-            reward = sum(float(row.get("total_reward", 0.0)) for row in worker_results)
-        else:
-            if train_payload is not None:
-                routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
-            else:
-                routine, dynamic = mission_gen.generate_episode_missions(
-                    n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
-                    n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
-                    n_insertions=cfg.mission.dynamic_insertions_per_day,
+                cur_obs = {aid: item[0] for aid, item in reset.items()}
+                cur_info = {aid: item[1] for aid, item in reset.items()}
+                buffer = MultiAgentRolloutBuffer()
+                buffer.init_agents(env.agent_ids)
+                _, _, reward = trainer.collect_rollout(
+                    env, buffer, cfg.meta.rollout_steps, cur_obs, cur_info
                 )
-            reset = env.reset(options={
-                "routine_missions": copy.deepcopy(routine),
-                "dynamic_schedule": copy.deepcopy(dynamic),
-            })
-            cur_obs = {aid: item[0] for aid, item in reset.items()}
-            cur_info = {aid: item[1] for aid, item in reset.items()}
-            buffer = MultiAgentRolloutBuffer()
-            buffer.init_agents(env.agent_ids)
-            _, _, reward = trainer.collect_rollout(
-                env, buffer, cfg.meta.rollout_steps, cur_obs, cur_info
+                metrics = trainer.update(buffer, env.get_global_state())
+            pbar.set_postfix(
+                reward=f"{reward:.2f}",
+                ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
+                vloss=f"{metrics.get('value_loss', 0.0):.3f}",
             )
-            metrics = trainer.update(buffer, env.get_global_state())
-        pbar.set_postfix(
-            reward=f"{reward:.2f}",
-            ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
-            vloss=f"{metrics.get('value_loss', 0.0):.3f}",
-        )
+    finally:
+        if train_pool is not None:
+            train_pool.close()
+            train_pool.join()
 
     avg = _parallel_eval(
         cfg=cfg,

@@ -35,6 +35,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_types: Dict[str, List[str]] = {}
         self._slot_scores: Dict[str, List[float]] = {}
         self._candidate_score_table: Dict[int, Dict[str, CandidateScore]] = {}
+        self._v2_step_cache = {}
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -52,7 +53,19 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_types = {}
         self._slot_scores = {}
         self._candidate_score_table = {}
-        return super().reset(*args, **kwargs)
+        self._clear_v2_step_cache()
+        result = super().reset(*args, **kwargs)
+        self._clear_v2_step_cache()
+        return result
+
+    def step(self, actions):
+        self._clear_v2_step_cache()
+        result = super().step(actions)
+        self._clear_v2_step_cache()
+        return result
+
+    def _clear_v2_step_cache(self) -> None:
+        self._v2_step_cache = {}
 
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
@@ -80,6 +93,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self.task_candidate_owners.update(assignment.task_candidates)
         self.task_owner.update(assignment.primary_owner)
         self._refresh_assignment_load()
+        self._clear_v2_step_cache()
 
     def _reassign_tasks(self, missions: list) -> int:
         current_time = self._current_time_s()
@@ -106,12 +120,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 self._owner_switch_counts[mission.id] = self._owner_switch_counts.get(mission.id, 0) + 1
                 switched += 1
         self._refresh_assignment_load()
+        self._clear_v2_step_cache()
         return switched
 
     def set_task_owner(self, mission_id: int, agent_id: str, count_switch: bool = True) -> bool:
         changed = super().set_task_owner(mission_id, agent_id, count_switch=count_switch)
         if changed:
             self.task_candidate_owners[mission_id] = [agent_id]
+            self._clear_v2_step_cache()
         return changed
 
     def _build_score_table(self, missions: List[Mission], current_time_s: float):
@@ -153,6 +169,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         return score_table
 
     def _candidate_load(self, exclude_missions: Optional[set] = None) -> Dict[str, int]:
+        if not exclude_missions and "candidate_load" in self._v2_step_cache:
+            return self._v2_step_cache["candidate_load"]
         exclude_missions = exclude_missions or set()
         load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
         for mission_id, owners in self.task_candidate_owners.items():
@@ -161,14 +179,45 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             for aid in owners:
                 if aid in load:
                     load[aid] += 1
+        if not exclude_missions:
+            self._v2_step_cache["candidate_load"] = load
         return load
 
     def _stale_task_ids(self) -> set:
+        if "stale_task_ids" in self._v2_step_cache:
+            return self._v2_step_cache["stale_task_ids"]
         stale = set()
         for mission_id, owner in self.task_owner.items():
             if owner is not None and not self._has_future_feasible_window(owner, mission_id):
                 stale.add(mission_id)
+        self._v2_step_cache["stale_task_ids"] = stale
         return stale
+
+    def _mission_by_id(self, agent_id: str) -> Dict[int, Mission]:
+        key = ("mission_by_id", agent_id)
+        cached = self._v2_step_cache.get(key)
+        if cached is not None:
+            return cached
+        lookup = {
+            int(m.id): m
+            for m in self.envs[agent_id].missions
+            if m is not None
+        }
+        self._v2_step_cache[key] = lookup
+        return lookup
+
+    def _has_future_feasible_window(self, agent_id: str, mission_id: int) -> bool:
+        env = self.envs[agent_id]
+        mission = self._mission_by_id(agent_id).get(int(mission_id))
+        if mission is None or mission.is_observed:
+            return False
+        from_t = max(env.current_time_s, mission.earliest_time_s)
+        for vtw in env.mission_vtw.get(mission.id, []):
+            obs_start = max(vtw.start_time, from_t)
+            obs_end = obs_start + mission.duration_s
+            if obs_end <= min(vtw.end_time, mission.deadline_s):
+                return True
+        return False
 
     def _current_time_s(self) -> float:
         first_env = list(self.envs.values())[0]
@@ -179,12 +228,18 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     # ------------------------------------------------------------------
     def _apply_ownership_mask(self, agent_id: str, mask: np.ndarray) -> np.ndarray:
         env = self.envs[agent_id]
+        current_time = float(env.current_time_s)
+        stale = self._stale_task_ids()
         for i in range(self.max_action_dim):
             mission = env.missions[i]
             if mission is None:
                 continue
             candidates = self.task_candidate_owners.get(mission.id)
-            if candidates and agent_id not in candidates and not self._ownership_released(agent_id, mission):
+            if (
+                candidates
+                and agent_id not in candidates
+                and not self._ownership_released_with_context(agent_id, mission, current_time, stale)
+            ):
                 mask[i] = 0.0
         return mask
 
@@ -201,6 +256,29 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         near_deadline = env.current_time_s >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
         owner_stale = not self._has_future_feasible_window(owner, mission.id)
         released = near_deadline or owner_stale
+        if released:
+            self._released_mission_ids.add(mission.id)
+            if near_deadline:
+                self._deadline_release_mission_ids.add(mission.id)
+        return released
+
+    def _ownership_released_with_context(
+        self,
+        agent_id: str,
+        mission,
+        current_time: float,
+        stale: set,
+    ) -> bool:
+        if mission.is_observed:
+            return True
+        candidates = self.task_candidate_owners.get(mission.id, [])
+        if agent_id in candidates:
+            return True
+        owner = self.task_owner.get(mission.id)
+        if owner is None:
+            return False
+        near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+        released = near_deadline or mission.id in stale
         if released:
             self._released_mission_ids.add(mission.id)
             if near_deadline:
@@ -273,7 +351,11 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             if mission is None or mission.is_observed:
                 continue
             candidates = self.task_candidate_owners.get(mission.id)
-            if candidates and agent_id not in candidates and not self._ownership_released(agent_id, mission):
+            if (
+                candidates
+                and agent_id not in candidates
+                and not self._ownership_released_with_context(agent_id, mission, current_time, stale)
+            ):
                 continue
 
             score = self._candidate_action_score_from_context(
@@ -388,9 +470,6 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 **info,
                 "slot_types": list(self._slot_types.get(agent_id, [])),
                 "slot_scores": list(self._slot_scores.get(agent_id, [])),
-                "task_candidate_owners": {
-                    int(k): list(v)
-                    for k, v in self.task_candidate_owners.items()
-                },
+                "n_task_candidate_owners": len(self.task_candidate_owners),
             }
         return obs, info
