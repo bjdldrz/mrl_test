@@ -48,6 +48,10 @@ class Mission:
     is_observed: bool = False      # D_i (论文 Eq.3)
     obs_start_s: float = -1.0     # t_i^s
     obs_end_s: float = -1.0       # t_i^e
+    is_downlinked: bool = False    # 图像是否已下传到基站; 关闭基站约束时与 is_observed 等价
+    downlink_start_s: float = -1.0
+    downlink_end_s: float = -1.0
+    ground_station_id: int = -1
 
 
 # -----------------------------------------------------------------------

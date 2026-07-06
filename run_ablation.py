@@ -1130,6 +1130,10 @@ def main():
                         help="传给 compare_methods.py 的方法列表; 默认 mappo, "
                              "避免消融子实验重复训练不变的 Single/Indep baseline。"
                              "完整对比可设为 single,indep,mappo 或 all")
+    parser.add_argument("--n_ground_stations", type=int, default=None,
+                        help="传给 compare_methods.py 的共享基站数量; None 表示旧口径")
+    parser.add_argument("--downlink_time_s", type=float, default=None,
+                        help="传给 compare_methods.py 的固定图像下传耗时(秒)")
     parser.add_argument("--assign_w_loads", type=str, default="0.05,0.1,0.2")
     parser.add_argument("--release_windows", type=str, default="0,1800")
     parser.add_argument("--capacity_modes", type=str, default="equal,proportional")
@@ -1403,6 +1407,8 @@ def main():
                 "vtw_cache_dir",
                 "scenario_cache_dir",
                 "candidate_action_top_k",
+                "n_ground_stations",
+                "downlink_time_s",
             ]:
                 value = getattr(args, arg_name)
                 if value is not None:

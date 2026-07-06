@@ -71,6 +71,8 @@ class MultiSatelliteEnv:
         global_state_mode: str = "mean",
         global_state_task_stats: bool = False,
         candidate_action_top_k: int = 0,
+        n_ground_stations: int = 0,
+        downlink_time_s: float = 0.0,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -150,6 +152,12 @@ class MultiSatelliteEnv:
         # 底层 SatelliteSchedulingEnv 仍保留 max_action_dim 个真实槽位,用于 VTW、统计和结果可视化。
         self.candidate_action_top_k = max(0, int(candidate_action_top_k or 0))
         self._candidate_action_maps: Dict[str, List[Optional[int]]] = {}
+        # --- 基站下传约束 ---
+        # n_ground_stations=0 时保持旧口径: 观测结束即完成。
+        # >0 时所有卫星共享 n 个基站服务台, 观测图像排队下传, 下传完成才计入任务完成。
+        self.n_ground_stations = max(0, int(n_ground_stations or 0))
+        self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
+        self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -160,7 +168,10 @@ class MultiSatelliteEnv:
                 horizon_s=horizon_s,
                 reward_config=reward_config,
                 vtw_time_step_s=vtw_time_step_s,
+                n_ground_stations=self.n_ground_stations,
+                downlink_time_s=self.downlink_time_s,
             )
+            self.envs[cfg.name].set_ground_station_state(self._ground_station_available_s)
 
         # 维度信息 (所有卫星共享相同的 obs/action 维度)
         sample_env = list(self.envs.values())[0]
@@ -590,6 +601,10 @@ class MultiSatelliteEnv:
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
         self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
+        if self.n_ground_stations > 0:
+            self._ground_station_available_s[:] = [0.0] * self.n_ground_stations
+            for env in self.envs.values():
+                env.set_ground_station_state(self._ground_station_available_s)
         if self.coordinate and self.episode_assignment:
             self._assign_tasks(self._all_known_missions())
 
@@ -613,7 +628,7 @@ class MultiSatelliteEnv:
         raw_actions = self._decode_actions(actions)
         results = {}
         prev_load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
-        prev_observed = self._observed_mission_ids() if self.coordinate else set()
+        prev_observed = self._completed_mission_ids() if self.coordinate else set()
 
         # 1) 冲突解决 (优化路线图 A1+A2/A3+B6): 负载感知的贪心拍卖 + 败者改派.
         #    协同模式下用边际价值竞价择优指派, 抢输者改派次优任务;
@@ -631,10 +646,14 @@ class MultiSatelliteEnv:
                         )
 
         # 2) 每颗卫星执行（已去冲突的）动作
+        prev_schedule_lens = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
+        prev_ground_available = list(self._ground_station_available_s)
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
             obs, reward, term, trunc, info = env.step(resolved_actions[agent_id])
             results[agent_id] = (obs, reward, term, trunc, info)
+        if self.n_ground_stations > 0 and self.downlink_time_s > 0:
+            self._rebatch_new_downlinks(prev_schedule_lens, prev_ground_available, results)
 
         # 3) 同步观测状态 (仅协同模式: 一颗星完成则全体知晓, 避免重复)
         if self.coordinate:
@@ -670,6 +689,56 @@ class MultiSatelliteEnv:
             )
 
         return results
+
+    def _rebatch_new_downlinks(
+        self,
+        prev_schedule_lens: Dict[str, int],
+        prev_ground_available: List[float],
+        results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
+    ) -> None:
+        """
+        同一 multi-agent step 内可能有多颗卫星同时完成观测。
+
+        单星环境在各自 step 中会立即申请基站,但多星 step 是按 agent_id 顺序
+        串行调用的。这里把本步新增的观测记录收集起来,按真实 obs_end_s 重新
+        分配共享基站,避免 Python 遍历顺序影响下传完成时间和奖励。
+        """
+        self._ground_station_available_s[:] = list(prev_ground_available)
+        new_records = []
+        for aid in self.agent_ids:
+            env = self.envs[aid]
+            start = prev_schedule_lens.get(aid, len(env.schedule_log))
+            for record in env.schedule_log[start:]:
+                new_records.append((record.obs_end_s, aid, record))
+        new_records.sort(key=lambda item: (item[0], item[1], item[2].mission_id))
+
+        for _, aid, record in new_records:
+            env = self.envs[aid]
+            old_reward = record.reward
+            downlink_start, downlink_end, station_id = env._schedule_downlink(record.obs_end_s)
+            record.downlink_start_s = downlink_start
+            record.downlink_end_s = downlink_end
+            record.ground_station_id = station_id
+
+            mission = self._mission_for_agent(aid, record.mission_id)
+            if mission is not None:
+                mission.downlink_start_s = downlink_start
+                mission.downlink_end_s = downlink_end
+                mission.ground_station_id = station_id
+                mission.is_downlinked = downlink_end <= env.horizon_s and downlink_end <= mission.deadline_s
+                completion_time_s = downlink_end
+                if mission.is_downlinked:
+                    record.reward = env.compute_reward(
+                        mission,
+                        completion_time_s,
+                        off_nadir_deg=record.off_nadir_deg,
+                    )
+                else:
+                    record.reward = env.rw_cfg.penalty_deadline_miss
+
+            if aid in results and record.reward != old_reward:
+                obs, reward, term, trunc, info = results[aid]
+                results[aid] = (obs, float(reward + record.reward - old_reward), term, trunc, info)
 
     # ===================================================================
     # 冲突解决: 负载感知贪心拍卖 + 败者改派 (优化路线图 A1+A2/A3+B6)
@@ -716,6 +785,13 @@ class MultiSatelliteEnv:
         for env in self.envs.values():
             for mission in env.missions:
                 if mission is not None and mission.id == mission_id and mission.is_observed:
+                    return True
+        return False
+
+    def _mission_completed_anywhere(self, mission_id: int) -> bool:
+        for env in self.envs.values():
+            for mission in env.missions:
+                if mission is not None and mission.id == mission_id and env._mission_completed(mission):
                     return True
         return False
 
@@ -1687,6 +1763,14 @@ class MultiSatelliteEnv:
                     observed.add(m.id)
         return observed
 
+    def _completed_mission_ids(self) -> set:
+        completed = set()
+        for env in self.envs.values():
+            for m in env.missions:
+                if m is not None and env._mission_completed(m):
+                    completed.add(m.id)
+        return completed
+
     def _shape_multi_agent_rewards(
         self,
         results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
@@ -1708,7 +1792,7 @@ class MultiSatelliteEnv:
         raw_rewards = {aid: results[aid][1] for aid in self.agent_ids}
         team_mean = float(np.mean(list(raw_rewards.values()))) if raw_rewards else 0.0
         mean_prev_load = float(np.mean(list(prev_load.values()))) if prev_load else 0.0
-        new_completed = len(self._observed_mission_ids() - prev_observed)
+        new_completed = len(self._completed_mission_ids() - prev_observed)
         completion_bonus = self.team_completion_bonus * new_completed
 
         shaped = {}
@@ -1781,18 +1865,35 @@ class MultiSatelliteEnv:
         这是多星协调的核心——避免重复观测。
         """
         # 收集所有已完成任务的 ID
-        observed_ids = set()
+        observed_state: Dict[int, Any] = {}
         for env in self.envs.values():
             for m in env.missions:
                 if m is not None and m.is_observed:
-                    observed_ids.add(m.id)
+                    old = observed_state.get(m.id)
+                    if old is None:
+                        observed_state[m.id] = m
+                    elif (
+                        getattr(m, "is_downlinked", False)
+                        and (
+                            not getattr(old, "is_downlinked", False)
+                            or m.downlink_end_s < old.downlink_end_s
+                        )
+                    ):
+                        observed_state[m.id] = m
 
         # 同步到所有卫星
-        if observed_ids:
+        if observed_state:
             for env in self.envs.values():
                 for m in env.missions:
-                    if m is not None and m.id in observed_ids:
+                    if m is not None and m.id in observed_state:
+                        src = observed_state[m.id]
                         m.is_observed = True
+                        m.obs_start_s = src.obs_start_s
+                        m.obs_end_s = src.obs_end_s
+                        m.is_downlinked = getattr(src, "is_downlinked", False)
+                        m.downlink_start_s = getattr(src, "downlink_start_s", -1.0)
+                        m.downlink_end_s = getattr(src, "downlink_end_s", -1.0)
+                        m.ground_station_id = getattr(src, "ground_station_id", -1)
 
     # ===================================================================
     # 全局状态 (仅训练时 Critic 使用)
@@ -1870,7 +1971,8 @@ class MultiSatelliteEnv:
     def get_metrics(self) -> Dict[str, float]:
         """聚合所有卫星的调度指标"""
         # 合并所有卫星的调度记录
-        all_scheduled_ids = set()
+        all_observed_ids = set()
+        all_completed_ids = set()
         total_reward = 0.0
         total_time = 0.0
 
@@ -1878,7 +1980,14 @@ class MultiSatelliteEnv:
             metrics = env.get_metrics()
             total_reward += metrics["total_reward"]
             for record in env.schedule_log:
-                all_scheduled_ids.add(record.mission_id)
+                all_observed_ids.add(record.mission_id)
+                mission = self._mission_for_agent(env.sat_config.name, record.mission_id)
+                deadline_s = mission.deadline_s if mission is not None else env.horizon_s
+                if (not env.downlink_required) or (
+                    record.downlink_end_s <= env.horizon_s
+                    and record.downlink_end_s <= deadline_s
+                ):
+                    all_completed_ids.add(record.mission_id)
 
         # 基于共享任务池统计: 动态任务可能先被某一颗卫星插入,
         # 因此用所有卫星已知任务的并集作为基准。
@@ -1901,23 +2010,27 @@ class MultiSatelliteEnv:
         feas_total = len(feasible_routine) + len(feasible_dynamic)
 
         # 统计哪些任务被任意一颗卫星完成
-        observed_total = len(all_scheduled_ids)
+        observed_only_total = len(all_observed_ids)
+        observed_total = len(all_completed_ids)
         feas_observed = sum(
-            1 for m in (feasible_routine + feasible_dynamic) if m.id in all_scheduled_ids
+            1 for m in (feasible_routine + feasible_dynamic) if m.id in all_completed_ids
         )
-        routine_feas_done = sum(1 for m in feasible_routine if m.id in all_scheduled_ids)
-        dynamic_feas_done = sum(1 for m in feasible_dynamic if m.id in all_scheduled_ids)
+        feas_observed_only = sum(
+            1 for m in (feasible_routine + feasible_dynamic) if m.id in all_observed_ids
+        )
+        routine_feas_done = sum(1 for m in feasible_routine if m.id in all_completed_ids)
+        dynamic_feas_done = sum(1 for m in feasible_dynamic if m.id in all_completed_ids)
 
         # 全部任务口径 (诊断对照)
         routine_total = sum(1 for m in all_missions if not m.is_dynamic)
         dynamic_total = sum(1 for m in all_missions if m.is_dynamic)
-        routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.id in all_scheduled_ids)
-        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.id in all_scheduled_ids)
+        routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.id in all_completed_ids)
+        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.id in all_completed_ids)
 
         # --- 协同质量指标 (体现多星协同 vs 无协同的核心差异) ---
         # 1) 重复观测: 总调度记录数 - 去重后完成数. 协同好 → ≈0
         total_records = sum(len(env.schedule_log) for env in self.envs.values())
-        n_duplicates = total_records - observed_total
+        n_duplicates = total_records - observed_only_total
         duplicate_rate = n_duplicates / max(total_records, 1)
 
         # 2) 负载均衡: 各卫星完成任务数的方差/变异系数. 协同好 → 均衡(方差小)
@@ -1935,8 +2048,13 @@ class MultiSatelliteEnv:
         for env in self.envs.values():
             for r in env.schedule_log:
                 if r.is_dynamic:
-                    dyn_delays.append(r.obs_end_s - r.earliest_time_s)
+                    completion_time = r.downlink_end_s if env.downlink_required else r.obs_end_s
+                    dyn_delays.append(completion_time - r.earliest_time_s)
         avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
+        downlink_queue_delays = [
+            max(0.0, r.downlink_start_s - r.obs_end_s)
+            for env in self.envs.values() for r in env.schedule_log
+        ]
 
         pending_assigned = [
             m for m in all_missions
@@ -1963,6 +2081,8 @@ class MultiSatelliteEnv:
             "observation_success_rate_raw": observed_total / max(total_missions, 1),
             "dynamic_completion_rate_raw": dynamic_done / max(dynamic_total, 1),
             "routine_completion_rate_raw": routine_done / max(routine_total, 1),
+            "observation_only_success_rate": feas_observed_only / max(feas_total, 1),
+            "observation_only_success_rate_raw": observed_only_total / max(total_missions, 1),
             "n_total_tasks": total_missions,
             "n_routine_tasks": routine_total,
             "n_dynamic_tasks": dynamic_total,
@@ -1970,6 +2090,7 @@ class MultiSatelliteEnv:
             "n_feasible_routine": len(feasible_routine),
             "n_feasible_dynamic": len(feasible_dynamic),
             "n_feasible_observed": feas_observed,
+            "n_feasible_observed_only": feas_observed_only,
             "n_feasible_routine_done": routine_feas_done,
             "n_feasible_dynamic_done": dynamic_feas_done,
             "feasible_ratio": feas_total / max(total_missions, 1),
@@ -1980,6 +2101,12 @@ class MultiSatelliteEnv:
             "load_balance_cv": load_cv,             # 负载变异系数 (越小越均衡)
             "avg_off_nadir_deg": avg_off_nadir,     # 平均观测质量 (越小越好)
             "avg_dynamic_response_s": avg_dynamic_response_s,  # 动态响应延迟 (越小越快)
+            "n_observed": observed_only_total,
+            "n_downlinked": observed_total,
+            "n_pending_downlink": max(observed_only_total - observed_total, 0),
+            "n_ground_stations": self.n_ground_stations,
+            "downlink_time_s": self.downlink_time_s,
+            "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
             "n_scheduled": observed_total,
             # --- Rolling assignment 诊断指标 ---
             "n_replans": self._n_replans,

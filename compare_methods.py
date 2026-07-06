@@ -244,6 +244,9 @@ def _record_to_dict(r):
         "off_nadir_deg": float(r.off_nadir_deg),
         "is_dynamic": bool(r.is_dynamic),
         "earliest_time_s": float(r.earliest_time_s),
+        "downlink_start_s": float(getattr(r, "downlink_start_s", r.obs_end_s)),
+        "downlink_end_s": float(getattr(r, "downlink_end_s", r.obs_end_s)),
+        "ground_station_id": int(getattr(r, "ground_station_id", -1)),
     }
 
 
@@ -271,6 +274,8 @@ def _eval_single_worker(args):
         max_action_dim=cfg.mission.max_action_dim,
         reward_config=cfg.reward,
         vtw_time_step_s=cfg.train.vtw_time_step_s,
+        n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
+        downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -467,6 +472,8 @@ def _run_compare_method_worker(job):
     torch.manual_seed(seed)
 
     if method_name == "Single-PPO":
+        cfg.mission.n_ground_stations = args.get("n_ground_stations", 0)
+        cfg.mission.downlink_time_s = args.get("downlink_time_s", 0.0)
         metrics = run_single_ppo(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             train_scenarios=train_scenarios,
@@ -482,7 +489,9 @@ def _run_compare_method_worker(job):
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
             show_progress=not args.get("no_progress", False),
-            eval_device=args.get("eval_device", "same"))
+            eval_device=args.get("eval_device", "same"),
+            n_ground_stations=args.get("n_ground_stations", 0),
+            downlink_time_s=args.get("downlink_time_s", 0.0))
     elif method_name == "MAPPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -524,7 +533,9 @@ def _run_compare_method_worker(job):
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
             show_progress=not args.get("no_progress", False),
-            eval_device=args.get("eval_device", "same"))
+            eval_device=args.get("eval_device", "same"),
+            n_ground_stations=args.get("n_ground_stations", 0),
+            downlink_time_s=args.get("downlink_time_s", 0.0))
     elif method_name == "Greedy-Oracle":
         metrics = run_greedy_oracle(
             cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
@@ -550,6 +561,8 @@ def _eval_oracle_worker(args):
         coordinate=True,
         episode_assignment=False,
         reassign_losers=False,
+        n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
+        downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
     )
     opts = {
         "routine_missions": copy.deepcopy(routine),
@@ -632,6 +645,8 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
     env = SatelliteSchedulingEnv(
         satellite_config=sat, max_action_dim=cfg.mission.max_action_dim,
         reward_config=cfg.reward, vtw_time_step_s=cfg.train.vtw_time_step_s,
+        n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
+        downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -789,6 +804,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               global_state_mode="mean",
               global_state_task_stats=False,
               candidate_action_top_k=0,
+              n_ground_stations=0,
+              downlink_time_s=0.0,
               satellite_curriculum=False,
               curriculum_min_satellites=1,
               curriculum_iters=10,
@@ -837,6 +854,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         global_state_mode=global_state_mode if coordinate else "mean",
         global_state_task_stats=(coordinate and global_state_task_stats),
         candidate_action_top_k=candidate_action_top_k,
+        n_ground_stations=n_ground_stations,
+        downlink_time_s=downlink_time_s,
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -880,6 +899,8 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         "global_state_mode": global_state_mode if coordinate else "mean",
         "global_state_task_stats": (coordinate and global_state_task_stats),
         "candidate_action_top_k": candidate_action_top_k,
+        "n_ground_stations": n_ground_stations,
+        "downlink_time_s": downlink_time_s,
     }
     trainer_kwargs = {
         "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
@@ -1170,6 +1191,8 @@ def run_greedy_oracle(
         coordinate=True,
         episode_assignment=False,
         reassign_losers=False,
+        n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
+        downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
     )
 
     if eval_workers > 1:
@@ -1308,6 +1331,10 @@ def main():
                         help="MAPPO critic 全局状态追加任务/负载统计")
     parser.add_argument("--candidate_action_top_k", type=int, default=0,
                         help="多星候选动作空间大小; 0=full action, >0=Top-K任务+idle")
+    parser.add_argument("--n_ground_stations", type=int, default=0,
+                        help="共享基站数量; 0 表示关闭基站下传约束, 保持观测即完成旧口径")
+    parser.add_argument("--downlink_time_s", type=float, default=0.0,
+                        help="每个观测图像固定下传耗时(秒); 与 --n_ground_stations>0 同时启用")
     parser.add_argument("--run_oracle", action="store_true",
                         help="额外运行 Greedy-Oracle 集中式启发式参考")
     parser.add_argument("--satellite_curriculum", action="store_true",
@@ -1346,6 +1373,8 @@ def main():
         cfg.ppo.batch_size = args.ppo_batch_size
     if args.vtw_time_step_s is not None:
         cfg.train.vtw_time_step_s = args.vtw_time_step_s
+    cfg.mission.n_ground_stations = args.n_ground_stations
+    cfg.mission.downlink_time_s = args.downlink_time_s
     base_satellite_count = len(cfg.satellites)
     cfg.satellites = expand_satellite_configs(cfg.satellites, args.n_satellites)
     cfg.mappo.n_satellites = args.n_satellites
@@ -1608,12 +1637,16 @@ def main():
         ("n_feasible_tasks", "可观测任务数", ""),
         ("n_feasible_routine", "可观测常规任务数", ""),
         ("n_feasible_dynamic", "可观测动态任务数", ""),
+        ("n_observed", "已观测任务数", ""),
+        ("n_downlinked", "已下传完成数", ""),
+        ("n_pending_downlink", "待/失败下传数", ""),
         ("n_scheduled", "完成任务数", ""),
         ("n_duplicates", "重复观测数", ""),
         ("duplicate_rate", "重复观测率", "%"),
         ("load_balance_cv", "负载变异系数", ""),
         ("avg_off_nadir_deg", "平均off-nadir", "°"),
         ("avg_dynamic_response_s", "动态响应延迟", "s"),
+        ("avg_downlink_queue_s", "平均下传排队", "s"),
         ("n_replans", "重分配次数", ""),
         ("n_owner_switches", "owner切换数", ""),
         ("owner_churn_rate", "owner切换率", "%"),

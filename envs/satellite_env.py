@@ -34,6 +34,9 @@ class ScheduleRecord:
     off_nadir_deg: float = 0.0   # 观测时的偏离星下点角(图像质量, 越小越好)
     is_dynamic: bool = False     # 是否动态任务
     earliest_time_s: float = 0.0 # 任务可用/到达时间(算响应延迟用)
+    downlink_start_s: float = 0.0
+    downlink_end_s: float = 0.0
+    ground_station_id: int = -1
 
 
 class SatelliteSchedulingEnv(gym.Env):
@@ -54,6 +57,8 @@ class SatelliteSchedulingEnv(gym.Env):
         reward_config=None,
         precomputed_vtw: Optional[Dict] = None,
         vtw_time_step_s: float = 120.0,
+        n_ground_stations: int = 0,
+        downlink_time_s: float = 0.0,
     ):
         """
         参数
@@ -84,6 +89,9 @@ class SatelliteSchedulingEnv(gym.Env):
         # 预计算的 VTW (可选, 提高训练速度)
         self.precomputed_vtw = precomputed_vtw or {}
         self.vtw_time_step_s = vtw_time_step_s
+        self.n_ground_stations = max(0, int(n_ground_stations or 0))
+        self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
+        self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
 
         # ----- 状态空间 (论文 Eq.11-12) -----
         # 每个任务的状态向量: [obs_status, w_start, w_end, t_obs_start, t_obs_end, priority, is_dynamic]
@@ -112,6 +120,20 @@ class SatelliteSchedulingEnv(gym.Env):
         self._dynamic_queue: List[Tuple[float, List[Mission]]] = []
         self._n_routine = 0
 
+    @property
+    def downlink_required(self) -> bool:
+        return self.n_ground_stations > 0 and self.downlink_time_s > 0.0
+
+    def set_ground_station_state(self, availability: List[float]):
+        """让多星环境共享同一组基站可用时间。"""
+        self._ground_station_available_s = availability
+        self.n_ground_stations = len(availability)
+
+    def _mission_completed(self, mission: Mission) -> bool:
+        if mission is None:
+            return False
+        return bool(mission.is_downlinked) if self.downlink_required else bool(mission.is_observed)
+
     # ===================================================================
     # Gymnasium 接口
     # ===================================================================
@@ -133,6 +155,8 @@ class SatelliteSchedulingEnv(gym.Env):
         self.schedule_log = []
         self.mission_vtw = {}
         self._last_off_nadir_deg = 0.0
+        if self.n_ground_stations > 0:
+            self._ground_station_available_s[:] = [0.0] * self.n_ground_stations
 
         options = options or {}
         routine_missions = options.get("routine_missions", [])
@@ -312,9 +336,11 @@ class SatelliteSchedulingEnv(gym.Env):
             if m is None:
                 continue
 
-            # 观测状态编码: 0=未观测, 0.5=观测中, 1=已完成
-            if m.is_observed:
+            # 观测/交付状态编码: 0=未观测, 0.5=观测中, 0.75=待/未下传, 1=已完成
+            if self._mission_completed(m):
                 obs_status = 1.0
+            elif m.is_observed:
+                obs_status = 0.75
             elif m.obs_start_s > 0:
                 obs_status = 0.5
             else:
@@ -452,9 +478,22 @@ class SatelliteSchedulingEnv(gym.Env):
         mission.obs_end_s = obs_end
         self._last_off_nadir_deg = usable_vtw.off_nadir_deg  # 更新跟踪
 
-        reward = self.compute_reward(
-            mission, obs_end, off_nadir_deg=usable_vtw.off_nadir_deg
+        downlink_start, downlink_end, ground_station_id = self._schedule_downlink(obs_end)
+        mission.downlink_start_s = downlink_start
+        mission.downlink_end_s = downlink_end
+        mission.ground_station_id = ground_station_id
+        mission.is_downlinked = (
+            (not self.downlink_required)
+            or (downlink_end <= self.horizon_s and downlink_end <= mission.deadline_s)
         )
+
+        completion_time_s = downlink_end if self.downlink_required else obs_end
+        if self.downlink_required and not mission.is_downlinked:
+            reward = self.rw_cfg.penalty_deadline_miss
+        else:
+            reward = self.compute_reward(
+                mission, completion_time_s, off_nadir_deg=usable_vtw.off_nadir_deg
+            )
 
         self.schedule_log.append(ScheduleRecord(
             mission_id=mission.id,
@@ -465,12 +504,31 @@ class SatelliteSchedulingEnv(gym.Env):
             off_nadir_deg=usable_vtw.off_nadir_deg,
             is_dynamic=mission.is_dynamic,
             earliest_time_s=mission.earliest_time_s,
+            downlink_start_s=downlink_start,
+            downlink_end_s=downlink_end,
+            ground_station_id=ground_station_id,
         ))
 
         # 时间推进到观测结束
         self.current_time_s = obs_end
 
         return reward, True
+
+    def _schedule_downlink(self, obs_end_s: float) -> Tuple[float, float, int]:
+        """
+        将观测图像自动分配给最早可用基站下传。
+
+        n_ground_stations=0 或 downlink_time_s=0 时保持旧口径: 观测结束即完成。
+        """
+        if not self.downlink_required:
+            return obs_end_s, obs_end_s, -1
+        if not self._ground_station_available_s:
+            self._ground_station_available_s = [0.0] * self.n_ground_stations
+        station_id = int(np.argmin(self._ground_station_available_s))
+        downlink_start = max(float(obs_end_s), float(self._ground_station_available_s[station_id]))
+        downlink_end = downlink_start + self.downlink_time_s
+        self._ground_station_available_s[station_id] = downlink_end
+        return downlink_start, downlink_end, station_id
 
     def _insert_arrived_dynamic_missions(self):
         """检查并插入已到达的动态任务 (论文 Fig.3 动态槽位更新)"""
@@ -574,22 +632,24 @@ class SatelliteSchedulingEnv(gym.Env):
         all_missions = [m for m in self.missions if m is not None]
         total_missions = len(all_missions)
         observed = sum(1 for m in all_missions if m.is_observed)
+        completed = sum(1 for m in all_missions if self._mission_completed(m))
 
         # feasible 划分 (论文 Table 4 分母)
         feasible = [m for m in all_missions if self._is_feasible(m)]
         feas_total = len(feasible)
-        feas_observed = sum(1 for m in feasible if m.is_observed)
+        feas_observed_only = sum(1 for m in feasible if m.is_observed)
+        feas_observed = sum(1 for m in feasible if self._mission_completed(m))
 
         routine_feas = [m for m in feasible if not m.is_dynamic]
         dynamic_feas = [m for m in feasible if m.is_dynamic]
-        routine_feas_done = sum(1 for m in routine_feas if m.is_observed)
-        dynamic_feas_done = sum(1 for m in dynamic_feas if m.is_observed)
+        routine_feas_done = sum(1 for m in routine_feas if self._mission_completed(m))
+        dynamic_feas_done = sum(1 for m in dynamic_feas if self._mission_completed(m))
 
         # 全部任务口径 (诊断用)
         routine_total = sum(1 for m in all_missions if not m.is_dynamic)
-        routine_done = sum(1 for m in all_missions if not m.is_dynamic and m.is_observed)
+        routine_done = sum(1 for m in all_missions if not m.is_dynamic and self._mission_completed(m))
         dynamic_total = sum(1 for m in all_missions if m.is_dynamic)
-        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and m.is_observed)
+        dynamic_done = sum(1 for m in all_missions if m.is_dynamic and self._mission_completed(m))
 
         total_reward = sum(r.reward for r in self.schedule_log)
         dynamic_reward = sum(
@@ -605,10 +665,18 @@ class SatelliteSchedulingEnv(gym.Env):
             avg_off_nadir = 0.0
         # 动态任务平均响应延迟: 从任务可用(到达)到观测完成的时间(秒)
         dyn_delays = [
-            r.obs_end_s - r.earliest_time_s
+            (r.downlink_end_s if self.downlink_required else r.obs_end_s) - r.earliest_time_s
             for r in self.schedule_log if r.is_dynamic
         ]
         avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
+        downlink_durations = [
+            max(0.0, r.downlink_end_s - r.downlink_start_s)
+            for r in self.schedule_log
+        ]
+        downlink_queue_delays = [
+            max(0.0, r.downlink_start_s - r.obs_end_s)
+            for r in self.schedule_log
+        ]
 
         return {
             "total_reward": total_reward,
@@ -617,9 +685,11 @@ class SatelliteSchedulingEnv(gym.Env):
             "dynamic_completion_rate": dynamic_feas_done / len(dynamic_feas) if dynamic_feas else 0.0,
             "routine_completion_rate": routine_feas_done / len(routine_feas) if routine_feas else 0.0,
             # 全部任务口径 (诊断对照)
-            "observation_success_rate_raw": observed / total_missions if total_missions > 0 else 0.0,
+            "observation_success_rate_raw": completed / total_missions if total_missions > 0 else 0.0,
             "dynamic_completion_rate_raw": dynamic_done / dynamic_total if dynamic_total > 0 else 0.0,
             "routine_completion_rate_raw": routine_done / routine_total if routine_total > 0 else 0.0,
+            "observation_only_success_rate": feas_observed_only / feas_total if feas_total > 0 else 0.0,
+            "observation_only_success_rate_raw": observed / total_missions if total_missions > 0 else 0.0,
             # feasible 比例 (反映物理可达性)
             "n_total_tasks": total_missions,
             "n_routine_tasks": routine_total,
@@ -628,6 +698,7 @@ class SatelliteSchedulingEnv(gym.Env):
             "n_feasible_routine": len(routine_feas),
             "n_feasible_dynamic": len(dynamic_feas),
             "n_feasible_observed": feas_observed,
+            "n_feasible_observed_only": feas_observed_only,
             "n_feasible_routine_done": routine_feas_done,
             "n_feasible_dynamic_done": dynamic_feas_done,
             "feasible_ratio": feas_total / total_missions if total_missions > 0 else 0.0,
@@ -635,8 +706,15 @@ class SatelliteSchedulingEnv(gym.Env):
             # 协同/质量指标
             "avg_off_nadir_deg": avg_off_nadir,
             "avg_dynamic_response_s": avg_dynamic_response_s,
+            "n_observed": observed,
+            "n_downlinked": completed,
+            "n_pending_downlink": max(observed - completed, 0),
+            "n_ground_stations": self.n_ground_stations,
+            "downlink_time_s": self.downlink_time_s,
+            "avg_downlink_duration_s": float(np.mean(downlink_durations)) if downlink_durations else 0.0,
+            "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
             "dynamic_reward": dynamic_reward,
             "routine_reward": total_reward - dynamic_reward,
-            "n_scheduled": len(self.schedule_log),
+            "n_scheduled": completed,
             "n_duplicates": 0,  # 单星无重复观测(占位, 多星覆盖)
         }

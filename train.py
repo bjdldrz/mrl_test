@@ -75,6 +75,9 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
         satellite_config=sat_cfg,
         max_action_dim=config.mission.max_action_dim,
         reward_config=config.reward,
+        vtw_time_step_s=config.train.vtw_time_step_s,
+        n_ground_stations=config.mission.n_ground_stations,
+        downlink_time_s=config.mission.downlink_time_s,
     )
 
     obs_dim = env.observation_space.shape[0]
@@ -289,6 +292,10 @@ def main():
                         help="每隔多少个 meta iteration 保存 checkpoint")
     parser.add_argument("--vtw_time_step_s", type=float, default=None,
                         help="VTW 采样步长; 越小越精确但 CPU 更重")
+    parser.add_argument("--n_ground_stations", type=int, default=None,
+                        help="共享基站数量; 0 表示关闭基站下传约束")
+    parser.add_argument("--downlink_time_s", type=float, default=None,
+                        help="每个观测图像固定下传耗时(秒)")
     parser.add_argument("--no_profile_timing", action="store_true",
                         help="关闭 MRL-DMS 阶段耗时日志和 profile 输出")
     args = parser.parse_args()
@@ -350,6 +357,10 @@ def main():
         config.train.save_interval = args.save_interval
     if args.vtw_time_step_s is not None:
         config.train.vtw_time_step_s = args.vtw_time_step_s
+    if args.n_ground_stations is not None:
+        config.mission.n_ground_stations = args.n_ground_stations
+    if args.downlink_time_s is not None:
+        config.mission.downlink_time_s = args.downlink_time_s
     if args.no_profile_timing:
         config.train.profile_timing = False
 

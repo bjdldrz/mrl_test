@@ -63,6 +63,10 @@ class MRLDMSTrainer:
         dummy_env = SatelliteSchedulingEnv(
             satellite_config=sat_cfg,
             max_action_dim=config.mission.max_action_dim,
+            reward_config=config.reward,
+            vtw_time_step_s=config.train.vtw_time_step_s,
+            n_ground_stations=config.mission.n_ground_stations,
+            downlink_time_s=config.mission.downlink_time_s,
         )
         obs_dim = dummy_env.observation_space.shape[0]
         action_dim = dummy_env.action_space.n
@@ -128,6 +132,8 @@ class MRLDMSTrainer:
                 max_action_dim=config.mission.max_action_dim,
                 reward_config=config.reward,
                 vtw_time_step_s=config.train.vtw_time_step_s,
+                n_ground_stations=config.mission.n_ground_stations,
+                downlink_time_s=config.mission.downlink_time_s,
             )
             self.envs.append(env)
 
@@ -186,6 +192,8 @@ class MRLDMSTrainer:
             max_action_dim=config.mission.max_action_dim,
             reward_config=config.reward,
             vtw_time_step_s=config.train.vtw_time_step_s,
+            n_ground_stations=config.mission.n_ground_stations,
+            downlink_time_s=config.mission.downlink_time_s,
         )
 
         # MAPPO 模型: 共享 Actor + 集中式 Critic
@@ -569,6 +577,8 @@ class MRLDMSTrainer:
                 'reward_config': self.cfg.reward,
                 'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
                 'max_action_dim': self.cfg.mission.max_action_dim,
+                'n_ground_stations': self.cfg.mission.n_ground_stations,
+                'downlink_time_s': self.cfg.mission.downlink_time_s,
                 'cfg_ppo': self.cfg.ppo,
                 'cfg_meta': self.cfg.meta,
                 'obs_dim': self._worker_obs_dim,
@@ -640,6 +650,8 @@ class MRLDMSTrainer:
                 'reward_config': self.cfg.reward,
                 'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
                 'max_action_dim': self.cfg.mission.max_action_dim,
+                'n_ground_stations': self.cfg.mission.n_ground_stations,
+                'downlink_time_s': self.cfg.mission.downlink_time_s,
                 'cfg_ppo': self.cfg.ppo,
                 'cfg_meta': self.cfg.meta,
                 'obs_dim': self._worker_obs_dim,
@@ -1043,6 +1055,8 @@ class MRLDMSTrainer:
                     'reward_config': self.cfg.reward,
                     'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
                     'max_action_dim': self.cfg.mission.max_action_dim,
+                    'n_ground_stations': self.cfg.mission.n_ground_stations,
+                    'downlink_time_s': self.cfg.mission.downlink_time_s,
                     'cfg_ppo': self.cfg.ppo,
                     'cfg_meta': self.cfg.meta,
                     'obs_dim': self._worker_obs_dim,
@@ -1067,6 +1081,8 @@ class MRLDMSTrainer:
                     'reward_config': self.cfg.reward,
                     'vtw_time_step_s': self.cfg.train.vtw_time_step_s,
                     'max_action_dim': self.cfg.mission.max_action_dim,
+                    'n_ground_stations': self.cfg.mission.n_ground_stations,
+                    'downlink_time_s': self.cfg.mission.downlink_time_s,
                     'cfg_ppo': self.cfg.ppo,
                     'cfg_meta': self.cfg.meta,
                     'obs_dim': self._worker_obs_dim,

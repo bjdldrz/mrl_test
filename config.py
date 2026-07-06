@@ -61,6 +61,10 @@ class MissionConfig:
     # 调度周期
     schedule_horizon_hours: float = 24.0     # 24小时规划周期 (论文 4.1.2)
 
+    # 基站/下传约束
+    n_ground_stations: int = 0               # 0=关闭下传约束; >0 表示共享基站数量
+    downlink_time_s: float = 0.0             # 每幅图像固定下传耗时(秒)
+
     # 动作空间
     max_action_dim: int = 800                # A_max, 常规+动态槽位总数
                                              # = routine_max(500) + insertions(3)×dynamic_per_insertion_max(100)

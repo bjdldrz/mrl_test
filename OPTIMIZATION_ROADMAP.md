@@ -667,3 +667,68 @@ python run_ablation.py \
 1. 用 Greedy/ILP/MPC 标签监督训练 CVA scorer,把当前 deterministic encoder 推进为可学习 assignment value model。
 2. 使用 MAPPO critic 或低层 rollout return 作为任务-owner 边价值标签。
 3. 将 `assignment_context_encoder` 参数保存为 checkpoint,允许离线训练后加载权重。
+
+---
+
+### 基站下传约束 v1(2026-07-06)
+
+**研究动机**:原环境中任务在卫星完成观测后立即计为完成,没有刻画遥感任务中“观测-下传-交付”的完整链路。为让调度结果更接近真实任务闭环,新增基站下传约束:卫星观测目标后,图像必须传输到基站才算任务完成。
+
+**当前建模假设**:
+1. 基站数量为 `n_ground_stations`,所有卫星共享同一组基站资源。
+2. 每幅图像下传时间固定为 `downlink_time_s`。
+3. 暂不建模基站空间位置、星地可见窗口、带宽差异和存储容量。
+4. 下传由环境自动分配给最早可用基站;若下传完成时间超过 horizon 或任务 deadline,该任务只算“已观测”,不算“已完成”。
+5. 默认 `n_ground_stations=0` 或 `downlink_time_s=0` 时保持旧口径:观测结束即完成。
+
+**代码实现**:
+- `data/mission_generator.py`:任务新增 `is_downlinked/downlink_start_s/downlink_end_s/ground_station_id`。
+- `envs/satellite_env.py`:单星环境新增基站队列、固定下传耗时和下传完成口径。
+- `envs/multi_satellite_env.py`:多星环境共享同一组基站可用时间,完成率按去重后的下传完成任务统计。
+- `compare_methods.py`:新增 CLI `--n_ground_stations`、`--downlink_time_s`,并输出 `n_observed/n_downlinked/n_pending_downlink/avg_downlink_queue_s`。
+- `cva_mappo_v2/run_experiment.py`:CVA-MAPPO-v2 主方案支持同样的基站下传参数。
+- `run_ablation.py`、`train.py`、`algo/task_worker.py`:消融、单独训练和并行 worker 均支持该口径。
+
+**推荐主对比命令**:
+```bash
+python compare_methods.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 8 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods single,indep,mappo \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --assignment_capacity_mode proportional \
+  --assign_w_load 0.1 \
+  --release_before_deadline_s 1800 \
+  --assignment_scorer cva \
+  --assignment_scorer_mix 0.35 \
+  --assignment_context_encoder lstm \
+  --assignment_context_weight 0.25 \
+  --assignment_sequence_hidden_dim 16 \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --candidate_action_top_k 128 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --train_env_workers 4 \
+  --eval_workers 4 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/compare_ground_station_v1 \
+  --device cpu
+```
+
+**推荐消融方向**:
+- 基站数量: `--n_ground_stations 1/2/4/8`。
+- 下传耗时: `--downlink_time_s 60/300/600/1200`。
+- 对照旧口径: `--n_ground_stations 0 --downlink_time_s 0`。
+
+**后续升级**:
+1. 引入真实基站经纬度与星地可见窗口,从固定服务台升级为星地链路调度。
+2. 加入卫星存储容量和下传队列,让未下传图像占用星上存储。
+3. 把“是否优先观测高价值但下传拥堵的任务”纳入 CVA scorer,形成观测-下传联合价值评估。

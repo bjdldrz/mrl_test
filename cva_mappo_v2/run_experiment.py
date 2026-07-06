@@ -107,6 +107,8 @@ def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
         coordinate=True,
         reassign_losers=True,
         cva_config=v2_cfg,
+        n_ground_stations=args.n_ground_stations,
+        downlink_time_s=args.downlink_time_s,
     )
 
 
@@ -489,6 +491,10 @@ def main():
                         help="评估时按策略分布随机采样动作, 用于检查策略鲁棒性")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
+    parser.add_argument("--n_ground_stations", type=int, default=0,
+                        help="共享基站数量; 0 表示关闭基站下传约束")
+    parser.add_argument("--downlink_time_s", type=float, default=0.0,
+                        help="每个观测图像固定下传耗时(秒)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/cva_mappo_v2")
@@ -552,6 +558,8 @@ def main():
     cfg.ppo.ppo_epochs = args.ppo_epochs
     cfg.ppo.batch_size = args.ppo_batch_size
     cfg.train.vtw_time_step_s = args.vtw_time_step_s
+    cfg.mission.n_ground_stations = args.n_ground_stations
+    cfg.mission.downlink_time_s = args.downlink_time_s
     required_action_dim = args.n_routine + cfg.mission.dynamic_insertions_per_day * args.n_dynamic
     cfg.mission.max_action_dim = max(cfg.mission.max_action_dim, required_action_dim)
 
