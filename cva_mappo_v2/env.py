@@ -329,32 +329,46 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         used = set()
         slot_type_counts = {"routine": 0, "dynamic": 0, "flex": 0}
 
-        def take(group_items, n, slot_type):
-            for _, score, action in group_items:
-                if slot_type_counts[slot_type] >= n:
+        def append_item(slot_type, score, action):
+            selected.append(action)
+            slot_types.append(slot_type)
+            slot_scores.append(float(score))
+            used.add(action)
+
+        if self.v2_cfg.slot_selection_mode == "mixed":
+            mixed_items = []
+            for item in routine:
+                mixed_items.append((*item, "routine"))
+            for item in dynamic:
+                mixed_items.append((*item, "dynamic"))
+            mixed_items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            for _, score, action, slot_type in mixed_items:
+                if len(selected) >= self.v2_cfg.slots.total_slots:
                     break
                 if action in used:
                     continue
-                selected.append(action)
-                slot_types.append(slot_type)
-                slot_scores.append(float(score))
-                used.add(action)
-                slot_type_counts[slot_type] += 1
+                append_item(slot_type, score, action)
+        else:
+            def take(group_items, n, slot_type):
+                for _, score, action in group_items:
+                    if slot_type_counts[slot_type] >= n:
+                        break
+                    if action in used:
+                        continue
+                    append_item(slot_type, score, action)
+                    slot_type_counts[slot_type] += 1
 
-        take(routine, self.v2_cfg.slots.routine_slots, "routine")
-        take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
-        # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
-        flex_count = self.v2_cfg.slots.flex_slots
-        for _, score, action in flex:
-            if slot_type_counts["flex"] >= flex_count:
-                break
-            if action in used:
-                continue
-            selected.append(action)
-            slot_types.append("flex")
-            slot_scores.append(float(score))
-            used.add(action)
-            slot_type_counts["flex"] += 1
+            take(routine, self.v2_cfg.slots.routine_slots, "routine")
+            take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
+            # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
+            flex_count = self.v2_cfg.slots.flex_slots
+            for _, score, action in flex:
+                if slot_type_counts["flex"] >= flex_count:
+                    break
+                if action in used:
+                    continue
+                append_item("flex", score, action)
+                slot_type_counts["flex"] += 1
 
         while len(selected) < self.v2_cfg.slots.total_slots:
             selected.append(None)
@@ -371,7 +385,11 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_filled_sum += sum(1 for action in selected if action is not None)
         self._slot_exposure_count += 1
         for slot_type in ("routine", "dynamic", "flex"):
-            self._slot_type_capacity_sum[slot_type] += int(getattr(self.v2_cfg.slots, f"{slot_type}_slots"))
+            if self.v2_cfg.slot_selection_mode == "mixed":
+                capacity = self.v2_cfg.slots.total_slots
+            else:
+                capacity = int(getattr(self.v2_cfg.slots, f"{slot_type}_slots"))
+            self._slot_type_capacity_sum[slot_type] += capacity
         for slot_type, action in zip(slot_types, selected):
             if slot_type not in self._slot_type_valid_sum or action is None:
                 continue
@@ -589,6 +607,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             "slot_filled_ratio": self._slot_filled_sum / denom,
             "avg_valid_slots": self._slot_valid_sum / max(self._slot_exposure_count, 1),
             "avg_filled_slots": self._slot_filled_sum / max(self._slot_exposure_count, 1),
+            "slot_selection_mixed": 1.0 if self.v2_cfg.slot_selection_mode == "mixed" else 0.0,
         })
         for slot_type in ("routine", "dynamic", "flex"):
             capacity = max(self._slot_type_capacity_sum.get(slot_type, 0), 1)

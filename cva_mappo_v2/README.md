@@ -55,6 +55,7 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
+  --slot_selection_mode mixed \
   --ownership_mask_mode soft \
   --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
@@ -77,14 +78,18 @@ For a cleaner background log, add `--no_progress`.
 
 ## CVA-Guided Mixed-TopK
 
-The current default is `--ownership_mask_mode soft`, which turns hard owner
-assignment into a soft CVA ranking signal:
+The current default is `--slot_selection_mode mixed --ownership_mask_mode soft`.
+This is the actual CVA-guided Mixed-TopK path:
 
 - current executable tasks are kept visible, matching the strongest Mixed-TopK
   baseline behavior;
+- all candidate tasks are ranked in one shared Top-K list instead of being
+  truncated by fixed routine/dynamic/flex quotas;
 - CVA owner assignment adds a ranking bonus through `--candidate_owner_bonus`;
 - future non-owner tasks are still filtered out, so slots are not filled by
   irrelevant future tasks;
+- `--slot_selection_mode typed` restores the fixed routine/dynamic/flex slot
+  layout for ablation;
 - `--ownership_mask_mode hard --candidate_owner_bonus 0` restores the earlier
   hard-owner variant for ablation.
 
@@ -100,14 +105,14 @@ Recommended diagnostic comparison:
 
 ```bash
 # Strong Mixed-TopK baseline inside v2: no hard owner mask, no owner bonus.
-... --ownership_mask_mode soft --candidate_owner_bonus 0
+... --slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0
 
 # Current CVA-guided Mixed-TopK.
-... --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
+... --slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
     --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08
 
-# Earlier hard-owner v2.
-... --ownership_mask_mode hard --candidate_owner_bonus 0
+# Earlier typed hard-owner v2.
+... --slot_selection_mode typed --ownership_mask_mode hard --candidate_owner_bonus 0
 ```
 
 Watch these metrics together:

@@ -7,17 +7,19 @@
 
 ## 2026-07-06 CVA-guided Mixed-TopK 调整记录
 
-最新压力实验显示 Mixed-TopK 是当前最强基线,而 hard-owner CVA-v2 会因为过强的 owner mask 降低当前可执行槽位暴露。因此本轮将 CVA 从“硬约束分配器”调整为“Mixed-TopK 上的软价值引导”:
+最新压力实验显示 Mixed-TopK 是当前最强基线,而 hard-owner CVA-v2 会因为过强的 owner mask 降低当前可执行槽位暴露。进一步代码审计发现,上一版虽然改成 soft owner,但仍按 routine/dynamic/flex 固定类型槽位配额截断,并不是真正的 Mixed-TopK。因此本轮将默认槽位选择改为共享 Top-K:
 
+- 默认 `--slot_selection_mode mixed`:routine/dynamic/flex 不再按固定配额截断,所有候选在一个共享 Top-K 列表中排序。
 - 默认 `--ownership_mask_mode soft`:不再用 owner 硬屏蔽当前可执行任务,保留 Mixed-TopK 的高可执行性。
 - 新增 `--candidate_owner_bonus`:候选 owner 只获得排序加分,降低重复竞争倾向,但不剥夺非 owner 的可执行动作。
-- 保留 `--ownership_mask_mode hard`:用于复现/消融原 hard-owner v2。
+- 保留 `--slot_selection_mode typed` 和 `--ownership_mask_mode hard`:用于复现/消融原 typed/hard-owner v2。
 
 核心对比:
 
-- Mixed-TopK-like: `--ownership_mask_mode soft --candidate_owner_bonus 0`
-- CVA-guided Mixed-TopK: `--ownership_mask_mode soft --candidate_owner_bonus 0.06`
-- Hard-owner CVA-v2: `--ownership_mask_mode hard --candidate_owner_bonus 0`
+- Mixed-TopK-like: `--slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0`
+- CVA-guided Mixed-TopK: `--slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0.06`
+- Typed soft-owner ablation: `--slot_selection_mode typed --ownership_mask_mode soft --candidate_owner_bonus 0.06`
+- Hard-owner CVA-v2: `--slot_selection_mode typed --ownership_mask_mode hard --candidate_owner_bonus 0`
 
 重点验证 CVA 软引导是否能在接近 Mixed-TopK 完成率的前提下,降低重复观测率、改善负载均衡或动态响应。
 

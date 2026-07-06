@@ -18,6 +18,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
   --torch_num_threads 1 \
+  --slot_selection_mode mixed \
   --ownership_mask_mode soft \
   --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
@@ -99,19 +100,24 @@ Purpose: verify whether CVA should be a hard owner constraint or a soft ranking
 signal on top of the strong Mixed-TopK baseline.
 
 ```bash
-# Mixed-TopK-like: keep current executable tasks, no CVA owner ranking bonus
-... --ownership_mask_mode soft --candidate_owner_bonus 0 \
+# Mixed-TopK-like: shared Top-K, no CVA owner ranking bonus
+... --slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0 \
     --run_name cva_v2_soft_no_owner_bonus --out_dir runs/cva_mappo_v2_soft_owner
 
 # CVA-guided Mixed-TopK: current recommended variant
-... --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
+... --slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
     --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
     --run_name cva_v2_soft_owner_bonus --out_dir runs/cva_mappo_v2_soft_owner
 
 # Hard-owner v2: earlier assignment-mask variant
-... --ownership_mask_mode hard --candidate_owner_bonus 0 \
+... --slot_selection_mode typed --ownership_mask_mode hard --candidate_owner_bonus 0 \
     --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
     --run_name cva_v2_hard_owner --out_dir runs/cva_mappo_v2_soft_owner
+
+# Typed soft-owner ablation: tests whether fixed routine/dynamic/flex quotas hurt
+... --slot_selection_mode typed --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
+    --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
+    --run_name cva_v2_typed_soft_owner --out_dir runs/cva_mappo_v2_soft_owner
 ```
 
 Compare:
