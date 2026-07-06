@@ -34,6 +34,8 @@ class CVAMAPPOV2Config:
     load_penalty: float = 0.15
     switch_penalty: float = 0.05
     owner_switch_margin: float = 0.08
+    ownership_mask_mode: str = "soft"
+    candidate_owner_bonus: float = 0.06
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
@@ -69,3 +71,7 @@ class CVAMAPPOV2Config:
             raise ValueError("owner_switch_margin 必须大于等于 0")
         if self.dynamic_broadcast_window_s < 0:
             raise ValueError("dynamic_broadcast_window_s 必须大于等于 0")
+        if self.ownership_mask_mode not in {"hard", "soft"}:
+            raise ValueError("ownership_mask_mode 必须是 hard 或 soft")
+        if self.candidate_owner_bonus < 0:
+            raise ValueError("candidate_owner_bonus 必须大于等于 0")

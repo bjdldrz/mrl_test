@@ -74,6 +74,8 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         load_penalty=args.cva_load_penalty,
         switch_penalty=args.assignment_switch_penalty,
         owner_switch_margin=args.owner_switch_margin,
+        ownership_mask_mode=args.ownership_mask_mode,
+        candidate_owner_bonus=args.candidate_owner_bonus,
         replan_interval_s=args.assignment_replan_interval_s,
         replan_horizon_s=args.assignment_replan_horizon_s,
         release_before_deadline_s=args.release_before_deadline_s,
@@ -491,6 +493,10 @@ def main():
     parser.add_argument("--assignment_switch_penalty", type=float, default=0.05)
     parser.add_argument("--owner_switch_margin", type=float, default=0.08,
                         help="新 owner 分数至少超过旧 owner 的额外门槛; 用于降低 owner churn")
+    parser.add_argument("--ownership_mask_mode", choices=["soft", "hard"], default="soft",
+                        help="soft=CVA-guided Mixed-TopK; hard=原 hard-owner 屏蔽")
+    parser.add_argument("--candidate_owner_bonus", type=float, default=0.06,
+                        help="soft 模式下候选 owner 的排序加分; 0 表示不使用 owner 软引导")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--torch_num_threads", type=int, default=None)
@@ -564,6 +570,8 @@ def main():
             "load_penalty": v2_cfg.load_penalty,
             "switch_penalty": v2_cfg.switch_penalty,
             "owner_switch_margin": v2_cfg.owner_switch_margin,
+            "ownership_mask_mode": v2_cfg.ownership_mask_mode,
+            "candidate_owner_bonus": v2_cfg.candidate_owner_bonus,
             "dynamic_broadcast_window_s": v2_cfg.dynamic_broadcast_window_s,
             "score_weights": {
                 "w_quality": v2_cfg.w_quality,

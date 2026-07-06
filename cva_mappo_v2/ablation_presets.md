@@ -18,6 +18,8 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
   --torch_num_threads 1 \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
   --owner_switch_margin 0.08 \
   --eval_device cpu \
@@ -91,27 +93,29 @@ Purpose: separate static candidate ownership from event-triggered repair.
     --run_name cva_v2_event_repair --out_dir runs/cva_mappo_v2_replan
 ```
 
-## A5 Executable Exposure and Owner Stability
+## A5 CVA-Guided Mixed-TopK
 
-Purpose: verify that the new pressure-test fix improves currently executable
-slot exposure without reintroducing duplicate observations.
+Purpose: verify whether CVA should be a hard owner constraint or a soft ranking
+signal on top of the strong Mixed-TopK baseline.
 
 ```bash
-# old behavior: no dynamic broadcast, no switch margin
-... --dynamic_broadcast_window_s 0 --owner_switch_margin 0 \
-    --run_name cva_v2_no_exec_rescue --out_dir runs/cva_mappo_v2_stability
+# Mixed-TopK-like: keep current executable tasks, no CVA owner ranking bonus
+... --ownership_mask_mode soft --candidate_owner_bonus 0 \
+    --run_name cva_v2_soft_no_owner_bonus --out_dir runs/cva_mappo_v2_soft_owner
 
-# default stability upgrade
-... --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
-    --run_name cva_v2_exec_rescue_stable --out_dir runs/cva_mappo_v2_stability
+# CVA-guided Mixed-TopK: current recommended variant
+... --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
+    --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
+    --run_name cva_v2_soft_owner_bonus --out_dir runs/cva_mappo_v2_soft_owner
 
-# stronger dynamic rescue, stricter owner stability
-... --dynamic_broadcast_window_s 3600 --owner_switch_margin 0.12 \
-    --run_name cva_v2_exec_rescue_strong --out_dir runs/cva_mappo_v2_stability
+# Hard-owner v2: earlier assignment-mask variant
+... --ownership_mask_mode hard --candidate_owner_bonus 0 \
+    --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08 \
+    --run_name cva_v2_hard_owner --out_dir runs/cva_mappo_v2_soft_owner
 ```
 
 Compare:
 
-- dynamic completion and dynamic response delay;
+- completion rate and dynamic response delay;
 - `avg_valid_slots` / `avg_valid_dynamic_slots`;
-- `owner_churn_rate` and duplicate rate.
+- duplicate rate, load balance, and owner churn.

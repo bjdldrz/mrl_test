@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-07-06 CVA-guided Mixed-TopK 调整记录
+
+最新压力实验显示 Mixed-TopK 是当前最强基线,而 hard-owner CVA-v2 会因为过强的 owner mask 降低当前可执行槽位暴露。因此本轮将 CVA 从“硬约束分配器”调整为“Mixed-TopK 上的软价值引导”:
+
+- 默认 `--ownership_mask_mode soft`:不再用 owner 硬屏蔽当前可执行任务,保留 Mixed-TopK 的高可执行性。
+- 新增 `--candidate_owner_bonus`:候选 owner 只获得排序加分,降低重复竞争倾向,但不剥夺非 owner 的可执行动作。
+- 保留 `--ownership_mask_mode hard`:用于复现/消融原 hard-owner v2。
+
+核心对比:
+
+- Mixed-TopK-like: `--ownership_mask_mode soft --candidate_owner_bonus 0`
+- CVA-guided Mixed-TopK: `--ownership_mask_mode soft --candidate_owner_bonus 0.06`
+- Hard-owner CVA-v2: `--ownership_mask_mode hard --candidate_owner_bonus 0`
+
+重点验证 CVA 软引导是否能在接近 Mixed-TopK 完成率的前提下,降低重复观测率、改善负载均衡或动态响应。
+
 ## 2026-07-06 CVA-MAPPO v2 压力场景修正记录
 
 压力测试中出现 `avg_filled_slots` 上升但 `avg_valid_slots` 仍接近 0 的问题,说明扩大候选 owner 只增加了未来候选任务,没有增加当前可执行动作;同时 `owner_churn_rate` 过高,导致低层 MAPPO 面对非平稳槽位语义。

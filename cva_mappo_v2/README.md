@@ -55,6 +55,8 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
   --owner_switch_margin 0.08 \
   --assignment_switch_penalty 0.05 \
@@ -73,9 +75,20 @@ python -m cva_mappo_v2.run_experiment \
 
 For a cleaner background log, add `--no_progress`.
 
-## Current Stability Upgrade
+## CVA-Guided Mixed-TopK
 
-The v2 runner now exposes two knobs for the latest pressure-test issue:
+The current default is `--ownership_mask_mode soft`, which turns hard owner
+assignment into a soft CVA ranking signal:
+
+- current executable tasks are kept visible, matching the strongest Mixed-TopK
+  baseline behavior;
+- CVA owner assignment adds a ranking bonus through `--candidate_owner_bonus`;
+- future non-owner tasks are still filtered out, so slots are not filled by
+  irrelevant future tasks;
+- `--ownership_mask_mode hard --candidate_owner_bonus 0` restores the earlier
+  hard-owner variant for ablation.
+
+The v2 runner also exposes two knobs for the pressure-test stability issue:
 
 - `--dynamic_broadcast_window_s`: after a dynamic task arrives, satellites that
   can execute it immediately may temporarily see it even if they are not its
@@ -86,14 +99,15 @@ The v2 runner now exposes two knobs for the latest pressure-test issue:
 Recommended diagnostic comparison:
 
 ```bash
-# Disable the new mechanisms.
-... --dynamic_broadcast_window_s 0 --owner_switch_margin 0
+# Strong Mixed-TopK baseline inside v2: no hard owner mask, no owner bonus.
+... --ownership_mask_mode soft --candidate_owner_bonus 0
 
-# Default stability upgrade.
-... --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08
+# Current CVA-guided Mixed-TopK.
+... --ownership_mask_mode soft --candidate_owner_bonus 0.06 \
+    --dynamic_broadcast_window_s 1800 --owner_switch_margin 0.08
 
-# More aggressive dynamic rescue, still with stable routine ownership.
-... --dynamic_broadcast_window_s 3600 --owner_switch_margin 0.12
+# Earlier hard-owner v2.
+... --ownership_mask_mode hard --candidate_owner_bonus 0
 ```
 
 Watch these metrics together:

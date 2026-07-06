@@ -251,7 +251,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     # ------------------------------------------------------------------
     # Candidate ownership masks and typed slots
     # ------------------------------------------------------------------
+    def _hard_ownership_mask_enabled(self) -> bool:
+        return self.v2_cfg.ownership_mask_mode == "hard"
+
     def _apply_ownership_mask(self, agent_id: str, mask: np.ndarray) -> np.ndarray:
+        if not self._hard_ownership_mask_enabled():
+            return mask
         env = self.envs[agent_id]
         current_time = float(env.current_time_s)
         stale = self._stale_task_ids()
@@ -429,9 +434,18 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 continue
             candidates = self.task_candidate_owners.get(mission.id)
             if (
-                candidates
+                self._hard_ownership_mask_enabled()
+                and candidates
                 and agent_id not in candidates
                 and not self._ownership_released_with_context(agent_id, mission, current_time, stale)
+            ):
+                continue
+            if (
+                not self._hard_ownership_mask_enabled()
+                and candidates
+                and agent_id not in candidates
+                and not self._ownership_released_with_context(agent_id, mission, current_time, stale)
+                and full_mask[action] <= 0
             ):
                 continue
 
@@ -445,6 +459,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             )
             if score is None:
                 continue
+            score += self._soft_owner_score_bonus(agent_id, mission)
             is_available = 1 if full_mask[action] > 0 else 0
             item = (is_available, float(score), int(action))
             if not mission.is_dynamic:
@@ -503,6 +518,13 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             return False
         arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
         return arrival_s <= current_time <= min(arrival_s + window_s, mission.deadline_s)
+
+    def _soft_owner_score_bonus(self, agent_id: str, mission: Mission) -> float:
+        bonus = float(self.v2_cfg.candidate_owner_bonus or 0.0)
+        if bonus <= 0:
+            return 0.0
+        owners = self.task_candidate_owners.get(mission.id, [])
+        return bonus if agent_id in owners else 0.0
 
     def _candidate_action_score(
         self,
