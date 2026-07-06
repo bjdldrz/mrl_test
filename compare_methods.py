@@ -276,6 +276,7 @@ def _eval_single_worker(args):
         vtw_time_step_s=cfg.train.vtw_time_step_s,
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -563,6 +564,7 @@ def _eval_oracle_worker(args):
         reassign_losers=False,
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
     opts = {
         "routine_missions": copy.deepcopy(routine),
@@ -647,6 +649,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
         reward_config=cfg.reward, vtw_time_step_s=cfg.train.vtw_time_step_s,
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -856,6 +859,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         candidate_action_top_k=candidate_action_top_k,
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -901,6 +905,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         "candidate_action_top_k": candidate_action_top_k,
         "n_ground_stations": n_ground_stations,
         "downlink_time_s": downlink_time_s,
+        "ground_station_configs": getattr(cfg, "ground_stations", None),
     }
     trainer_kwargs = {
         "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
@@ -1193,6 +1198,7 @@ def run_greedy_oracle(
         reassign_losers=False,
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
 
     if eval_workers > 1:
@@ -1647,6 +1653,8 @@ def main():
         ("avg_off_nadir_deg", "平均off-nadir", "°"),
         ("avg_dynamic_response_s", "动态响应延迟", "s"),
         ("avg_downlink_queue_s", "平均下传排队", "s"),
+        ("n_ground_station_vtws", "基站可见窗口数", ""),
+        ("avg_ground_station_vtws", "平均基站窗口数", ""),
         ("n_replans", "重分配次数", ""),
         ("n_owner_switches", "owner切换数", ""),
         ("owner_churn_rate", "owner切换率", "%"),

@@ -109,6 +109,7 @@ def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
         cva_config=v2_cfg,
         n_ground_stations=args.n_ground_stations,
         downlink_time_s=args.downlink_time_s,
+        ground_station_configs=getattr(cfg, "ground_stations", None),
     )
 
 

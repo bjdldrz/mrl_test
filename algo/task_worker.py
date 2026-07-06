@@ -61,6 +61,7 @@ def run_single_task(args: dict) -> dict:
     max_action_dim   = args['max_action_dim']
     n_ground_stations = args.get('n_ground_stations', 0)
     downlink_time_s  = args.get('downlink_time_s', 0.0)
+    ground_station_configs = args.get('ground_station_configs')
     cfg_ppo          = args['cfg_ppo']
     cfg_meta         = args['cfg_meta']
     obs_dim          = args['obs_dim']
@@ -87,6 +88,7 @@ def run_single_task(args: dict) -> dict:
         vtw_time_step_s=vtw_time_step_s,
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
+        ground_station_configs=ground_station_configs,
     )
 
     # VTW 由 env.propagator 进程内缓存（compute_vtw 内部 _vtw_cache）。
@@ -209,6 +211,7 @@ def run_mappo_task(args: dict) -> dict:
     max_action_dim    = args['max_action_dim']
     n_ground_stations = args.get('n_ground_stations', 0)
     downlink_time_s   = args.get('downlink_time_s', 0.0)
+    ground_station_configs = args.get('ground_station_configs')
     cfg_ppo           = args['cfg_ppo']
     cfg_meta          = args['cfg_meta']
     obs_dim           = args['obs_dim']
@@ -226,6 +229,7 @@ def run_mappo_task(args: dict) -> dict:
         vtw_time_step_s=vtw_time_step_s,
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
+        ground_station_configs=ground_station_configs,
     )
     model = MAPPOActorCritic(
         local_obs_dim=obs_dim,

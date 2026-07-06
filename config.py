@@ -27,6 +27,15 @@ class SatelliteConfig:
     maneuver_speed_deg_s: float = 3.0  # 姿态机动速度 (°/s, 论文 4.1.2)
 
 
+@dataclass
+class GroundStationConfig:
+    """地面基站位置与通信可见性约束"""
+    name: str
+    lat: float
+    lon: float
+    min_elevation_deg: float = 5.0
+
+
 # 论文 Table 2: 6颗异构太阳同步轨道卫星
 DEFAULT_SATELLITES: List[SatelliteConfig] = [
     SatelliteConfig("Sat1", 644 + 6371,  0.0019, 98.7, 271, 5,   355),
@@ -35,6 +44,18 @@ DEFAULT_SATELLITES: List[SatelliteConfig] = [
     SatelliteConfig("Sat4", 822 + 6371,  0.0,    98.7, 255, 288, 70),
     SatelliteConfig("Sat5", 694 + 6371,  0.0,    98.2, 266, 102, 258),
     SatelliteConfig("Sat6", 496 + 6371,  0.00042,97.2, 318, 185, 175),
+]
+
+
+DEFAULT_GROUND_STATIONS: List[GroundStationConfig] = [
+    GroundStationConfig("GS_Svalbard", 78.2, 15.6, 5.0),
+    GroundStationConfig("GS_Alaska", 64.8, -147.7, 5.0),
+    GroundStationConfig("GS_Madrid", 40.4, -3.7, 5.0),
+    GroundStationConfig("GS_Hawaii", 21.3, -157.8, 5.0),
+    GroundStationConfig("GS_Singapore", 1.35, 103.8, 5.0),
+    GroundStationConfig("GS_Pretoria", -25.7, 28.2, 5.0),
+    GroundStationConfig("GS_Canberra", -35.3, 149.1, 5.0),
+    GroundStationConfig("GS_Santiago", -33.4, -70.7, 5.0),
 ]
 
 
@@ -175,6 +196,9 @@ class TrainConfig:
 class Config:
     satellites: List[SatelliteConfig] = field(
         default_factory=lambda: DEFAULT_SATELLITES
+    )
+    ground_stations: List[GroundStationConfig] = field(
+        default_factory=lambda: DEFAULT_GROUND_STATIONS
     )
     mission: MissionConfig = field(default_factory=MissionConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)

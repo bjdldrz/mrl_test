@@ -59,6 +59,7 @@ class SatelliteSchedulingEnv(gym.Env):
         vtw_time_step_s: float = 120.0,
         n_ground_stations: int = 0,
         downlink_time_s: float = 0.0,
+        ground_station_configs: Optional[List[Any]] = None,
     ):
         """
         参数
@@ -89,9 +90,14 @@ class SatelliteSchedulingEnv(gym.Env):
         # 预计算的 VTW (可选, 提高训练速度)
         self.precomputed_vtw = precomputed_vtw or {}
         self.vtw_time_step_s = vtw_time_step_s
-        self.n_ground_stations = max(0, int(n_ground_stations or 0))
+        self.ground_station_configs = self._build_ground_station_configs(
+            n_ground_stations,
+            ground_station_configs,
+        )
+        self.n_ground_stations = len(self.ground_station_configs)
         self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
         self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
+        self.ground_station_vtw: Dict[int, List[VisibleTimeWindow]] = {}
 
         # ----- 状态空间 (论文 Eq.11-12) -----
         # 每个任务的状态向量: [obs_status, w_start, w_end, t_obs_start, t_obs_end, priority, is_dynamic]
@@ -129,6 +135,57 @@ class SatelliteSchedulingEnv(gym.Env):
         self._ground_station_available_s = availability
         self.n_ground_stations = len(availability)
 
+    @staticmethod
+    def _build_ground_station_configs(n_ground_stations: int, ground_station_configs=None) -> List[Any]:
+        n = max(0, int(n_ground_stations or 0))
+        if n <= 0:
+            return []
+        if ground_station_configs is None:
+            try:
+                from config import DEFAULT_GROUND_STATIONS, GroundStationConfig
+                base = list(DEFAULT_GROUND_STATIONS)
+            except Exception:
+                from dataclasses import make_dataclass
+                GroundStationConfig = make_dataclass(
+                    "GroundStationConfig",
+                    [("name", str), ("lat", float), ("lon", float), ("min_elevation_deg", float)],
+                )
+                base = []
+            if not base:
+                base = [
+                    GroundStationConfig(f"GS{i+1}", 0.0, -180.0 + 360.0 * i / max(n, 1), 5.0)
+                    for i in range(n)
+                ]
+            stations = list(base[:n])
+            while len(stations) < n:
+                idx = len(stations)
+                stations.append(GroundStationConfig(
+                    f"GS_auto_{idx + 1}",
+                    0.0,
+                    -180.0 + 360.0 * idx / max(n, 1),
+                    5.0,
+                ))
+            return stations
+        stations = list(ground_station_configs[:n])
+        if len(stations) < n:
+            try:
+                from config import GroundStationConfig
+            except Exception:
+                from dataclasses import make_dataclass
+                GroundStationConfig = make_dataclass(
+                    "GroundStationConfig",
+                    [("name", str), ("lat", float), ("lon", float), ("min_elevation_deg", float)],
+                )
+            while len(stations) < n:
+                idx = len(stations)
+                stations.append(GroundStationConfig(
+                    f"GS_auto_{idx + 1}",
+                    0.0,
+                    -180.0 + 360.0 * idx / max(n, 1),
+                    5.0,
+                ))
+        return stations
+
     def _mission_completed(self, mission: Mission) -> bool:
         if mission is None:
             return False
@@ -157,6 +214,7 @@ class SatelliteSchedulingEnv(gym.Env):
         self._last_off_nadir_deg = 0.0
         if self.n_ground_stations > 0:
             self._ground_station_available_s[:] = [0.0] * self.n_ground_stations
+        self._compute_ground_station_vtws()
 
         options = options or {}
         routine_missions = options.get("routine_missions", [])
@@ -478,13 +536,16 @@ class SatelliteSchedulingEnv(gym.Env):
         mission.obs_end_s = obs_end
         self._last_off_nadir_deg = usable_vtw.off_nadir_deg  # 更新跟踪
 
-        downlink_start, downlink_end, ground_station_id = self._schedule_downlink(obs_end)
+        downlink_start, downlink_end, ground_station_id = self._schedule_downlink(
+            obs_end,
+            latest_end_s=min(self.horizon_s, mission.deadline_s),
+        )
         mission.downlink_start_s = downlink_start
         mission.downlink_end_s = downlink_end
         mission.ground_station_id = ground_station_id
         mission.is_downlinked = (
             (not self.downlink_required)
-            or (downlink_end <= self.horizon_s and downlink_end <= mission.deadline_s)
+            or (ground_station_id >= 0 and downlink_end <= self.horizon_s and downlink_end <= mission.deadline_s)
         )
 
         completion_time_s = downlink_end if self.downlink_required else obs_end
@@ -514,9 +575,9 @@ class SatelliteSchedulingEnv(gym.Env):
 
         return reward, True
 
-    def _schedule_downlink(self, obs_end_s: float) -> Tuple[float, float, int]:
+    def _schedule_downlink(self, obs_end_s: float, latest_end_s: Optional[float] = None) -> Tuple[float, float, int]:
         """
-        将观测图像自动分配给最早可用基站下传。
+        将观测图像自动分配给最早可用且对卫星可见的基站下传。
 
         n_ground_stations=0 或 downlink_time_s=0 时保持旧口径: 观测结束即完成。
         """
@@ -524,11 +585,41 @@ class SatelliteSchedulingEnv(gym.Env):
             return obs_end_s, obs_end_s, -1
         if not self._ground_station_available_s:
             self._ground_station_available_s = [0.0] * self.n_ground_stations
-        station_id = int(np.argmin(self._ground_station_available_s))
-        downlink_start = max(float(obs_end_s), float(self._ground_station_available_s[station_id]))
-        downlink_end = downlink_start + self.downlink_time_s
+        if not self.ground_station_vtw:
+            self._compute_ground_station_vtws()
+        latest_end = self.horizon_s if latest_end_s is None else min(float(latest_end_s), self.horizon_s)
+        best = None
+        for station_id in range(self.n_ground_stations):
+            ready_time = max(float(obs_end_s), float(self._ground_station_available_s[station_id]))
+            for vtw in self.ground_station_vtw.get(station_id, []):
+                if vtw.end_time < ready_time + self.downlink_time_s:
+                    continue
+                start = max(ready_time, float(vtw.start_time))
+                end = start + self.downlink_time_s
+                if end <= vtw.end_time and end <= latest_end:
+                    cand = (end, start, station_id)
+                    if best is None or cand < best:
+                        best = cand
+                    break
+        if best is None:
+            return -1.0, -1.0, -1
+        downlink_end, downlink_start, station_id = best
         self._ground_station_available_s[station_id] = downlink_end
         return downlink_start, downlink_end, station_id
+
+    def _compute_ground_station_vtws(self):
+        """预计算该卫星对所有基站的通信 VTW, 避免每次下传重复算星地可见性。"""
+        self.ground_station_vtw = {}
+        if not self.downlink_required:
+            return
+        for idx, gs in enumerate(self.ground_station_configs):
+            self.ground_station_vtw[idx] = self.propagator.compute_ground_station_vtw(
+                getattr(gs, "lat"),
+                getattr(gs, "lon"),
+                self.horizon_s,
+                time_step_s=self.vtw_time_step_s,
+                min_elevation_deg=getattr(gs, "min_elevation_deg", 5.0),
+            )
 
     def _insert_arrived_dynamic_missions(self):
         """检查并插入已到达的动态任务 (论文 Fig.3 动态槽位更新)"""
@@ -672,11 +763,14 @@ class SatelliteSchedulingEnv(gym.Env):
         downlink_durations = [
             max(0.0, r.downlink_end_s - r.downlink_start_s)
             for r in self.schedule_log
+            if r.ground_station_id >= 0
         ]
         downlink_queue_delays = [
             max(0.0, r.downlink_start_s - r.obs_end_s)
             for r in self.schedule_log
+            if r.ground_station_id >= 0
         ]
+        n_ground_station_windows = sum(len(vtws) for vtws in self.ground_station_vtw.values())
 
         return {
             "total_reward": total_reward,
@@ -713,6 +807,11 @@ class SatelliteSchedulingEnv(gym.Env):
             "downlink_time_s": self.downlink_time_s,
             "avg_downlink_duration_s": float(np.mean(downlink_durations)) if downlink_durations else 0.0,
             "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
+            "n_ground_station_vtws": n_ground_station_windows,
+            "avg_ground_station_vtws": (
+                n_ground_station_windows / max(self.n_ground_stations, 1)
+                if self.downlink_required else 0.0
+            ),
             "dynamic_reward": dynamic_reward,
             "routine_reward": total_reward - dynamic_reward,
             "n_scheduled": completed,

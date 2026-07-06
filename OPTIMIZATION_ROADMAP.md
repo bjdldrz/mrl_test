@@ -732,3 +732,85 @@ python compare_methods.py \
 1. 引入真实基站经纬度与星地可见窗口,从固定服务台升级为星地链路调度。
 2. 加入卫星存储容量和下传队列,让未下传图像占用星上存储。
 3. 把“是否优先观测高价值但下传拥堵的任务”纳入 CVA scorer,形成观测-下传联合价值评估。
+
+---
+
+### 基站可见 VTW 下传约束 v2(2026-07-06)
+
+**本次修正**:v1 中基站仅作为共享服务台,没有判断卫星是否能看到基站。v2 将基站建模为真实地理位置,下传必须落在“卫星-基站通信可见时间窗口”内。
+
+**实现要点**:
+1. `config.py` 新增 `GroundStationConfig` 和默认基站表 `DEFAULT_GROUND_STATIONS`。
+2. `data/orbit_utils.py` 新增 `compute_ground_station_vtw()`:
+   - 使用卫星轨道传播和基站经纬度计算星地链路窗口;
+   - 只约束最低仰角 `min_elevation_deg`,不使用光学成像的 FOV/roll/日照约束;
+   - 复用全局内存缓存和 `MRL_DMS_VTW_CACHE_DIR` 磁盘缓存。
+3. `envs/satellite_env.py`:
+   - reset 时预计算当前卫星到所有基站的 `ground_station_vtw`;
+   - `_schedule_downlink()` 在基站空闲时间和卫星-基站 VTW 的交集中选择最早可行下传;
+   - 若没有可见窗口或排队后超过 deadline/horizon,任务只算已观测,不算下传完成。
+4. `envs/multi_satellite_env.py`:
+   - 多颗卫星共享同一组基站资源;
+   - 每颗卫星保留自己的 satellite-ground VTW;
+   - 同一 multi-agent step 内的新增观测按真实 `obs_end_s` 重排下传,避免 Python 遍历顺序影响基站分配。
+5. `precompute_scenarios.py`:
+   - 新增 `--n_ground_stations`;
+   - 预热任务 VTW 的同时预热卫星-基站通信 VTW,降低后续训练/评估开销。
+
+**推荐预计算命令**:
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 12 \
+  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42
+```
+
+**推荐主对比命令**:
+```bash
+python compare_methods.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods single,indep,mappo \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --assignment_capacity_mode proportional \
+  --assign_w_load 0.1 \
+  --release_before_deadline_s 1800 \
+  --assignment_scorer cva \
+  --assignment_scorer_mix 0.35 \
+  --assignment_context_encoder lstm \
+  --assignment_context_weight 0.25 \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --candidate_action_top_k 128 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --train_env_workers 4 \
+  --eval_workers 4 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/compare_ground_station_v2 \
+  --device cpu
+```
+
+**重点观察指标**:
+- `n_observed`: 已完成观测数量。
+- `n_downlinked` / `n_scheduled`: 已下传并交付数量。
+- `n_pending_downlink`: 已观测但未能下传完成数量。
+- `avg_downlink_queue_s`: 基站排队造成的平均等待。
+- `n_ground_station_vtws` / `avg_ground_station_vtws`: 卫星-基站可见窗口数量,用于诊断基站网络是否过稀。

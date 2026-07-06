@@ -43,6 +43,7 @@ _VTW_WORKER_TARGETS = None
 _VTW_WORKER_HORIZON_S = 86400.0
 _VTW_WORKER_TIME_STEP_S = 60.0
 _VTW_WORKER_CACHE_DIR = ""
+_VTW_WORKER_GROUND_STATIONS = []
 
 
 def expand_satellite_configs(base_satellites, n_satellites):
@@ -70,6 +71,29 @@ def expand_satellite_configs(base_satellites, n_satellites):
             maneuver_speed_deg_s=base.maneuver_speed_deg_s,
         ))
     return satellites
+
+
+def select_ground_stations(base_ground_stations, n_ground_stations):
+    n = max(0, int(n_ground_stations or 0))
+    if n <= 0:
+        return []
+    stations = copy.deepcopy(list(base_ground_stations[:n]))
+    if not stations:
+        from config import GroundStationConfig
+        stations = [
+            GroundStationConfig(f"GS_auto_{idx + 1}", 0.0, -180.0 + 360.0 * idx / max(n, 1), 5.0)
+            for idx in range(n)
+        ]
+    while len(stations) < n:
+        from config import GroundStationConfig
+        idx = len(stations)
+        stations.append(GroundStationConfig(
+            f"GS_auto_{idx + 1}",
+            0.0,
+            -180.0 + 360.0 * idx / max(n, 1),
+            5.0,
+        ))
+    return stations
 
 
 def parse_curriculum_stages(text: str, n_routine: int, n_dynamic: int):
@@ -212,15 +236,17 @@ def build_eval_payload(
     }
 
 
-def _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir):
+def _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir, ground_stations=None):
     global _VTW_WORKER_TARGETS
     global _VTW_WORKER_HORIZON_S
     global _VTW_WORKER_TIME_STEP_S
     global _VTW_WORKER_CACHE_DIR
+    global _VTW_WORKER_GROUND_STATIONS
     _VTW_WORKER_TARGETS = targets
     _VTW_WORKER_HORIZON_S = horizon_s
     _VTW_WORKER_TIME_STEP_S = time_step_s
     _VTW_WORKER_CACHE_DIR = cache_dir
+    _VTW_WORKER_GROUND_STATIONS = list(ground_stations or [])
     if cache_dir:
         os.environ["MRL_DMS_VTW_CACHE_DIR"] = cache_dir
 
@@ -241,10 +267,19 @@ def _warm_vtw_satellite_worker(args):
             horizon_seconds=_VTW_WORKER_HORIZON_S,
             time_step_s=_VTW_WORKER_TIME_STEP_S,
         )
+    for gs in _VTW_WORKER_GROUND_STATIONS:
+        propagator.compute_ground_station_vtw(
+            getattr(gs, "lat"),
+            getattr(gs, "lon"),
+            horizon_seconds=_VTW_WORKER_HORIZON_S,
+            time_step_s=_VTW_WORKER_TIME_STEP_S,
+            min_elevation_deg=getattr(gs, "min_elevation_deg", 5.0),
+        )
     return {
         "idx": idx,
         "satellite": sat_cfg.name,
         "n_targets": len(targets),
+        "n_ground_stations": len(_VTW_WORKER_GROUND_STATIONS),
     }
 
 
@@ -255,6 +290,7 @@ def warm_vtw_cache(
     time_step_s: float,
     workers: int = 1,
     cache_dir: str = "",
+    ground_stations=None,
     show_progress: bool = True,
 ):
     missions = list(iter_scenario_missions(scenarios))
@@ -265,10 +301,11 @@ def warm_vtw_cache(
     targets = list(unique.values())
     n_workers = max(1, min(int(workers or 1), len(satellites)))
     logger.info(
-        "预热 VTW: satellites=%s, missions=%s, unique_locations=%s, step=%ss, workers=%s",
+        "预热 VTW: satellites=%s, missions=%s, unique_locations=%s, ground_stations=%s, step=%ss, workers=%s",
         len(satellites),
         len(missions),
         len(targets),
+        len(ground_stations or []),
         time_step_s,
         n_workers,
     )
@@ -277,7 +314,7 @@ def warm_vtw_cache(
         for sat_idx, sat_cfg in enumerate(satellites, start=1)
     ]
     if n_workers <= 1:
-        _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir)
+        _init_warm_vtw_worker(targets, horizon_s, time_step_s, cache_dir, ground_stations)
         results = [
             _warm_vtw_satellite_worker(args)
             for args in tqdm(
@@ -293,7 +330,7 @@ def warm_vtw_cache(
         with get_context(start_method).Pool(
             processes=n_workers,
             initializer=_init_warm_vtw_worker,
-            initargs=(targets, horizon_s, time_step_s, cache_dir),
+            initargs=(targets, horizon_s, time_step_s, cache_dir, ground_stations),
         ) as pool:
             results = list(tqdm(
                 pool.imap_unordered(_warm_vtw_satellite_worker, task_args),
@@ -489,6 +526,8 @@ def main():
     parser.add_argument("--n_eval_scenarios", type=int, default=20)
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
+    parser.add_argument("--n_ground_stations", type=int, default=0,
+                        help="预热卫星-基站通信 VTW 的基站数量; 0 表示不预热通信 VTW")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_seed", type=int, default=None,
                         help="评估集随机种子; 默认 seed+100000, 保证 train/eval 不同")
@@ -518,6 +557,8 @@ def main():
 
     cfg = get_default_config()
     cfg.satellites = expand_satellite_configs(cfg.satellites, args.n_satellites)
+    cfg.mission.n_ground_stations = args.n_ground_stations
+    ground_stations = select_ground_stations(cfg.ground_stations, args.n_ground_stations)
     if args.vtw_time_step_s is not None:
         cfg.train.vtw_time_step_s = args.vtw_time_step_s
     horizon_s = float(cfg.mission.schedule_horizon_hours) * 3600.0
@@ -577,6 +618,7 @@ def main():
             time_step_s=cfg.train.vtw_time_step_s,
             workers=vtw_workers,
             cache_dir=str(vtw_cache_dir),
+            ground_stations=ground_stations,
             show_progress=not args.no_progress,
         )
 
@@ -601,6 +643,15 @@ def main():
         "vtw_cache_dir": str(vtw_cache_dir),
         "vtw_workers": args.vtw_workers,
         "effective_vtw_workers": effective_vtw_workers,
+        "ground_stations": [
+            {
+                "name": gs.name,
+                "lat": gs.lat,
+                "lon": gs.lon,
+                "min_elevation_deg": gs.min_elevation_deg,
+            }
+            for gs in ground_stations
+        ],
         "maps_dir": str(maps_dir) if maps_dir is not None else "",
         "n_maps": n_maps,
         "outputs": {

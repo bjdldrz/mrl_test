@@ -325,6 +325,103 @@ class OrbitPropagator:
         _save_vtw_disk_cache(global_key, windows)
         return windows
 
+    def compute_ground_station_vtw(
+        self,
+        station_lat: float,
+        station_lon: float,
+        horizon_seconds: float = 86400.0,
+        time_step_s: float = 10.0,
+        min_elevation_deg: float = 5.0,
+    ) -> List[VisibleTimeWindow]:
+        """
+        计算卫星-基站通信可见窗口。
+
+        与光学任务观测 VTW 不同, 基站下传只要求星地链路视线满足最低仰角,
+        不施加成像 FOV、roll 或目标日照约束。
+        """
+        cache_key = (
+            "ground_station",
+            round(station_lat, 4),
+            round(station_lon, 4),
+            int(horizon_seconds),
+            int(time_step_s),
+            round(float(min_elevation_deg), 3),
+        )
+        if cache_key in self._vtw_cache:
+            return self._vtw_cache[cache_key]
+        global_key = (self._sat_cache_key, *cache_key)
+        if global_key in _GLOBAL_VTW_CACHE:
+            windows = _GLOBAL_VTW_CACHE[global_key]
+            self._vtw_cache[cache_key] = windows
+            return windows
+        windows = _load_vtw_disk_cache(global_key)
+        if windows is not None:
+            self._vtw_cache[cache_key] = windows
+            _GLOBAL_VTW_CACHE[global_key] = windows
+            return windows
+
+        station_ecef = self._geodetic_to_ecef(station_lat, station_lon)
+        windows = self._compute_ground_station_vtw_vectorized(
+            station_ecef,
+            horizon_seconds,
+            time_step_s,
+            min_elevation_deg,
+        )
+        self._vtw_cache[cache_key] = windows
+        _GLOBAL_VTW_CACHE[global_key] = windows
+        _save_vtw_disk_cache(global_key, windows)
+        return windows
+
+    def _compute_ground_station_vtw_vectorized(
+        self,
+        station_ecef: np.ndarray,
+        horizon_seconds: float,
+        time_step_s: float,
+        min_elevation_deg: float,
+    ) -> List[VisibleTimeWindow]:
+        times = np.arange(0.0, horizon_seconds + time_step_s * 0.5, time_step_s)
+        n_steps = len(times)
+        if self._satrec is not None:
+            sat_pos_all = self._propagate_sgp4_batch(times)
+        else:
+            sat_pos_all = self._propagate_kepler_batch(times)
+
+        to_sat = sat_pos_all - station_ecef[np.newaxis, :]
+        slant_range = np.linalg.norm(to_sat, axis=1)
+        valid = slant_range > 1e-6
+        station_up = station_ecef / np.linalg.norm(station_ecef)
+        sin_elev = np.einsum('ij,j->i', to_sat, station_up) / np.where(valid, slant_range, 1.0)
+        sin_elev = np.clip(sin_elev, -1.0, 1.0)
+        elevation_deg = np.degrees(np.arcsin(sin_elev))
+
+        sat_norm = np.linalg.norm(sat_pos_all, axis=1, keepdims=True)
+        nadir = -sat_pos_all / np.where(sat_norm > 1e-6, sat_norm, 1.0)
+        sat_to_station = (station_ecef[np.newaxis, :] - sat_pos_all) / np.where(
+            valid[:, np.newaxis],
+            slant_range[:, np.newaxis],
+            1.0,
+        )
+        cos_nadir = np.einsum('ij,ij->i', nadir, sat_to_station)
+        cos_nadir = np.clip(cos_nadir, -1.0, 1.0)
+        off_nadir_deg = np.degrees(np.arccos(cos_nadir))
+
+        visible_arr = valid & (elevation_deg >= float(min_elevation_deg))
+        vis_int = visible_arr.astype(np.int8)
+        transitions = np.diff(vis_int, prepend=0, append=0)
+        starts = np.where(transitions == 1)[0]
+        ends = np.where(transitions == -1)[0]
+
+        windows = []
+        for s, e in zip(starts, ends):
+            mid = (s + e) // 2
+            windows.append(VisibleTimeWindow(
+                start_time=times[s],
+                end_time=times[min(e, n_steps - 1)],
+                elevation_deg=float(elevation_deg[mid]),
+                off_nadir_deg=float(off_nadir_deg[mid]),
+            ))
+        return windows
+
     def _compute_vtw_vectorized(
         self,
         target_ecef: np.ndarray,

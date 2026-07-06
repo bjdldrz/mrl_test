@@ -78,6 +78,7 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
         vtw_time_step_s=config.train.vtw_time_step_s,
         n_ground_stations=config.mission.n_ground_stations,
         downlink_time_s=config.mission.downlink_time_s,
+        ground_station_configs=config.ground_stations,
     )
 
     obs_dim = env.observation_space.shape[0]

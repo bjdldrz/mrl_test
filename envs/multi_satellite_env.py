@@ -73,6 +73,7 @@ class MultiSatelliteEnv:
         candidate_action_top_k: int = 0,
         n_ground_stations: int = 0,
         downlink_time_s: float = 0.0,
+        ground_station_configs: Optional[List[Any]] = None,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -155,7 +156,11 @@ class MultiSatelliteEnv:
         # --- 基站下传约束 ---
         # n_ground_stations=0 时保持旧口径: 观测结束即完成。
         # >0 时所有卫星共享 n 个基站服务台, 观测图像排队下传, 下传完成才计入任务完成。
-        self.n_ground_stations = max(0, int(n_ground_stations or 0))
+        self.ground_station_configs = SatelliteSchedulingEnv._build_ground_station_configs(
+            n_ground_stations,
+            ground_station_configs,
+        )
+        self.n_ground_stations = len(self.ground_station_configs)
         self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
         self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
 
@@ -170,6 +175,7 @@ class MultiSatelliteEnv:
                 vtw_time_step_s=vtw_time_step_s,
                 n_ground_stations=self.n_ground_stations,
                 downlink_time_s=self.downlink_time_s,
+                ground_station_configs=self.ground_station_configs,
             )
             self.envs[cfg.name].set_ground_station_state(self._ground_station_available_s)
 
@@ -715,17 +721,25 @@ class MultiSatelliteEnv:
         for _, aid, record in new_records:
             env = self.envs[aid]
             old_reward = record.reward
-            downlink_start, downlink_end, station_id = env._schedule_downlink(record.obs_end_s)
+            mission = self._mission_for_agent(aid, record.mission_id)
+            latest_end_s = min(env.horizon_s, mission.deadline_s) if mission is not None else env.horizon_s
+            downlink_start, downlink_end, station_id = env._schedule_downlink(
+                record.obs_end_s,
+                latest_end_s=latest_end_s,
+            )
             record.downlink_start_s = downlink_start
             record.downlink_end_s = downlink_end
             record.ground_station_id = station_id
 
-            mission = self._mission_for_agent(aid, record.mission_id)
             if mission is not None:
                 mission.downlink_start_s = downlink_start
                 mission.downlink_end_s = downlink_end
                 mission.ground_station_id = station_id
-                mission.is_downlinked = downlink_end <= env.horizon_s and downlink_end <= mission.deadline_s
+                mission.is_downlinked = (
+                    station_id >= 0
+                    and downlink_end <= env.horizon_s
+                    and downlink_end <= mission.deadline_s
+                )
                 completion_time_s = downlink_end
                 if mission.is_downlinked:
                     record.reward = env.compute_reward(
@@ -1938,12 +1952,16 @@ class MultiSatelliteEnv:
         """
         missions = self._all_known_missions()
         total = max(len(missions), 1)
-        observed = sum(1 for m in missions if m.is_observed)
-        pending = sum(1 for m in missions if not m.is_observed)
-        dynamic_pending = sum(1 for m in missions if m.is_dynamic and not m.is_observed)
+        def _completed(mission):
+            env = next(iter(self.envs.values()))
+            return env._mission_completed(mission)
+
+        observed = sum(1 for m in missions if _completed(m))
+        pending = sum(1 for m in missions if not _completed(m))
+        dynamic_pending = sum(1 for m in missions if m.is_dynamic and not _completed(m))
         assigned_pending = sum(
             1 for m in missions
-            if not m.is_observed and m.id in self.task_owner
+            if not _completed(m) and m.id in self.task_owner
         )
 
         loads = np.array([len(self.envs[aid].schedule_log) for aid in self.agent_ids], dtype=np.float32)
@@ -2054,7 +2072,13 @@ class MultiSatelliteEnv:
         downlink_queue_delays = [
             max(0.0, r.downlink_start_s - r.obs_end_s)
             for env in self.envs.values() for r in env.schedule_log
+            if r.ground_station_id >= 0
         ]
+        n_ground_station_windows = sum(
+            len(vtws)
+            for env in self.envs.values()
+            for vtws in env.ground_station_vtw.values()
+        )
 
         pending_assigned = [
             m for m in all_missions
@@ -2107,6 +2131,11 @@ class MultiSatelliteEnv:
             "n_ground_stations": self.n_ground_stations,
             "downlink_time_s": self.downlink_time_s,
             "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
+            "n_ground_station_vtws": n_ground_station_windows,
+            "avg_ground_station_vtws": (
+                n_ground_station_windows / max(self.n_agents * self.n_ground_stations, 1)
+                if self.downlink_time_s > 0 and self.n_ground_stations > 0 else 0.0
+            ),
             "n_scheduled": observed_total,
             # --- Rolling assignment 诊断指标 ---
             "n_replans": self._n_replans,
