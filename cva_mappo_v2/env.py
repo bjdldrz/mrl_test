@@ -412,36 +412,47 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         loads = self._candidate_load()
         load_pressure = loads.get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1)
         action_lookup = self._action_by_mission_id(agent_id)
-        candidate_ids = {
-            int(mid)
-            for mid, owners in self.task_candidate_owners.items()
-            if agent_id in owners
-        }
-        if candidate_ids:
-            # Released urgent/stale tasks may be taken by non-candidate agents.
-            for mid, owner in self.task_owner.items():
-                if mid in candidate_ids:
-                    continue
-                mission = self._mission_by_id(agent_id).get(int(mid))
-                if mission is None or mission.is_observed:
-                    continue
-                near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
-                if near_deadline or mid in stale:
-                    candidate_ids.add(int(mid))
-            # Always expose currently executable tasks allowed by the mask.
-            # This prevents future-only high-score candidates from hiding the
-            # few actions the satellite can actually execute at this step.
-            for action in np.nonzero(full_mask[:self.max_action_dim])[0].tolist():
-                mission = env.missions[action]
-                if mission is not None and not mission.is_observed:
-                    candidate_ids.add(int(mission.id))
-            action_iter = [
-                action_lookup[mid]
-                for mid in candidate_ids
-                if mid in action_lookup
-            ]
-        else:
+        use_shared_mixed_pool = (
+            self.v2_cfg.slot_selection_mode == "mixed"
+            and not self._hard_ownership_mask_enabled()
+        )
+        if use_shared_mixed_pool:
+            # True Mixed-TopK: score the full local task pool and use CVA owner
+            # assignment only as a soft ranking bonus.  Restricting this path to
+            # candidate_ids underfilled slots when the assignment horizon was
+            # short, causing the actor to see almost only idle.
             action_iter = range(self.max_action_dim)
+        else:
+            candidate_ids = {
+                int(mid)
+                for mid, owners in self.task_candidate_owners.items()
+                if agent_id in owners
+            }
+            if not candidate_ids:
+                action_iter = range(self.max_action_dim)
+            else:
+                # Released urgent/stale tasks may be taken by non-candidate agents.
+                for mid, owner in self.task_owner.items():
+                    if mid in candidate_ids:
+                        continue
+                    mission = self._mission_by_id(agent_id).get(int(mid))
+                    if mission is None or mission.is_observed:
+                        continue
+                    near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+                    if near_deadline or mid in stale:
+                        candidate_ids.add(int(mid))
+                # Always expose currently executable tasks allowed by the mask.
+                # This prevents future-only high-score candidates from hiding the
+                # few actions the satellite can actually execute at this step.
+                for action in np.nonzero(full_mask[:self.max_action_dim])[0].tolist():
+                    mission = env.missions[action]
+                    if mission is not None and not mission.is_observed:
+                        candidate_ids.add(int(mission.id))
+                action_iter = [
+                    action_lookup[mid]
+                    for mid in candidate_ids
+                    if mid in action_lookup
+                ]
 
         routine = []
         dynamic = []
@@ -460,6 +471,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 continue
             if (
                 not self._hard_ownership_mask_enabled()
+                and not use_shared_mixed_pool
                 and candidates
                 and agent_id not in candidates
                 and not self._ownership_released_with_context(agent_id, mission, current_time, stale)

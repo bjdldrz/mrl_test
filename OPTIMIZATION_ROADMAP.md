@@ -11,6 +11,7 @@
 
 - 默认 `--slot_selection_mode mixed`:routine/dynamic/flex 不再按固定配额截断,所有候选在一个共享 Top-K 列表中排序。
 - 默认 `--ownership_mask_mode soft`:不再用 owner 硬屏蔽当前可执行任务,保留 Mixed-TopK 的高可执行性。
+- 修正 soft+mixed 候选来源:共享 Top-K 不再受 `candidate_ids` 和短重分配 horizon 限制,而是扫描本星全任务池;CVA owner 只作为排序 bonus。
 - 新增 `--candidate_owner_bonus`:候选 owner 只获得排序加分,降低重复竞争倾向,但不剥夺非 owner 的可执行动作。
 - 保留 `--slot_selection_mode typed` 和 `--ownership_mask_mode hard`:用于复现/消融原 typed/hard-owner v2。
 

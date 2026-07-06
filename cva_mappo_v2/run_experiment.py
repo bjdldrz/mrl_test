@@ -153,12 +153,17 @@ def _eval_worker(payload):
     n_idle_actions = 0
     n_agent_actions = 0
     valid_action_sum = 0.0
+    raw_valid_action_sum = 0.0
     for _ in range(max_steps):
         for aid in env.agent_ids:
             mask = cur_info[aid].get("action_mask")
             if mask is not None:
                 # Exclude the always-valid idle action.
                 valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
+            raw_mask = env.envs[aid]._build_action_mask()
+            if env._hard_ownership_mask_enabled():
+                raw_mask = env._apply_ownership_mask(aid, raw_mask)
+            raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
         actions = trainer.select_eval_actions(
             env,
             cur_obs,
@@ -182,6 +187,7 @@ def _eval_worker(payload):
         "eval_finished_early": 1.0 if n_steps < max_steps else 0.0,
         "eval_idle_action_rate": n_idle_actions / max(n_agent_actions, 1),
         "eval_avg_valid_action_count": valid_action_sum / max(n_agent_actions, 1),
+        "eval_avg_raw_valid_action_count": raw_valid_action_sum / max(n_agent_actions, 1),
     })
     return {"idx": payload["idx"], "metrics": metrics}
 
