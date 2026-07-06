@@ -208,18 +208,17 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         return released
 
     def _select_candidate_actions(self, agent_id: str, full_mask: np.ndarray) -> List[Optional[int]]:
-        routine = self._rank_slot_group(agent_id, full_mask, group="routine")
-        dynamic = self._rank_slot_group(agent_id, full_mask, group="dynamic")
-        flex = self._rank_slot_group(agent_id, full_mask, group="flex")
+        routine, dynamic, flex = self._rank_all_slot_groups(agent_id, full_mask)
 
         selected: List[Optional[int]] = []
         slot_types: List[str] = []
         slot_scores: List[float] = []
         used = set()
+        slot_type_counts = {"routine": 0, "dynamic": 0, "flex": 0}
 
         def take(group_items, n, slot_type):
             for score, action in group_items:
-                if len([t for t in slot_types if t == slot_type]) >= n:
+                if slot_type_counts[slot_type] >= n:
                     break
                 if action in used:
                     continue
@@ -227,13 +226,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 slot_types.append(slot_type)
                 slot_scores.append(float(score))
                 used.add(action)
+                slot_type_counts[slot_type] += 1
 
         take(routine, self.v2_cfg.slots.routine_slots, "routine")
         take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
         # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
         flex_count = self.v2_cfg.slots.flex_slots
         for score, action in flex:
-            if len([t for t in slot_types if t == "flex"]) >= flex_count:
+            if slot_type_counts["flex"] >= flex_count:
                 break
             if action in used:
                 continue
@@ -241,6 +241,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             slot_types.append("flex")
             slot_scores.append(float(score))
             used.add(action)
+            slot_type_counts["flex"] += 1
 
         while len(selected) < self.v2_cfg.slots.total_slots:
             selected.append(None)
@@ -250,6 +251,56 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_types[agent_id] = slot_types
         self._slot_scores[agent_id] = slot_scores
         return selected[:self.v2_cfg.slots.total_slots]
+
+    def _rank_all_slot_groups(self, agent_id: str, full_mask: np.ndarray):
+        """Rank all typed slot groups with a single pass over the task list.
+
+        The first v2 implementation scanned all missions separately for
+        routine, dynamic and flex slots.  At stress scale this multiplied the
+        expensive pair scoring work by roughly three for every satellite and
+        every environment step.
+        """
+        env = self.envs[agent_id]
+        current_time = self._current_time_s()
+        stale = self._stale_task_ids()
+        loads = self._candidate_load()
+        load_pressure = loads.get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1)
+
+        routine = []
+        dynamic = []
+        flex = []
+        for action, mission in enumerate(env.missions[:self.max_action_dim]):
+            if mission is None or mission.is_observed:
+                continue
+            candidates = self.task_candidate_owners.get(mission.id)
+            if candidates and agent_id not in candidates and not self._ownership_released(agent_id, mission):
+                continue
+
+            score = self._candidate_action_score_from_context(
+                agent_id=agent_id,
+                mission=mission,
+                current_time=current_time,
+                load_pressure=load_pressure,
+                stale=stale,
+                allow_future=True,
+            )
+            if score is None:
+                continue
+            if full_mask[action] > 0:
+                score += 0.25
+
+            item = (float(score), int(action))
+            if not mission.is_dynamic:
+                routine.append(item)
+            else:
+                dynamic.append(item)
+            if self._belongs_to_flex_group(mission, current_time, stale):
+                flex.append(item)
+
+        routine.sort(key=lambda x: x[0], reverse=True)
+        dynamic.sort(key=lambda x: x[0], reverse=True)
+        flex.sort(key=lambda x: x[0], reverse=True)
+        return routine, dynamic, flex
 
     def _rank_slot_group(self, agent_id: str, full_mask: np.ndarray, group: str):
         env = self.envs[agent_id]
@@ -279,10 +330,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             return mission.is_dynamic
         if group == "flex":
             current_time = self._current_time_s()
-            near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
-            stale = mission.id in self._stale_task_ids()
-            return mission.is_dynamic or near_deadline or stale or mission.priority >= 7.5
+            return self._belongs_to_flex_group(mission, current_time, self._stale_task_ids())
         return False
+
+    def _belongs_to_flex_group(self, mission: Mission, current_time: float, stale: set) -> bool:
+        near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
+        return mission.is_dynamic or near_deadline or mission.id in stale or mission.priority >= 7.5
 
     def _candidate_action_score(
         self,
@@ -294,16 +347,36 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         mission = env.missions[action]
         if mission is None or mission.is_observed:
             return None
+        load_pressure = self._candidate_load().get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1)
+        return self._candidate_action_score_from_context(
+            agent_id=agent_id,
+            mission=mission,
+            current_time=env.current_time_s,
+            load_pressure=load_pressure,
+            stale=self._stale_task_ids(),
+            allow_future=allow_future,
+        )
+
+    def _candidate_action_score_from_context(
+        self,
+        agent_id: str,
+        mission: Mission,
+        current_time: float,
+        load_pressure: float,
+        stale: set,
+        allow_future: bool = False,
+    ) -> Optional[float]:
+        env = self.envs[agent_id]
         score = self.scorer.score_pair(
             env=env,
             agent_id=agent_id,
             mission=mission,
-            current_time_s=env.current_time_s,
-            load_pressure=self._candidate_load().get(agent_id, 0) / max(self.v2_cfg.slots.total_slots, 1),
+            current_time_s=current_time,
+            load_pressure=load_pressure,
             n_visible_agents=len(self.task_candidate_owners.get(mission.id, [])) or 1,
             n_agents=self.n_agents,
             current_owner=self.task_owner.get(mission.id),
-            owner_stale=mission.id in self._stale_task_ids(),
+            owner_stale=mission.id in stale,
             allow_future=allow_future,
         )
         return None if score is None else score.score
