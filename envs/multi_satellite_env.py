@@ -74,6 +74,9 @@ class MultiSatelliteEnv:
         n_ground_stations: int = 0,
         downlink_time_s: float = 0.0,
         ground_station_configs: Optional[List[Any]] = None,
+        satellite_storage_capacity: int = 0,
+        enable_inter_satellite_transfer: bool = False,
+        inter_satellite_transfer_time_s: float = 300.0,
     ):
         self.sat_configs = satellite_configs
         self.n_agents = len(satellite_configs)
@@ -163,6 +166,9 @@ class MultiSatelliteEnv:
         self.n_ground_stations = len(self.ground_station_configs)
         self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
         self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
+        self.satellite_storage_capacity = max(0, int(satellite_storage_capacity or 0))
+        self.enable_inter_satellite_transfer = bool(enable_inter_satellite_transfer)
+        self.inter_satellite_transfer_time_s = max(0.0, float(inter_satellite_transfer_time_s or 0.0))
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -176,6 +182,7 @@ class MultiSatelliteEnv:
                 n_ground_stations=self.n_ground_stations,
                 downlink_time_s=self.downlink_time_s,
                 ground_station_configs=self.ground_station_configs,
+                satellite_storage_capacity=self.satellite_storage_capacity,
             )
             self.envs[cfg.name].set_ground_station_state(self._ground_station_available_s)
 
@@ -660,6 +667,8 @@ class MultiSatelliteEnv:
             results[agent_id] = (obs, reward, term, trunc, info)
         if self.n_ground_stations > 0 and self.downlink_time_s > 0:
             self._rebatch_new_downlinks(prev_schedule_lens, prev_ground_available, results)
+            if self.enable_inter_satellite_transfer:
+                self._try_inter_satellite_transfers(prev_schedule_lens, results)
 
         # 3) 同步观测状态 (仅协同模式: 一颗星完成则全体知晓, 避免重复)
         if self.coordinate:
@@ -749,10 +758,136 @@ class MultiSatelliteEnv:
                     )
                 else:
                     record.reward = env.rw_cfg.penalty_deadline_miss
+                storage_release_s, storage_reason = env._storage_release_from_delivery(
+                    mission,
+                    record.obs_end_s,
+                    downlink_end,
+                    station_id,
+                )
+                record.storage_release_s = storage_release_s
+                record.storage_release_reason = storage_reason
+                env._set_storage_record(
+                    mission_id=record.mission_id,
+                    storage_start_s=record.obs_end_s,
+                    storage_release_s=storage_release_s,
+                    release_reason=storage_reason,
+                )
 
             if aid in results and record.reward != old_reward:
                 obs, reward, term, trunc, info = results[aid]
                 results[aid] = (obs, float(reward + record.reward - old_reward), term, trunc, info)
+
+    def _try_inter_satellite_transfers(
+        self,
+        prev_schedule_lens: Dict[str, int],
+        results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
+    ) -> None:
+        """
+        规则式星间转发 fallback。
+
+        当前版本只在源卫星没有可行直接下传窗口时尝试转发。转发本身使用固定耗时,
+        暂不建模星间链路可见窗口; 接收卫星必须有空余存储,且能在 deadline 前
+        找到卫星-基站下传窗口。
+        """
+        if self.inter_satellite_transfer_time_s <= 0:
+            return
+        for source_aid in self.agent_ids:
+            source_env = self.envs[source_aid]
+            start_idx = prev_schedule_lens.get(source_aid, len(source_env.schedule_log))
+            for record in source_env.schedule_log[start_idx:]:
+                mission = self._mission_for_agent(source_aid, record.mission_id)
+                if mission is None or mission.is_downlinked or record.ground_station_id >= 0:
+                    continue
+                transfer_start = record.obs_end_s
+                transfer_end = transfer_start + self.inter_satellite_transfer_time_s
+                latest_end_s = min(source_env.horizon_s, mission.deadline_s)
+                if transfer_end >= latest_end_s:
+                    continue
+
+                best = None
+                for target_aid in self.agent_ids:
+                    if target_aid == source_aid:
+                        continue
+                    target_env = self.envs[target_aid]
+                    if not target_env._has_storage_capacity(transfer_end):
+                        continue
+                    dl_start, dl_end, station_id = target_env._find_downlink_slot(
+                        transfer_end,
+                        latest_end_s=latest_end_s,
+                    )
+                    if station_id < 0:
+                        continue
+                    cand = (dl_end, dl_start, station_id, target_aid)
+                    if best is None or cand < best:
+                        best = cand
+
+                if best is None:
+                    continue
+
+                old_reward = record.reward
+                dl_end, dl_start, station_id, target_aid = best
+                target_env = self.envs[target_aid]
+                # 真正预约接收星的下传窗口。
+                dl_start, dl_end, station_id = target_env._schedule_downlink(
+                    transfer_end,
+                    latest_end_s=latest_end_s,
+                )
+                if station_id < 0:
+                    continue
+
+                record.relay_satellite_name = target_aid
+                record.relay_start_s = transfer_start
+                record.relay_end_s = transfer_end
+                record.downlink_start_s = dl_start
+                record.downlink_end_s = dl_end
+                record.ground_station_id = station_id
+                record.storage_release_s = transfer_end
+                record.storage_release_reason = "relay_transfer"
+
+                source_env._set_storage_record(
+                    mission_id=record.mission_id,
+                    storage_start_s=record.obs_end_s,
+                    storage_release_s=transfer_end,
+                    release_reason="relay_transfer",
+                )
+                target_env._set_storage_record(
+                    mission_id=record.mission_id,
+                    storage_start_s=transfer_end,
+                    storage_release_s=dl_end,
+                    release_reason="relay_downlink",
+                    source_satellite_name=source_aid,
+                )
+
+                mission.relay_satellite_name = target_aid
+                mission.relay_start_s = transfer_start
+                mission.relay_end_s = transfer_end
+                mission.downlink_start_s = dl_start
+                mission.downlink_end_s = dl_end
+                mission.ground_station_id = station_id
+                mission.is_downlinked = dl_end <= latest_end_s
+                if mission.is_downlinked:
+                    record.reward = source_env.compute_reward(
+                        mission,
+                        dl_end,
+                        off_nadir_deg=record.off_nadir_deg,
+                    )
+                else:
+                    record.reward = source_env.rw_cfg.penalty_deadline_miss
+
+                if source_aid in results and record.reward != old_reward:
+                    obs, reward, term, trunc, info = results[source_aid]
+                    info = {
+                        **info,
+                        "inter_satellite_transfer": True,
+                        "relay_target": target_aid,
+                    }
+                    results[source_aid] = (
+                        obs,
+                        float(reward + record.reward - old_reward),
+                        term,
+                        trunc,
+                        info,
+                    )
 
     # ===================================================================
     # 冲突解决: 负载感知贪心拍卖 + 败者改派 (优化路线图 A1+A2/A3+B6)
@@ -1908,6 +2043,9 @@ class MultiSatelliteEnv:
                         m.downlink_start_s = getattr(src, "downlink_start_s", -1.0)
                         m.downlink_end_s = getattr(src, "downlink_end_s", -1.0)
                         m.ground_station_id = getattr(src, "ground_station_id", -1)
+                        m.relay_satellite_name = getattr(src, "relay_satellite_name", "")
+                        m.relay_start_s = getattr(src, "relay_start_s", -1.0)
+                        m.relay_end_s = getattr(src, "relay_end_s", -1.0)
 
     # ===================================================================
     # 全局状态 (仅训练时 Critic 使用)
@@ -1993,9 +2131,11 @@ class MultiSatelliteEnv:
         all_completed_ids = set()
         total_reward = 0.0
         total_time = 0.0
+        sub_metrics = {}
 
         for env in self.envs.values():
             metrics = env.get_metrics()
+            sub_metrics[env.sat_config.name] = metrics
             total_reward += metrics["total_reward"]
             for record in env.schedule_log:
                 all_observed_ids.add(record.mission_id)
@@ -2065,7 +2205,7 @@ class MultiSatelliteEnv:
         dyn_delays = []
         for env in self.envs.values():
             for r in env.schedule_log:
-                if r.is_dynamic:
+                if r.is_dynamic and ((not env.downlink_required) or r.ground_station_id >= 0):
                     completion_time = r.downlink_end_s if env.downlink_required else r.obs_end_s
                     dyn_delays.append(completion_time - r.earliest_time_s)
         avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
@@ -2078,6 +2218,30 @@ class MultiSatelliteEnv:
             len(vtws)
             for env in self.envs.values()
             for vtws in env.ground_station_vtw.values()
+        )
+        n_inter_satellite_transfers = sum(
+            1 for env in self.envs.values()
+            for r in env.schedule_log
+            if getattr(r, "relay_satellite_name", "")
+        )
+        current_onboard_images = sum(
+            metrics.get("current_onboard_images", 0.0)
+            for metrics in sub_metrics.values()
+        )
+        max_onboard_images = max(
+            [metrics.get("max_onboard_images", 0.0) for metrics in sub_metrics.values()] or [0.0]
+        )
+        avg_onboard_images = float(np.mean([
+            metrics.get("avg_onboard_images", 0.0)
+            for metrics in sub_metrics.values()
+        ])) if sub_metrics else 0.0
+        n_storage_expired_drops = sum(
+            metrics.get("n_storage_expired_drops", 0.0)
+            for metrics in sub_metrics.values()
+        )
+        n_relay_storage_images = sum(
+            metrics.get("n_relay_storage_images", 0.0)
+            for metrics in sub_metrics.values()
         )
 
         pending_assigned = [
@@ -2130,6 +2294,14 @@ class MultiSatelliteEnv:
             "n_pending_downlink": max(observed_only_total - observed_total, 0),
             "n_ground_stations": self.n_ground_stations,
             "downlink_time_s": self.downlink_time_s,
+            "satellite_storage_capacity": self.satellite_storage_capacity,
+            "current_onboard_images": current_onboard_images,
+            "max_onboard_images": max_onboard_images,
+            "avg_onboard_images": avg_onboard_images,
+            "n_storage_expired_drops": n_storage_expired_drops,
+            "n_relay_storage_images": n_relay_storage_images,
+            "n_inter_satellite_transfers": n_inter_satellite_transfers,
+            "inter_satellite_transfer_time_s": self.inter_satellite_transfer_time_s,
             "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
             "n_ground_station_vtws": n_ground_station_windows,
             "avg_ground_station_vtws": (

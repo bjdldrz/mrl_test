@@ -110,6 +110,9 @@ def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
         n_ground_stations=args.n_ground_stations,
         downlink_time_s=args.downlink_time_s,
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=args.satellite_storage_capacity,
+        enable_inter_satellite_transfer=args.enable_inter_satellite_transfer,
+        inter_satellite_transfer_time_s=args.inter_satellite_transfer_time_s,
     )
 
 
@@ -496,6 +499,12 @@ def main():
                         help="共享基站数量; 0 表示关闭基站下传约束")
     parser.add_argument("--downlink_time_s", type=float, default=0.0,
                         help="每个观测图像固定下传耗时(秒)")
+    parser.add_argument("--satellite_storage_capacity", type=int, default=0,
+                        help="每颗卫星最多同时存储的未交付图片数; 0 表示不限制")
+    parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
+                        help="启用规则式星间转发 fallback")
+    parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=300.0,
+                        help="星间转发固定耗时(秒)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/cva_mappo_v2")
@@ -561,6 +570,9 @@ def main():
     cfg.train.vtw_time_step_s = args.vtw_time_step_s
     cfg.mission.n_ground_stations = args.n_ground_stations
     cfg.mission.downlink_time_s = args.downlink_time_s
+    cfg.mission.satellite_storage_capacity = args.satellite_storage_capacity
+    cfg.mission.enable_inter_satellite_transfer = args.enable_inter_satellite_transfer
+    cfg.mission.inter_satellite_transfer_time_s = args.inter_satellite_transfer_time_s
     required_action_dim = args.n_routine + cfg.mission.dynamic_insertions_per_day * args.n_dynamic
     cfg.mission.max_action_dim = max(cfg.mission.max_action_dim, required_action_dim)
 

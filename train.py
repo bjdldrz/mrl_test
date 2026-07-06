@@ -79,6 +79,7 @@ def train_ppo_baseline(config: Config, acled_df=None, exp_name: str = None):
         n_ground_stations=config.mission.n_ground_stations,
         downlink_time_s=config.mission.downlink_time_s,
         ground_station_configs=config.ground_stations,
+        satellite_storage_capacity=config.mission.satellite_storage_capacity,
     )
 
     obs_dim = env.observation_space.shape[0]
@@ -297,6 +298,12 @@ def main():
                         help="共享基站数量; 0 表示关闭基站下传约束")
     parser.add_argument("--downlink_time_s", type=float, default=None,
                         help="每个观测图像固定下传耗时(秒)")
+    parser.add_argument("--satellite_storage_capacity", type=int, default=None,
+                        help="每颗卫星最多同时存储的未交付图片数; 0 表示不限制")
+    parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
+                        help="启用规则式星间转发 fallback")
+    parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=None,
+                        help="星间转发固定耗时(秒)")
     parser.add_argument("--no_profile_timing", action="store_true",
                         help="关闭 MRL-DMS 阶段耗时日志和 profile 输出")
     args = parser.parse_args()
@@ -362,6 +369,12 @@ def main():
         config.mission.n_ground_stations = args.n_ground_stations
     if args.downlink_time_s is not None:
         config.mission.downlink_time_s = args.downlink_time_s
+    if args.satellite_storage_capacity is not None:
+        config.mission.satellite_storage_capacity = args.satellite_storage_capacity
+    if args.enable_inter_satellite_transfer:
+        config.mission.enable_inter_satellite_transfer = True
+    if args.inter_satellite_transfer_time_s is not None:
+        config.mission.inter_satellite_transfer_time_s = args.inter_satellite_transfer_time_s
     if args.no_profile_timing:
         config.train.profile_timing = False
 

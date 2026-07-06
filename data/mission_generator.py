@@ -52,6 +52,9 @@ class Mission:
     downlink_start_s: float = -1.0
     downlink_end_s: float = -1.0
     ground_station_id: int = -1
+    relay_satellite_name: str = ""
+    relay_start_s: float = -1.0
+    relay_end_s: float = -1.0
 
 
 # -----------------------------------------------------------------------

@@ -37,6 +37,23 @@ class ScheduleRecord:
     downlink_start_s: float = 0.0
     downlink_end_s: float = 0.0
     ground_station_id: int = -1
+    storage_start_s: float = 0.0
+    storage_release_s: float = 0.0
+    storage_release_reason: str = "none"
+    relay_satellite_name: str = ""
+    relay_start_s: float = -1.0
+    relay_end_s: float = -1.0
+
+
+@dataclass
+class StorageRecord:
+    """一张图片在某颗卫星星上存储中的占用记录"""
+    mission_id: int
+    satellite_name: str
+    storage_start_s: float
+    storage_release_s: float
+    release_reason: str
+    source_satellite_name: str = ""
 
 
 class SatelliteSchedulingEnv(gym.Env):
@@ -60,6 +77,7 @@ class SatelliteSchedulingEnv(gym.Env):
         n_ground_stations: int = 0,
         downlink_time_s: float = 0.0,
         ground_station_configs: Optional[List[Any]] = None,
+        satellite_storage_capacity: int = 0,
     ):
         """
         参数
@@ -98,6 +116,7 @@ class SatelliteSchedulingEnv(gym.Env):
         self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
         self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
         self.ground_station_vtw: Dict[int, List[VisibleTimeWindow]] = {}
+        self.satellite_storage_capacity = max(0, int(satellite_storage_capacity or 0))
 
         # ----- 状态空间 (论文 Eq.11-12) -----
         # 每个任务的状态向量: [obs_status, w_start, w_end, t_obs_start, t_obs_end, priority, is_dynamic]
@@ -120,6 +139,7 @@ class SatelliteSchedulingEnv(gym.Env):
         self.missions: List[Optional[Mission]] = []      # 当前已知的所有任务
         self.mission_vtw: Dict[int, List[VisibleTimeWindow]] = {}  # VTW 缓存
         self.schedule_log: List[ScheduleRecord] = []
+        self.storage_log: List[StorageRecord] = []
         self._last_off_nadir_deg = 0.0  # 跟踪上一次观测的 off-nadir 角
 
         # 动态任务插入队列
@@ -129,6 +149,10 @@ class SatelliteSchedulingEnv(gym.Env):
     @property
     def downlink_required(self) -> bool:
         return self.n_ground_stations > 0 and self.downlink_time_s > 0.0
+
+    @property
+    def storage_limited(self) -> bool:
+        return self.satellite_storage_capacity > 0
 
     def set_ground_station_state(self, availability: List[float]):
         """让多星环境共享同一组基站可用时间。"""
@@ -210,6 +234,7 @@ class SatelliteSchedulingEnv(gym.Env):
         super().reset(seed=seed)
         self.current_time_s = 0.0
         self.schedule_log = []
+        self.storage_log = []
         self.mission_vtw = {}
         self._last_off_nadir_deg = 0.0
         if self.n_ground_stations > 0:
@@ -264,16 +289,23 @@ class SatelliteSchedulingEnv(gym.Env):
             # 空闲: 智能推进到下一个有意义的事件时刻
             # (下一个 VTW 开始、动态任务到达、或兜底 60 秒)
             next_event_t = self.current_time_s + 60.0  # 兜底
-            # 检查最近的 VTW 开始时刻
-            for m in self.missions:
-                if m is not None and not m.is_observed:
-                    for vtw in self.mission_vtw.get(m.id, []):
-                        if vtw.start_time > self.current_time_s:
-                            next_event_t = min(next_event_t, vtw.start_time)
-                            break
-            # 检查最近的动态任务到达时刻
-            if self._dynamic_queue:
-                next_event_t = min(next_event_t, self._dynamic_queue[0][0])
+            storage_release_t = self._next_storage_release_time()
+            if self.storage_limited and not self._has_storage_capacity(self.current_time_s):
+                if storage_release_t is not None:
+                    next_event_t = storage_release_t
+            else:
+                # 检查最近的 VTW 开始时刻
+                for m in self.missions:
+                    if m is not None and not m.is_observed:
+                        for vtw in self.mission_vtw.get(m.id, []):
+                            if vtw.start_time > self.current_time_s:
+                                next_event_t = min(next_event_t, vtw.start_time)
+                                break
+                # 检查最近的动态任务到达时刻
+                if self._dynamic_queue:
+                    next_event_t = min(next_event_t, self._dynamic_queue[0][0])
+                if storage_release_t is not None:
+                    next_event_t = min(next_event_t, storage_release_t)
             reward = self.rw_cfg.penalty_idle
             self.current_time_s = max(self.current_time_s + 1.0, next_event_t)
         elif 0 <= action < self.max_action_dim:
@@ -324,6 +356,9 @@ class SatelliteSchedulingEnv(gym.Env):
         """
         mask = np.zeros(self.max_action_dim + 1, dtype=np.float32)
         mask[self.IDLE_ACTION] = 1.0  # idle 动作始终可用
+
+        if not self._has_storage_capacity(self.current_time_s):
+            return mask
 
         # 上一次观测的结束时刻与姿态角 (用于机动时间判据)
         last_obs_end = self.schedule_log[-1].obs_end_s if self.schedule_log else None
@@ -530,6 +565,9 @@ class SatelliteSchedulingEnv(gym.Env):
                 if obs_end > mission.deadline_s:
                     return self.rw_cfg.penalty_deadline_miss, False
 
+        if not self._has_storage_capacity(obs_start):
+            return self.rw_cfg.penalty_invalid, False
+
         # 执行观测
         mission.is_observed = True
         mission.obs_start_s = obs_start
@@ -546,6 +584,12 @@ class SatelliteSchedulingEnv(gym.Env):
         mission.is_downlinked = (
             (not self.downlink_required)
             or (ground_station_id >= 0 and downlink_end <= self.horizon_s and downlink_end <= mission.deadline_s)
+        )
+        storage_release_s, storage_release_reason = self._storage_release_from_delivery(
+            mission,
+            obs_end,
+            downlink_end,
+            ground_station_id,
         )
 
         completion_time_s = downlink_end if self.downlink_required else obs_end
@@ -568,18 +612,134 @@ class SatelliteSchedulingEnv(gym.Env):
             downlink_start_s=downlink_start,
             downlink_end_s=downlink_end,
             ground_station_id=ground_station_id,
+            storage_start_s=obs_end,
+            storage_release_s=storage_release_s,
+            storage_release_reason=storage_release_reason,
         ))
+        self._set_storage_record(
+            mission_id=mission.id,
+            storage_start_s=obs_end,
+            storage_release_s=storage_release_s,
+            release_reason=storage_release_reason,
+        )
 
         # 时间推进到观测结束
         self.current_time_s = obs_end
 
         return reward, True
 
-    def _schedule_downlink(self, obs_end_s: float, latest_end_s: Optional[float] = None) -> Tuple[float, float, int]:
-        """
-        将观测图像自动分配给最早可用且对卫星可见的基站下传。
+    def _storage_release_from_delivery(
+        self,
+        mission: Mission,
+        obs_end_s: float,
+        downlink_end_s: float,
+        ground_station_id: int,
+    ) -> Tuple[float, str]:
+        if not self.storage_limited:
+            return obs_end_s, "disabled"
+        if not self.downlink_required:
+            return obs_end_s, "immediate"
+        if ground_station_id >= 0 and downlink_end_s >= obs_end_s:
+            return downlink_end_s, "downlink"
+        return min(float(mission.deadline_s), self.horizon_s), "expired_drop"
 
-        n_ground_stations=0 或 downlink_time_s=0 时保持旧口径: 观测结束即完成。
+    def _onboard_image_count(self, time_s: Optional[float] = None) -> int:
+        if not self.storage_limited:
+            return 0
+        t = self.current_time_s if time_s is None else float(time_s)
+        return sum(
+            1 for rec in self.storage_log
+            if rec.storage_start_s <= t < rec.storage_release_s
+        )
+
+    def _has_storage_capacity(self, time_s: Optional[float] = None) -> bool:
+        if not self.storage_limited:
+            return True
+        return self._onboard_image_count(time_s) < self.satellite_storage_capacity
+
+    def _next_storage_release_time(self, time_s: Optional[float] = None) -> Optional[float]:
+        if not self.storage_limited:
+            return None
+        t = self.current_time_s if time_s is None else float(time_s)
+        releases = [
+            rec.storage_release_s for rec in self.storage_log
+            if rec.storage_start_s <= t < rec.storage_release_s
+        ]
+        return min(releases) if releases else None
+
+    def _set_storage_record(
+        self,
+        mission_id: int,
+        storage_start_s: float,
+        storage_release_s: float,
+        release_reason: str,
+        source_satellite_name: str = "",
+    ) -> None:
+        if not self.storage_limited:
+            return
+        if storage_release_s <= storage_start_s:
+            self.storage_log = [
+                rec for rec in self.storage_log
+                if not (rec.mission_id == mission_id and abs(rec.storage_start_s - storage_start_s) < 1e-6)
+            ]
+            return
+        for rec in self.storage_log:
+            if rec.mission_id == mission_id and abs(rec.storage_start_s - storage_start_s) < 1e-6:
+                rec.storage_release_s = storage_release_s
+                rec.release_reason = release_reason
+                rec.source_satellite_name = source_satellite_name
+                return
+        self.storage_log.append(StorageRecord(
+            mission_id=mission_id,
+            satellite_name=self.sat_config.name,
+            storage_start_s=storage_start_s,
+            storage_release_s=storage_release_s,
+            release_reason=release_reason,
+            source_satellite_name=source_satellite_name,
+        ))
+
+    def _storage_stats(self) -> Dict[str, float]:
+        if not self.storage_limited:
+            return {
+                "current_onboard_images": 0.0,
+                "max_onboard_images": 0.0,
+                "avg_onboard_images": 0.0,
+                "n_storage_expired_drops": 0.0,
+                "n_relay_storage_images": 0.0,
+            }
+        events = []
+        for rec in self.storage_log:
+            start = max(0.0, min(float(rec.storage_start_s), self.horizon_s))
+            end = max(start, min(float(rec.storage_release_s), self.horizon_s))
+            events.append((start, 1))
+            events.append((end, -1))
+        events.sort(key=lambda item: (item[0], item[1]))
+        count = 0
+        max_count = 0
+        prev_t = 0.0
+        area = 0.0
+        for t, delta in events:
+            area += count * max(0.0, t - prev_t)
+            count += delta
+            max_count = max(max_count, count)
+            prev_t = t
+        area += count * max(0.0, self.horizon_s - prev_t)
+        return {
+            "current_onboard_images": float(self._onboard_image_count(self.current_time_s)),
+            "max_onboard_images": float(max_count),
+            "avg_onboard_images": float(area / max(self.horizon_s, 1.0)),
+            "n_storage_expired_drops": float(sum(1 for rec in self.storage_log if rec.release_reason == "expired_drop")),
+            "n_relay_storage_images": float(sum(1 for rec in self.storage_log if rec.release_reason == "relay_downlink")),
+        }
+
+    def _find_downlink_slot(
+        self,
+        obs_end_s: float,
+        latest_end_s: Optional[float] = None,
+        station_available_s: Optional[List[float]] = None,
+    ) -> Tuple[float, float, int]:
+        """
+        预览最早可行的基站下传窗口, 不修改基站可用时间。
         """
         if not self.downlink_required:
             return obs_end_s, obs_end_s, -1
@@ -588,9 +748,10 @@ class SatelliteSchedulingEnv(gym.Env):
         if not self.ground_station_vtw:
             self._compute_ground_station_vtws()
         latest_end = self.horizon_s if latest_end_s is None else min(float(latest_end_s), self.horizon_s)
+        availability = station_available_s if station_available_s is not None else self._ground_station_available_s
         best = None
         for station_id in range(self.n_ground_stations):
-            ready_time = max(float(obs_end_s), float(self._ground_station_available_s[station_id]))
+            ready_time = max(float(obs_end_s), float(availability[station_id]))
             for vtw in self.ground_station_vtw.get(station_id, []):
                 if vtw.end_time < ready_time + self.downlink_time_s:
                     continue
@@ -604,6 +765,20 @@ class SatelliteSchedulingEnv(gym.Env):
         if best is None:
             return -1.0, -1.0, -1
         downlink_end, downlink_start, station_id = best
+        return downlink_start, downlink_end, station_id
+
+    def _schedule_downlink(self, obs_end_s: float, latest_end_s: Optional[float] = None) -> Tuple[float, float, int]:
+        """
+        将观测图像自动分配给最早可用且对卫星可见的基站下传。
+
+        n_ground_stations=0 或 downlink_time_s=0 时保持旧口径: 观测结束即完成。
+        """
+        downlink_start, downlink_end, station_id = self._find_downlink_slot(
+            obs_end_s,
+            latest_end_s=latest_end_s,
+        )
+        if station_id < 0:
+            return downlink_start, downlink_end, station_id
         self._ground_station_available_s[station_id] = downlink_end
         return downlink_start, downlink_end, station_id
 
@@ -757,7 +932,8 @@ class SatelliteSchedulingEnv(gym.Env):
         # 动态任务平均响应延迟: 从任务可用(到达)到观测完成的时间(秒)
         dyn_delays = [
             (r.downlink_end_s if self.downlink_required else r.obs_end_s) - r.earliest_time_s
-            for r in self.schedule_log if r.is_dynamic
+            for r in self.schedule_log
+            if r.is_dynamic and ((not self.downlink_required) or r.ground_station_id >= 0)
         ]
         avg_dynamic_response_s = float(np.mean(dyn_delays)) if dyn_delays else 0.0
         downlink_durations = [
@@ -771,6 +947,7 @@ class SatelliteSchedulingEnv(gym.Env):
             if r.ground_station_id >= 0
         ]
         n_ground_station_windows = sum(len(vtws) for vtws in self.ground_station_vtw.values())
+        storage_stats = self._storage_stats()
 
         return {
             "total_reward": total_reward,
@@ -805,6 +982,8 @@ class SatelliteSchedulingEnv(gym.Env):
             "n_pending_downlink": max(observed - completed, 0),
             "n_ground_stations": self.n_ground_stations,
             "downlink_time_s": self.downlink_time_s,
+            "satellite_storage_capacity": self.satellite_storage_capacity,
+            **storage_stats,
             "avg_downlink_duration_s": float(np.mean(downlink_durations)) if downlink_durations else 0.0,
             "avg_downlink_queue_s": float(np.mean(downlink_queue_delays)) if downlink_queue_delays else 0.0,
             "n_ground_station_vtws": n_ground_station_windows,

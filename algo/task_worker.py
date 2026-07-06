@@ -62,6 +62,7 @@ def run_single_task(args: dict) -> dict:
     n_ground_stations = args.get('n_ground_stations', 0)
     downlink_time_s  = args.get('downlink_time_s', 0.0)
     ground_station_configs = args.get('ground_station_configs')
+    satellite_storage_capacity = args.get('satellite_storage_capacity', 0)
     cfg_ppo          = args['cfg_ppo']
     cfg_meta         = args['cfg_meta']
     obs_dim          = args['obs_dim']
@@ -89,6 +90,7 @@ def run_single_task(args: dict) -> dict:
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
         ground_station_configs=ground_station_configs,
+        satellite_storage_capacity=satellite_storage_capacity,
     )
 
     # VTW 由 env.propagator 进程内缓存（compute_vtw 内部 _vtw_cache）。
@@ -212,6 +214,9 @@ def run_mappo_task(args: dict) -> dict:
     n_ground_stations = args.get('n_ground_stations', 0)
     downlink_time_s   = args.get('downlink_time_s', 0.0)
     ground_station_configs = args.get('ground_station_configs')
+    satellite_storage_capacity = args.get('satellite_storage_capacity', 0)
+    enable_inter_satellite_transfer = args.get('enable_inter_satellite_transfer', False)
+    inter_satellite_transfer_time_s = args.get('inter_satellite_transfer_time_s', 300.0)
     cfg_ppo           = args['cfg_ppo']
     cfg_meta          = args['cfg_meta']
     obs_dim           = args['obs_dim']
@@ -230,6 +235,9 @@ def run_mappo_task(args: dict) -> dict:
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
         ground_station_configs=ground_station_configs,
+        satellite_storage_capacity=satellite_storage_capacity,
+        enable_inter_satellite_transfer=enable_inter_satellite_transfer,
+        inter_satellite_transfer_time_s=inter_satellite_transfer_time_s,
     )
     model = MAPPOActorCritic(
         local_obs_dim=obs_dim,

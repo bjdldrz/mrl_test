@@ -814,3 +814,81 @@ python compare_methods.py \
 - `n_pending_downlink`: 已观测但未能下传完成数量。
 - `avg_downlink_queue_s`: 基站排队造成的平均等待。
 - `n_ground_station_vtws` / `avg_ground_station_vtws`: 卫星-基站可见窗口数量,用于诊断基站网络是否过稀。
+
+---
+
+### 星上存储容量约束与星间转发 v1(2026-07-06)
+
+**研究动机**:仅有基站下传约束仍不完整。真实卫星观测后图像会占用星上存储,若存储满则不能继续拍摄;只有下传到基站或转发给其他卫星后,源卫星存储才会释放。
+
+**当前建模假设**:
+1. 每颗卫星最多同时存储 `satellite_storage_capacity` 张未交付图片; `0` 表示关闭容量限制。
+2. 图片在 `obs_end_s` 后占用源卫星存储。
+3. 若成功下传基站,源卫星在 `downlink_end_s` 释放存储。
+4. 若无法在 deadline/horizon 前下传,图片在 deadline 被视为过期丢弃,任务只算已观测,不算完成。
+5. 星间转发为规则式 fallback,默认关闭;开启后仅在源卫星无法直接下传时尝试转给其他有空余存储且能下传的卫星。
+6. 当前星间转发使用固定耗时 `inter_satellite_transfer_time_s`,暂不建模星间链路可见窗口。
+
+**代码实现**:
+- `envs/satellite_env.py`
+  - 新增 `satellite_storage_capacity`;
+  - 新增 `StorageRecord`;
+  - action mask 在存储满时只保留 idle;
+  - idle 会推进到最近的存储释放时刻;
+  - 指标新增 `current_onboard_images/max_onboard_images/avg_onboard_images/n_storage_expired_drops`。
+- `envs/multi_satellite_env.py`
+  - 多星环境为每颗子卫星维护独立存储占用;
+  - 新增规则式星间转发 fallback;
+  - 指标新增 `n_inter_satellite_transfers/n_relay_storage_images/inter_satellite_transfer_time_s`。
+- `compare_methods.py`、`run_ablation.py`、`train.py`、`cva_mappo_v2/run_experiment.py`
+  - 新增 CLI: `--satellite_storage_capacity`;
+  - 新增 CLI: `--enable_inter_satellite_transfer`;
+  - 新增 CLI: `--inter_satellite_transfer_time_s`。
+
+**推荐容量压力命令**:
+```bash
+python compare_methods.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 30 \
+  --eval_episodes 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --methods single,indep,mappo \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --assignment_capacity_mode proportional \
+  --assign_w_load 0.1 \
+  --release_before_deadline_s 1800 \
+  --assignment_scorer cva \
+  --assignment_scorer_mix 0.35 \
+  --assignment_context_encoder lstm \
+  --assignment_context_weight 0.25 \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --candidate_action_top_k 128 \
+  --rollout_steps 256 \
+  --ppo_epochs 2 \
+  --ppo_batch_size 256 \
+  --train_env_workers 4 \
+  --eval_workers 4 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/compare_storage_capacity_v1 \
+  --device cpu
+```
+
+**建议消融**:
+- 存储容量: `--satellite_storage_capacity 2/4/8/16/0`。
+- 下传耗时: `--downlink_time_s 60/300/600/1200`。
+- 星间转发: 对比不开启与开启 `--enable_inter_satellite_transfer`。
+
+**后续升级**:
+1. 给星间转发加入卫星-卫星可见窗口和链路速率。
+2. 把“主动下传/主动转发”从规则式 fallback 升级为策略动作或高层调度动作。
+3. 在 CVA scorer 中加入存储压力、未来下传机会和转发代价,做观测-存储-下传联合价值评估。

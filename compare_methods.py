@@ -247,6 +247,12 @@ def _record_to_dict(r):
         "downlink_start_s": float(getattr(r, "downlink_start_s", r.obs_end_s)),
         "downlink_end_s": float(getattr(r, "downlink_end_s", r.obs_end_s)),
         "ground_station_id": int(getattr(r, "ground_station_id", -1)),
+        "storage_start_s": float(getattr(r, "storage_start_s", r.obs_end_s)),
+        "storage_release_s": float(getattr(r, "storage_release_s", r.obs_end_s)),
+        "storage_release_reason": getattr(r, "storage_release_reason", "none"),
+        "relay_satellite_name": getattr(r, "relay_satellite_name", ""),
+        "relay_start_s": float(getattr(r, "relay_start_s", -1.0)),
+        "relay_end_s": float(getattr(r, "relay_end_s", -1.0)),
     }
 
 
@@ -277,6 +283,7 @@ def _eval_single_worker(args):
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=getattr(cfg.mission, "satellite_storage_capacity", 0),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -475,6 +482,7 @@ def _run_compare_method_worker(job):
     if method_name == "Single-PPO":
         cfg.mission.n_ground_stations = args.get("n_ground_stations", 0)
         cfg.mission.downlink_time_s = args.get("downlink_time_s", 0.0)
+        cfg.mission.satellite_storage_capacity = args.get("satellite_storage_capacity", 0)
         metrics = run_single_ppo(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             train_scenarios=train_scenarios,
@@ -492,7 +500,10 @@ def _run_compare_method_worker(job):
             show_progress=not args.get("no_progress", False),
             eval_device=args.get("eval_device", "same"),
             n_ground_stations=args.get("n_ground_stations", 0),
-            downlink_time_s=args.get("downlink_time_s", 0.0))
+            downlink_time_s=args.get("downlink_time_s", 0.0),
+            satellite_storage_capacity=args.get("satellite_storage_capacity", 0),
+            enable_inter_satellite_transfer=args.get("enable_inter_satellite_transfer", False),
+            inter_satellite_transfer_time_s=args.get("inter_satellite_transfer_time_s", 300.0))
     elif method_name == "MAPPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
@@ -536,7 +547,10 @@ def _run_compare_method_worker(job):
             show_progress=not args.get("no_progress", False),
             eval_device=args.get("eval_device", "same"),
             n_ground_stations=args.get("n_ground_stations", 0),
-            downlink_time_s=args.get("downlink_time_s", 0.0))
+            downlink_time_s=args.get("downlink_time_s", 0.0),
+            satellite_storage_capacity=args.get("satellite_storage_capacity", 0),
+            enable_inter_satellite_transfer=args.get("enable_inter_satellite_transfer", False),
+            inter_satellite_transfer_time_s=args.get("inter_satellite_transfer_time_s", 300.0))
     elif method_name == "Greedy-Oracle":
         metrics = run_greedy_oracle(
             cfg, scenarios, eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
@@ -565,6 +579,7 @@ def _eval_oracle_worker(args):
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=getattr(cfg.mission, "satellite_storage_capacity", 0),
     )
     opts = {
         "routine_missions": copy.deepcopy(routine),
@@ -650,6 +665,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=getattr(cfg.mission, "satellite_storage_capacity", 0),
     )
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
@@ -809,6 +825,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               candidate_action_top_k=0,
               n_ground_stations=0,
               downlink_time_s=0.0,
+              satellite_storage_capacity=0,
+              enable_inter_satellite_transfer=False,
+              inter_satellite_transfer_time_s=300.0,
               satellite_curriculum=False,
               curriculum_min_satellites=1,
               curriculum_iters=10,
@@ -860,6 +879,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         n_ground_stations=n_ground_stations,
         downlink_time_s=downlink_time_s,
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=satellite_storage_capacity,
+        enable_inter_satellite_transfer=(coordinate and enable_inter_satellite_transfer),
+        inter_satellite_transfer_time_s=inter_satellite_transfer_time_s,
     )
     obs_dim = env.local_obs_dim
     act_dim = env.action_dim
@@ -906,6 +928,9 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         "n_ground_stations": n_ground_stations,
         "downlink_time_s": downlink_time_s,
         "ground_station_configs": getattr(cfg, "ground_stations", None),
+        "satellite_storage_capacity": satellite_storage_capacity,
+        "enable_inter_satellite_transfer": (coordinate and enable_inter_satellite_transfer),
+        "inter_satellite_transfer_time_s": inter_satellite_transfer_time_s,
     }
     trainer_kwargs = {
         "normalize_agent_rewards": (coordinate and normalize_agent_rewards),
@@ -1199,6 +1224,9 @@ def run_greedy_oracle(
         n_ground_stations=getattr(cfg.mission, "n_ground_stations", 0),
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
         ground_station_configs=getattr(cfg, "ground_stations", None),
+        satellite_storage_capacity=getattr(cfg.mission, "satellite_storage_capacity", 0),
+        enable_inter_satellite_transfer=getattr(cfg.mission, "enable_inter_satellite_transfer", False),
+        inter_satellite_transfer_time_s=getattr(cfg.mission, "inter_satellite_transfer_time_s", 300.0),
     )
 
     if eval_workers > 1:
@@ -1341,6 +1369,12 @@ def main():
                         help="共享基站数量; 0 表示关闭基站下传约束, 保持观测即完成旧口径")
     parser.add_argument("--downlink_time_s", type=float, default=0.0,
                         help="每个观测图像固定下传耗时(秒); 与 --n_ground_stations>0 同时启用")
+    parser.add_argument("--satellite_storage_capacity", type=int, default=0,
+                        help="每颗卫星最多同时存储的未交付图片数; 0 表示不限制")
+    parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
+                        help="启用规则式星间转发 fallback: 源星无法直接下传时尝试转给其他有容量的卫星")
+    parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=300.0,
+                        help="星间转发固定耗时(秒)")
     parser.add_argument("--run_oracle", action="store_true",
                         help="额外运行 Greedy-Oracle 集中式启发式参考")
     parser.add_argument("--satellite_curriculum", action="store_true",
@@ -1381,6 +1415,9 @@ def main():
         cfg.train.vtw_time_step_s = args.vtw_time_step_s
     cfg.mission.n_ground_stations = args.n_ground_stations
     cfg.mission.downlink_time_s = args.downlink_time_s
+    cfg.mission.satellite_storage_capacity = args.satellite_storage_capacity
+    cfg.mission.enable_inter_satellite_transfer = args.enable_inter_satellite_transfer
+    cfg.mission.inter_satellite_transfer_time_s = args.inter_satellite_transfer_time_s
     base_satellite_count = len(cfg.satellites)
     cfg.satellites = expand_satellite_configs(cfg.satellites, args.n_satellites)
     cfg.mappo.n_satellites = args.n_satellites
@@ -1655,6 +1692,12 @@ def main():
         ("avg_downlink_queue_s", "平均下传排队", "s"),
         ("n_ground_station_vtws", "基站可见窗口数", ""),
         ("avg_ground_station_vtws", "平均基站窗口数", ""),
+        ("satellite_storage_capacity", "单星存储容量", ""),
+        ("current_onboard_images", "当前星上图片数", ""),
+        ("max_onboard_images", "最大星上图片数", ""),
+        ("avg_onboard_images", "平均星上图片数", ""),
+        ("n_storage_expired_drops", "容量/过期丢弃数", ""),
+        ("n_inter_satellite_transfers", "星间转发次数", ""),
         ("n_replans", "重分配次数", ""),
         ("n_owner_switches", "owner切换数", ""),
         ("owner_churn_rate", "owner切换率", "%"),

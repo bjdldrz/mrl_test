@@ -1134,6 +1134,12 @@ def main():
                         help="传给 compare_methods.py 的共享基站数量; None 表示旧口径")
     parser.add_argument("--downlink_time_s", type=float, default=None,
                         help="传给 compare_methods.py 的固定图像下传耗时(秒)")
+    parser.add_argument("--satellite_storage_capacity", type=int, default=None,
+                        help="传给 compare_methods.py 的单星星上图片容量; None 表示旧口径")
+    parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
+                        help="传给 compare_methods.py, 启用规则式星间转发 fallback")
+    parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=None,
+                        help="传给 compare_methods.py 的星间转发固定耗时(秒)")
     parser.add_argument("--assign_w_loads", type=str, default="0.05,0.1,0.2")
     parser.add_argument("--release_windows", type=str, default="0,1800")
     parser.add_argument("--capacity_modes", type=str, default="equal,proportional")
@@ -1367,10 +1373,16 @@ def main():
                 "eval_workers",
                 "save_interval",
                 "vtw_time_step_s",
+                "n_ground_stations",
+                "downlink_time_s",
+                "satellite_storage_capacity",
+                "inter_satellite_transfer_time_s",
             ]:
                 value = getattr(args, arg_name)
                 if value is not None:
                     cmd.extend([f"--{arg_name}", str(value)])
+            if args.enable_inter_satellite_transfer:
+                cmd.append("--enable_inter_satellite_transfer")
             if args.no_profile_timing:
                 cmd.append("--no_profile_timing")
             if args.acled_path:
@@ -1409,10 +1421,14 @@ def main():
                 "candidate_action_top_k",
                 "n_ground_stations",
                 "downlink_time_s",
+                "satellite_storage_capacity",
+                "inter_satellite_transfer_time_s",
             ]:
                 value = getattr(args, arg_name)
                 if value is not None:
                     cmd.extend([f"--{arg_name}", str(value)])
+            if args.enable_inter_satellite_transfer:
+                cmd.append("--enable_inter_satellite_transfer")
             if args.no_viz:
                 cmd.append("--no_viz")
             if args.no_progress:
