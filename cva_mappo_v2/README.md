@@ -52,6 +52,8 @@ python -m cva_mappo_v2.run_experiment \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
@@ -68,13 +70,16 @@ python -m cva_mappo_v2.run_experiment \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/cva_mappo_v2 \
   --run_name cva_mappo_v2_stress \
   --no_viz \
   --device cuda:0
 ```
 
-For a cleaner background log, add `--no_progress`.
+Evaluation is deterministic by default. Add `--eval_stochastic` only when you
+explicitly want sampled-policy evaluation. For a cleaner background log, add
+`--no_progress`.
 
 ## CVA-Guided Mixed-TopK
 

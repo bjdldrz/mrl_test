@@ -13,6 +13,8 @@ python -m cva_mappo_v2.run_experiment \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
   --rollout_steps 512 \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
@@ -25,6 +27,7 @@ python -m cva_mappo_v2.run_experiment \
   --owner_switch_margin 0.08 \
   --eval_device cpu \
   --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --no_viz \
   --device cuda:0
 ```
@@ -71,11 +74,11 @@ Purpose: test whether reserving dynamic slots improves dynamic response.
 
 ```bash
 # no explicit dynamic reservation
-... --routine_slots 96 --dynamic_slots 0 --flex_slots 32 \
+... --slot_selection_mode typed --routine_slots 96 --dynamic_slots 0 --flex_slots 32 \
     --run_name cva_v2_no_dynamic_slots --out_dir runs/cva_mappo_v2_typed_slots
 
 # balanced typed slots
-... --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
+... --slot_selection_mode typed --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
     --run_name cva_v2_typed_default --out_dir runs/cva_mappo_v2_typed_slots
 ```
 

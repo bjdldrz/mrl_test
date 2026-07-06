@@ -10,6 +10,9 @@
 - 策略更新: `--device cuda:0`, 主进程在 GPU 上进行 MAPPO update。
 - 评估: `--eval_device cpu --eval_workers 8`, 多 CPU 进程并行评估 episode。
 - 更新强度: `--rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512`, 增大每次 GPU update 的批量, 减少 GPU 只短暂闪一下的问题。
+- 使用 `--scenario_cache_dir` 时,实际评估 episode 数以缓存中的 `eval_scenarios.pkl` 为准。v2 的 `manifest.json` 会记录 `requested_eval_episodes` 和 `actual_eval_episodes`。
+- v2 默认 deterministic eval;如需随机采样评估,加 `--eval_stochastic`。
+- 使用预热 VTW 缓存的正式命令应同时包含 `--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache` 与 `--vtw_time_step_s 60`。
 
 注意: 单卡 GPU 不建议多个评估进程同时使用。若显式设置 `--eval_device same/cuda:0` 且 `eval_workers > 1`, 代码会自动降为 1。
 
@@ -71,6 +74,7 @@ python precompute_scenarios.py \
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 0 \
   --eval_episodes 20 \
@@ -92,6 +96,7 @@ python compare_methods.py \
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -118,6 +123,7 @@ python compare_methods.py \
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -146,6 +152,7 @@ python compare_methods.py \
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -205,6 +212,7 @@ Full Action、Mixed Top-K 走旧版 `compare_methods.py`; Typed Slots 走 v2。
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
@@ -212,6 +220,7 @@ python compare_methods.py \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/action_space/full_action \
   --run_name full_action \
   --no_viz --device cuda:0
@@ -221,6 +230,7 @@ python compare_methods.py \
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
@@ -228,6 +238,7 @@ python compare_methods.py \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/action_space/mixed_topk128 \
   --run_name mixed_topk128 \
   --no_viz --device cuda:0
@@ -237,12 +248,15 @@ python compare_methods.py \
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 0 \
+  --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/action_space/typed_no_flex \
   --run_name typed_no_flex \
   --no_viz --device cuda:0
@@ -252,12 +266,15 @@ python -m cva_mappo_v2.run_experiment \
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
+  --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/action_space/typed_flex \
   --run_name typed_flex \
   --no_viz --device cuda:0
@@ -271,12 +288,15 @@ python -m cva_mappo_v2.run_experiment \
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 56 --dynamic_slots 8 --flex_slots 0 \
+  --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/slot_ratio/r56_d8_f0 \
   --run_name r56_d8_f0 \
   --no_viz --device cuda:0
@@ -297,17 +317,21 @@ python -m cva_mappo_v2.run_experiment \
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_candidate_owners 1 \
   --dynamic_candidate_owners 1 \
   --urgent_candidate_owners 1 \
   --stale_candidate_owners 1 \
+  --ownership_mask_mode hard \
+  --candidate_owner_bonus 0 \
   --assignment_replan_trigger none \
   --assignment_replan_interval_s 0 \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/ownership/hard_single_owner \
   --run_name hard_single_owner \
   --no_viz --device cuda:0
@@ -319,6 +343,7 @@ python -m cva_mappo_v2.run_experiment \
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_candidate_owners 1 \
@@ -330,6 +355,7 @@ python -m cva_mappo_v2.run_experiment \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/ownership/static_multi_owner \
   --run_name static_multi_owner \
   --no_viz --device cuda:0
@@ -347,6 +373,7 @@ Priority-only:
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 0 --w_priority 1 --w_deadline 0 --w_dynamic 0 \
@@ -354,6 +381,7 @@ python -m cva_mappo_v2.run_experiment \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/scorer/priority_only \
   --run_name priority_only \
   --no_viz --device cuda:0
@@ -365,6 +393,7 @@ Visibility/quality-only:
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
   --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 1 --w_priority 0 --w_deadline 0 --w_dynamic 0 \
@@ -372,6 +401,7 @@ python -m cva_mappo_v2.run_experiment \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
   --train_env_workers 8 --torch_num_threads 1 \
   --eval_device cpu --eval_workers 8 \
+  --vtw_time_step_s 60 \
   --out_dir runs/ablation_v2/scorer/quality_only \
   --run_name quality_only \
   --no_viz --device cuda:0
