@@ -36,6 +36,9 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_scores: Dict[str, List[float]] = {}
         self._candidate_score_table: Dict[int, Dict[str, CandidateScore]] = {}
         self._v2_step_cache = {}
+        self._slot_valid_sum = 0
+        self._slot_filled_sum = 0
+        self._slot_exposure_count = 0
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -53,6 +56,9 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_types = {}
         self._slot_scores = {}
         self._candidate_score_table = {}
+        self._slot_valid_sum = 0
+        self._slot_filled_sum = 0
+        self._slot_exposure_count = 0
         self._clear_v2_step_cache()
         result = super().reset(*args, **kwargs)
         self._clear_v2_step_cache()
@@ -308,7 +314,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         slot_type_counts = {"routine": 0, "dynamic": 0, "flex": 0}
 
         def take(group_items, n, slot_type):
-            for score, action in group_items:
+            for _, score, action in group_items:
                 if slot_type_counts[slot_type] >= n:
                     break
                 if action in used:
@@ -323,7 +329,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
         # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
         flex_count = self.v2_cfg.slots.flex_slots
-        for score, action in flex:
+        for _, score, action in flex:
             if slot_type_counts["flex"] >= flex_count:
                 break
             if action in used:
@@ -341,6 +347,13 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
         self._slot_types[agent_id] = slot_types
         self._slot_scores[agent_id] = slot_scores
+        self._slot_valid_sum += sum(
+            1
+            for action in selected
+            if action is not None and full_mask[action] > 0
+        )
+        self._slot_filled_sum += sum(1 for action in selected if action is not None)
+        self._slot_exposure_count += 1
         return selected[:self.v2_cfg.slots.total_slots]
 
     def _rank_all_slot_groups(self, agent_id: str, full_mask: np.ndarray):
@@ -406,10 +419,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             )
             if score is None:
                 continue
-            if full_mask[action] > 0:
-                score += 0.25
-
-            item = (float(score), int(action))
+            is_available = 1 if full_mask[action] > 0 else 0
+            item = (is_available, float(score), int(action))
             if not mission.is_dynamic:
                 routine.append(item)
             else:
@@ -417,9 +428,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             if self._belongs_to_flex_group(mission, current_time, stale):
                 flex.append(item)
 
-        routine.sort(key=lambda x: x[0], reverse=True)
-        dynamic.sort(key=lambda x: x[0], reverse=True)
-        flex.sort(key=lambda x: x[0], reverse=True)
+        # Valid actions must be exposed before future-only tasks.  Otherwise
+        # high-value future tasks can fill all slots while the policy sees only
+        # idle as executable, which severely depresses completion rate.
+        routine.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        dynamic.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        flex.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return routine, dynamic, flex
 
     def _rank_slot_group(self, agent_id: str, full_mask: np.ndarray, group: str):
@@ -511,3 +525,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 "n_task_candidate_owners": len(self.task_candidate_owners),
             }
         return obs, info
+
+    def get_metrics(self):
+        metrics = super().get_metrics()
+        denom = max(self._slot_exposure_count * self.v2_cfg.slots.total_slots, 1)
+        metrics.update({
+            "slot_valid_ratio": self._slot_valid_sum / denom,
+            "slot_filled_ratio": self._slot_filled_sum / denom,
+            "avg_valid_slots": self._slot_valid_sum / max(self._slot_exposure_count, 1),
+            "avg_filled_slots": self._slot_filled_sum / max(self._slot_exposure_count, 1),
+        })
+        return metrics

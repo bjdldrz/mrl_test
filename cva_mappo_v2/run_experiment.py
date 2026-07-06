@@ -545,6 +545,7 @@ def main():
         "method": "CVA-MAPPO-v2",
         "elapsed_s": elapsed,
         "args": vars(args),
+        "eval_deterministic": bool(args.eval_deterministic),
         "v2_config": {
             "routine_slots": v2_cfg.slots.routine_slots,
             "dynamic_slots": v2_cfg.slots.dynamic_slots,
