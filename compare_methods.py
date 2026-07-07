@@ -75,6 +75,32 @@ def make_test_scenarios(mission_gen, n_episodes, n_routine, n_dynamic,
     return scenarios
 
 
+def make_ordered_train_scenarios(mission_gen, n_iterations, cfg, seed=456):
+    """Pre-generate shared training scenarios for fair no-cache comparisons."""
+    rng = np.random.RandomState(seed)
+    scenarios = []
+    for _ in range(max(int(n_iterations), 0)):
+        strat = "hotspot" if rng.rand() < 0.5 else "uniform"
+        routine, dynamic = mission_gen.generate_episode_missions(
+            n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+            n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+            n_insertions=cfg.mission.dynamic_insertions_per_day,
+            sampling_strategy=strat,
+        )
+        scenarios.append((routine, dynamic))
+    return {"ordered": True, "scenarios": scenarios}
+
+
+def select_compare_train_scenario(train_payload, iteration, total_iterations, rng):
+    """Select a training scenario with ordered no-cache support."""
+    if isinstance(train_payload, dict) and train_payload.get("ordered"):
+        scenarios = train_payload.get("scenarios", [])
+        if not scenarios:
+            raise ValueError("ordered 训练场景为空")
+        return copy.deepcopy(scenarios[int(iteration) % len(scenarios)])
+    return select_train_scenario(train_payload, iteration, total_iterations, rng)
+
+
 METHOD_ORDER = ["Single-PPO", "Indep-PPO", "MAPPO", "Greedy-Oracle"]
 METHOD_ALIASES = {
     "single": "Single-PPO",
@@ -264,6 +290,19 @@ def _numpy_state_to_torch(state_dict):
     return {k: torch.from_numpy(v.copy()) for k, v in state_dict.items()}
 
 
+def _select_single_eval_action(model, obs, mask, device, deterministic: bool = False) -> int:
+    """Select a single-satellite eval action under the shared eval policy."""
+    with torch.no_grad():
+        obs_t = torch.FloatTensor(obs).unsqueeze(0).to(device)
+        mask_t = torch.FloatTensor(mask).unsqueeze(0).to(device)
+        if deterministic:
+            dist, _ = model.forward(obs_t, mask_t)
+            action = torch.argmax(dist.logits, dim=-1)
+        else:
+            action, _, _, _ = model.get_action_and_value(obs_t, mask_t)
+    return int(action.cpu().item())
+
+
 def _eval_single_worker(args):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
@@ -273,6 +312,7 @@ def _eval_single_worker(args):
     routine, dynamic = args["scenario"]
     model_state = args["model_state"]
     eval_device = torch.device(args.get("eval_device", "cpu"))
+    eval_deterministic = bool(args.get("eval_deterministic", False))
 
     sat = cfg.satellites[0]
     env = SatelliteSchedulingEnv(
@@ -303,12 +343,10 @@ def _eval_single_worker(args):
         if done:
             break
         mask = info.get("action_mask", np.ones(act_dim))
-        with torch.no_grad():
-            a, _, _, _ = model.get_action_and_value(
-                torch.FloatTensor(obs).unsqueeze(0).to(eval_device),
-                torch.FloatTensor(mask).unsqueeze(0).to(eval_device),
-            )
-        obs, _, term, trunc, info = env.step(a.cpu().item())
+        action = _select_single_eval_action(
+            model, obs, mask, eval_device, deterministic=eval_deterministic
+        )
+        obs, _, term, trunc, info = env.step(action)
         done = term or trunc
     return {"idx": idx, "metrics": env.get_metrics()}
 
@@ -325,6 +363,7 @@ def _eval_multi_worker(args):
     env_kwargs = args["env_kwargs"]
     trainer_kwargs = args["trainer_kwargs"]
     eval_device = torch.device(args.get("eval_device", "cpu"))
+    eval_deterministic = bool(args.get("eval_deterministic", False))
 
     n_sat = min(cfg.mappo.n_satellites, len(cfg.satellites))
     env = MultiSatelliteEnv(
@@ -366,13 +405,21 @@ def _eval_multi_worker(args):
     cur_info = {a: r[1] for a, r in res.items()}
     max_steps = int(env.horizon_s / 10.0) + 100
     for _ in range(max_steps):
-        actions, _, _, _ = trainer.sample_actions(
-            multi_env=env,
-            current_obs=cur_obs,
-            current_infos=cur_info,
-            intent_broadcast=args["intent_broadcast"],
-            intent_replan_rounds=args["intent_replan_rounds"],
-        )
+        if eval_deterministic:
+            actions = trainer.select_eval_actions(
+                env,
+                cur_obs,
+                cur_info,
+                deterministic=True,
+            )
+        else:
+            actions, _, _, _ = trainer.sample_actions(
+                multi_env=env,
+                current_obs=cur_obs,
+                current_infos=cur_info,
+                intent_broadcast=args["intent_broadcast"],
+                intent_replan_rounds=args["intent_replan_rounds"],
+            )
         step_res = env.step(actions)
         for aid, (obs, _, _, _, info) in step_res.items():
             cur_obs[aid] = obs
@@ -488,17 +535,21 @@ def _run_compare_method_worker(job):
             train_scenarios=train_scenarios,
             eval_workers=args["eval_workers"], viz_out_dir=viz_out_dir,
             show_progress=not args.get("no_progress", False),
-            eval_device=args.get("eval_device", "same"))
+            eval_device=args.get("eval_device", "same"),
+            eval_deterministic=args.get("eval_deterministic", False))
     elif method_name == "Indep-PPO":
         metrics = run_multi(
             cfg, mission_gen, scenarios, args["train_iters"], device,
             coordinate=False,
+            train_env_workers=args["train_env_workers"],
+            split_rollout_steps_across_workers=args["split_rollout_steps_across_workers"],
             train_scenarios=train_scenarios,
             method_name="Indep-PPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
             show_progress=not args.get("no_progress", False),
             eval_device=args.get("eval_device", "same"),
+            eval_deterministic=args.get("eval_deterministic", False),
             n_ground_stations=args.get("n_ground_stations", 0),
             downlink_time_s=args.get("downlink_time_s", 0.0),
             satellite_storage_capacity=args.get("satellite_storage_capacity", 0),
@@ -540,12 +591,14 @@ def _run_compare_method_worker(job):
             intent_broadcast=args["intent_broadcast"],
             intent_replan_rounds=args["intent_replan_rounds"],
             train_env_workers=args["train_env_workers"],
+            split_rollout_steps_across_workers=args["split_rollout_steps_across_workers"],
             train_scenarios=train_scenarios,
             method_name="MAPPO",
             eval_workers=args["eval_workers"],
             viz_out_dir=viz_out_dir,
             show_progress=not args.get("no_progress", False),
             eval_device=args.get("eval_device", "same"),
+            eval_deterministic=args.get("eval_deterministic", False),
             n_ground_stations=args.get("n_ground_stations", 0),
             downlink_time_s=args.get("downlink_time_s", 0.0),
             satellite_storage_capacity=args.get("satellite_storage_capacity", 0),
@@ -580,6 +633,8 @@ def _eval_oracle_worker(args):
         downlink_time_s=getattr(cfg.mission, "downlink_time_s", 0.0),
         ground_station_configs=getattr(cfg, "ground_stations", None),
         satellite_storage_capacity=getattr(cfg.mission, "satellite_storage_capacity", 0),
+        enable_inter_satellite_transfer=getattr(cfg.mission, "enable_inter_satellite_transfer", False),
+        inter_satellite_transfer_time_s=getattr(cfg.mission, "inter_satellite_transfer_time_s", 300.0),
     )
     opts = {
         "routine_missions": copy.deepcopy(routine),
@@ -653,7 +708,8 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                    train_scenarios=None,
                    eval_workers: int = 1, viz_out_dir: Path = None,
                    show_progress: bool = True,
-                   eval_device: str = "same"):
+                   eval_device: str = "same",
+                   eval_deterministic: bool = False):
     from envs.satellite_env import SatelliteSchedulingEnv
     from models.actor_critic import ActorCritic
     from algo.ppo import PPOTrainer, RolloutBuffer
@@ -688,7 +744,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
     )
     for it in train_iter:
         if train_scenarios is not None:
-            routine, dynamic = select_train_scenario(
+            routine, dynamic = select_compare_train_scenario(
                 train_scenarios, it, train_iters, np.random
             )
         else:
@@ -734,6 +790,7 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                 "scenario": scenario,
                 "model_state": _torch_state_to_numpy(model.state_dict()),
                 "eval_device": str(eval_device_obj),
+                "eval_deterministic": eval_deterministic,
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
@@ -757,11 +814,11 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
                     if done:
                         break
                     mask = info.get("action_mask", np.ones(act_dim))
-                    with torch.no_grad():
-                        a, _, _, _ = model.get_action_and_value(
-                            torch.FloatTensor(obs).unsqueeze(0).to(eval_device_obj),
-                            torch.FloatTensor(mask).unsqueeze(0).to(eval_device_obj))
-                    obs, _, term, trunc, info = env.step(a.cpu().item())
+                    action = _select_single_eval_action(
+                        model, obs, mask, eval_device_obj,
+                        deterministic=eval_deterministic,
+                    )
+                    obs, _, term, trunc, info = env.step(action)
                     done = term or trunc
                 _save_single_viz_data(env, viz_out_dir, "Single-PPO")
             return avg
@@ -783,11 +840,11 @@ def run_single_ppo(cfg, mission_gen, scenarios, train_iters, device,
             if done:
                 break
             mask = info.get("action_mask", np.ones(act_dim))
-            with torch.no_grad():
-                a, _, _, _ = model.get_action_and_value(
-                    torch.FloatTensor(obs).unsqueeze(0).to(eval_device_obj),
-                    torch.FloatTensor(mask).unsqueeze(0).to(eval_device_obj))
-            obs, r, term, trunc, info = env.step(a.cpu().item())
+            action = _select_single_eval_action(
+                model, obs, mask, eval_device_obj,
+                deterministic=eval_deterministic,
+            )
+            obs, r, term, trunc, info = env.step(action)
             done = term or trunc
         metrics_list.append(env.get_metrics())
         if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
@@ -835,12 +892,14 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
               intent_broadcast=False,
               intent_replan_rounds=1,
               train_env_workers: int = 1,
+              split_rollout_steps_across_workers: bool = False,
               train_scenarios=None,
               method_name="MAPPO",
               eval_workers: int = 1,
               viz_out_dir: Path = None,
               show_progress: bool = True,
-              eval_device: str = "same"):
+              eval_device: str = "same",
+              eval_deterministic: bool = False):
     from envs.multi_satellite_env import MultiSatelliteEnv
     from models.mappo import MAPPOActorCritic
     from algo.mappo_trainer import MAPPOTrainer, MultiAgentRolloutBuffer
@@ -959,14 +1018,17 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
 
         n_workers = min(train_env_workers, max(int(cfg.meta.rollout_steps), 1))
         if n_workers > 1:
-            step_counts = [cfg.meta.rollout_steps // n_workers] * n_workers
-            for wi in range(cfg.meta.rollout_steps % n_workers):
-                step_counts[wi] += 1
+            if split_rollout_steps_across_workers:
+                step_counts = [cfg.meta.rollout_steps // n_workers] * n_workers
+                for wi in range(cfg.meta.rollout_steps % n_workers):
+                    step_counts[wi] += 1
+            else:
+                step_counts = [cfg.meta.rollout_steps] * n_workers
             model_state_np = _torch_state_to_numpy(model.state_dict())
             task_args = []
             for wi, worker_steps in enumerate(step_counts):
                 if train_scenarios is not None:
-                    routine, dynamic = select_train_scenario(
+                    routine, dynamic = select_compare_train_scenario(
                         train_scenarios, it, train_iters, np.random
                     )
                 else:
@@ -1004,9 +1066,10 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
             last_states = [r["last_global_state"] for r in worker_results]
             metrics = trainer.update_many(buffers, last_states)
             rollout_reward = sum(float(r.get("total_reward", 0.0)) for r in worker_results)
+            rollout_steps_done = sum(int(r.get("steps", 0)) for r in worker_results)
         else:
             if train_scenarios is not None:
-                routine, dynamic = select_train_scenario(
+                routine, dynamic = select_compare_train_scenario(
                     train_scenarios, it, train_iters, np.random
                 )
             else:
@@ -1029,8 +1092,10 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                 intent_broadcast=(coordinate and intent_broadcast),
                 intent_replan_rounds=intent_replan_rounds)
             metrics = trainer.update(buf, env.get_global_state())
+            rollout_steps_done = len(buf)
         train_iter.set_postfix(
             reward=f"{rollout_reward:.2f}",
+            steps=rollout_steps_done,
             ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
             vloss=f"{metrics.get('value_loss', 0.0):.3f}",
         )
@@ -1062,6 +1127,7 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                 "intent_broadcast": (coordinate and intent_broadcast),
                 "intent_replan_rounds": intent_replan_rounds,
                 "eval_device": str(eval_device_obj),
+                "eval_deterministic": eval_deterministic,
             }
             for ep_idx, scenario in enumerate(scenarios)
         ]
@@ -1083,13 +1149,21 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                 cur_info = {a: r[1] for a, r in res.items()}
                 max_steps = int(env.horizon_s / 10.0) + 100
                 for _ in range(max_steps):
-                    actions, _, _, _ = trainer.sample_actions(
-                        multi_env=env,
-                        current_obs=cur_obs,
-                        current_infos=cur_info,
-                        intent_broadcast=(coordinate and intent_broadcast),
-                        intent_replan_rounds=intent_replan_rounds,
-                    )
+                    if eval_deterministic:
+                        actions = trainer.select_eval_actions(
+                            env,
+                            cur_obs,
+                            cur_info,
+                            deterministic=True,
+                        )
+                    else:
+                        actions, _, _, _ = trainer.sample_actions(
+                            multi_env=env,
+                            current_obs=cur_obs,
+                            current_infos=cur_info,
+                            intent_broadcast=(coordinate and intent_broadcast),
+                            intent_replan_rounds=intent_replan_rounds,
+                        )
                     step_res = env.step(actions)
                     for aid, (obs, _, _, _, info) in step_res.items():
                         cur_obs[aid] = obs
@@ -1115,13 +1189,21 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         cur_info = {a: r[1] for a, r in res.items()}
         max_steps = int(env.horizon_s / 10.0) + 100
         for _ in range(max_steps):
-            actions, _, _, _ = trainer.sample_actions(
-                multi_env=env,
-                current_obs=cur_obs,
-                current_infos=cur_info,
-                intent_broadcast=(coordinate and intent_broadcast),
-                intent_replan_rounds=intent_replan_rounds,
-            )
+            if eval_deterministic:
+                actions = trainer.select_eval_actions(
+                    env,
+                    cur_obs,
+                    cur_info,
+                    deterministic=True,
+                )
+            else:
+                actions, _, _, _ = trainer.sample_actions(
+                    multi_env=env,
+                    current_obs=cur_obs,
+                    current_infos=cur_info,
+                    intent_broadcast=(coordinate and intent_broadcast),
+                    intent_replan_rounds=intent_replan_rounds,
+                )
             step_res = env.step(actions)
             for aid, (o, r, term, trunc, inf) in step_res.items():
                 cur_obs[aid] = o
@@ -1271,8 +1353,16 @@ def main():
                         help="评估 episode 并行 worker 数; 1 为串行")
     parser.add_argument("--eval_device", type=str, default="same",
                         help="评估设备: same=沿用 --device; cpu=CPU 多进程评估; cuda:0=单 GPU 评估")
+    parser.add_argument("--eval_deterministic", dest="eval_deterministic",
+                        action="store_true", default=False,
+                        help="评估时使用 actor argmax; 默认按策略随机采样")
+    parser.add_argument("--eval_stochastic", dest="eval_deterministic",
+                        action="store_false",
+                        help="评估时按策略随机采样, 即默认主对比口径")
     parser.add_argument("--train_env_workers", type=int, default=1,
-                        help="MAPPO 训练 rollout 并行环境进程数; 1 为旧版串行采样")
+                        help="多星 PPO/MAPPO 训练 rollout 并行环境进程数; 1 为串行采样")
+    parser.add_argument("--split_rollout_steps_across_workers", action="store_true",
+                        help="兼容旧并行语义: 将 --rollout_steps 平分到各 worker; 默认每个 worker 都采集完整 rollout_steps")
     parser.add_argument("--torch_num_threads", type=int, default=None,
                         help="单个训练进程内 PyTorch CPU 线程数; 默认沿用环境设置")
     parser.add_argument("--n_routine", type=int, default=200)
@@ -1444,14 +1534,17 @@ def main():
     )
     logger.info(
         "训练配置: train_iters=%s, rollout_steps=%s, ppo_epochs=%s, "
-        "ppo_batch_size=%s, train_env_workers=%s, eval_workers=%s, "
+        "ppo_batch_size=%s, train_env_workers=%s, split_rollout=%s, "
+        "eval_workers=%s, eval_deterministic=%s, "
         "vtw_time_step_s=%s, device=%s, eval_device=%s",
         args.train_iters,
         cfg.meta.rollout_steps,
         cfg.ppo.ppo_epochs,
         cfg.ppo.batch_size,
         args.train_env_workers,
+        args.split_rollout_steps_across_workers,
         args.eval_workers,
+        args.eval_deterministic,
         cfg.train.vtw_time_step_s,
         device,
         args.eval_device,
@@ -1507,6 +1600,16 @@ def main():
                                         args.n_routine, args.n_dynamic,
                                         n_insertions=cfg.mission.dynamic_insertions_per_day,
                                         seed=args.seed + 1000)
+        train_scenarios = make_ordered_train_scenarios(
+            mission_gen,
+            args.train_iters,
+            cfg,
+            seed=args.seed + 2000,
+        )
+        logger.info(
+            "无场景缓存: 已预生成共享训练场景 %s 个, 三个学习方法按 iteration 对齐使用",
+            len(train_scenarios["scenarios"]),
+        )
     logger.info(
         "测试场景数: %s, 每个 %s routine + %s×%s dynamic",
         len(scenarios),
@@ -1580,17 +1683,26 @@ def main():
                 train_scenarios=train_scenarios,
                 eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
                 show_progress=not args.no_progress,
-                eval_device=args.eval_device)
+                eval_device=args.eval_device,
+                eval_deterministic=args.eval_deterministic)
             step_idx += 1
 
         if "Indep-PPO" in method_names:
             logger.info(f"=== [{step_idx}/{step_total}] 多星独立 PPO (无协同 baseline) ===")
             results["Indep-PPO"] = run_multi(
                 cfg, mission_gen, scenarios, args.train_iters, device, coordinate=False,
+                train_env_workers=args.train_env_workers,
+                split_rollout_steps_across_workers=args.split_rollout_steps_across_workers,
                 train_scenarios=train_scenarios,
                 method_name="Indep-PPO", eval_workers=args.eval_workers, viz_out_dir=viz_out_dir,
                 show_progress=not args.no_progress,
-                eval_device=args.eval_device)
+                eval_device=args.eval_device,
+                eval_deterministic=args.eval_deterministic,
+                n_ground_stations=args.n_ground_stations,
+                downlink_time_s=args.downlink_time_s,
+                satellite_storage_capacity=args.satellite_storage_capacity,
+                enable_inter_satellite_transfer=args.enable_inter_satellite_transfer,
+                inter_satellite_transfer_time_s=args.inter_satellite_transfer_time_s)
             step_idx += 1
 
         if "MAPPO" in method_names:
@@ -1628,12 +1740,19 @@ def main():
                                          intent_broadcast=args.intent_broadcast,
                                          intent_replan_rounds=args.intent_replan_rounds,
                                          train_env_workers=args.train_env_workers,
+                                         split_rollout_steps_across_workers=args.split_rollout_steps_across_workers,
                                          train_scenarios=train_scenarios,
                                          method_name="MAPPO",
                                          eval_workers=args.eval_workers,
                                          viz_out_dir=viz_out_dir,
                                          show_progress=not args.no_progress,
-                                         eval_device=args.eval_device)
+                                         eval_device=args.eval_device,
+                                         eval_deterministic=args.eval_deterministic,
+                                         n_ground_stations=args.n_ground_stations,
+                                         downlink_time_s=args.downlink_time_s,
+                                         satellite_storage_capacity=args.satellite_storage_capacity,
+                                         enable_inter_satellite_transfer=args.enable_inter_satellite_transfer,
+                                         inter_satellite_transfer_time_s=args.inter_satellite_transfer_time_s)
             step_idx += 1
 
         if "Greedy-Oracle" in method_names:

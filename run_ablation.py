@@ -944,8 +944,10 @@ def summarize_run(tag, params, out_dir):
         "ppo_epochs",
         "ppo_batch_size",
         "train_env_workers",
+        "split_rollout_steps_across_workers",
         "eval_workers",
         "torch_num_threads",
+        "eval_deterministic",
         "vtw_time_step_s",
         "vtw_cache_dir",
         "scenario_cache_dir",
@@ -1199,6 +1201,8 @@ def main():
                         help="透传给 train.py/compare_methods.py 的 PPO minibatch 大小")
     parser.add_argument("--train_env_workers", type=int, default=None,
                         help="透传给 compare_methods.py 的 MAPPO 训练 rollout 并行环境进程数")
+    parser.add_argument("--split_rollout_steps_across_workers", action="store_true",
+                        help="透传给 compare_methods.py: 将 rollout_steps 平分到各 worker; 默认每个 worker 完整采样")
     parser.add_argument("--eval_interval", type=int, default=None,
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
     parser.add_argument("--eval_workers", type=int, default=None,
@@ -1206,6 +1210,8 @@ def main():
     parser.add_argument("--eval_device", type=str, default=None,
                         help="普通消融透传给 compare_methods.py 的评估设备; "
                              "推荐 cuda 训练时设为 cpu, 才能配合 --eval_workers 多进程评估")
+    parser.add_argument("--eval_deterministic", action="store_true",
+                        help="普通消融透传给 compare_methods.py, 评估时使用 actor argmax; 默认随机采样")
     parser.add_argument("--torch_num_threads", type=int, default=None,
                         help="透传给 compare_methods.py 的单训练进程 PyTorch CPU 线程数")
     parser.add_argument("--save_interval", type=int, default=None,
@@ -1433,6 +1439,10 @@ def main():
                     cmd.extend([f"--{arg_name}", str(value)])
             if args.enable_inter_satellite_transfer:
                 cmd.append("--enable_inter_satellite_transfer")
+            if args.split_rollout_steps_across_workers:
+                cmd.append("--split_rollout_steps_across_workers")
+            if args.eval_deterministic:
+                cmd.append("--eval_deterministic")
             if args.no_viz:
                 cmd.append("--no_viz")
             if args.no_progress:
