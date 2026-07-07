@@ -1372,7 +1372,7 @@ def main():
     parser.add_argument("--satellite_storage_capacity", type=int, default=0,
                         help="每颗卫星最多同时存储的未交付图片数; 0 表示不限制")
     parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
-                        help="启用规则式星间转发 fallback: 源星无法直接下传时尝试转给其他有容量的卫星")
+                        help="启用智能体显式星间转发动作: 源星可选择目标星并一次性发送当前全部未交付图片")
     parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=300.0,
                         help="星间转发固定耗时(秒)")
     parser.add_argument("--run_oracle", action="store_true",

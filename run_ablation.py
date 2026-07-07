@@ -1137,7 +1137,7 @@ def main():
     parser.add_argument("--satellite_storage_capacity", type=int, default=None,
                         help="传给 compare_methods.py 的单星星上图片容量; None 表示旧口径")
     parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
-                        help="传给 compare_methods.py, 启用规则式星间转发 fallback")
+                        help="传给 compare_methods.py, 启用智能体显式星间转发动作")
     parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=None,
                         help="传给 compare_methods.py 的星间转发固定耗时(秒)")
     parser.add_argument("--assign_w_loads", type=str, default="0.05,0.1,0.2")

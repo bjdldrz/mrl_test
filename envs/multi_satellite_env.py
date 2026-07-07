@@ -167,8 +167,11 @@ class MultiSatelliteEnv:
         self.downlink_time_s = max(0.0, float(downlink_time_s or 0.0))
         self._ground_station_available_s: List[float] = [0.0] * self.n_ground_stations
         self.satellite_storage_capacity = max(0, int(satellite_storage_capacity or 0))
+        # enable_inter_satellite_transfer=True 时,星间转发不再是环境自动 fallback,
+        # 而是暴露给智能体的显式动作:选择目标星后一次性发送源星当前全部未交付图片。
         self.enable_inter_satellite_transfer = bool(enable_inter_satellite_transfer)
         self.inter_satellite_transfer_time_s = max(0.0, float(inter_satellite_transfer_time_s or 0.0))
+        self._transfer_targets: Dict[str, List[str]] = {}
 
         # 为每颗卫星创建独立的单星环境
         self.envs: Dict[str, SatelliteSchedulingEnv] = {}
@@ -193,10 +196,10 @@ class MultiSatelliteEnv:
                 self.candidate_action_top_k * sample_env._mission_feat_dim
                 + sample_env._sat_feat_dim
             )
-            self.action_dim = self.candidate_action_top_k + 1
+            self.action_dim = self.candidate_action_top_k + self._transfer_action_count() + 1
         else:
             self.local_obs_dim = sample_env.observation_space.shape[0]
-            self.action_dim = sample_env.action_space.n
+            self.action_dim = self._raw_idle_action() + 1
         if self.global_state_mode == "concat":
             base_global_dim = self.local_obs_dim * self.n_agents
         else:
@@ -373,13 +376,59 @@ class MultiSatelliteEnv:
         return self.candidate_action_top_k > 0
 
     def _raw_idle_action(self) -> int:
-        return self.max_action_dim
+        return self.max_action_dim + self._transfer_action_count()
+
+    def _transfer_actions_enabled(self) -> bool:
+        return (
+            self.coordinate
+            and self.enable_inter_satellite_transfer
+            and self.n_agents > 1
+            and self.downlink_time_s > 0
+            and self.n_ground_stations > 0
+            and self.inter_satellite_transfer_time_s > 0
+        )
+
+    def _transfer_action_count(self) -> int:
+        return (self.n_agents - 1) if self._transfer_actions_enabled() else 0
+
+    def _transfer_target_list(self, agent_id: str) -> List[str]:
+        if agent_id not in self._transfer_targets:
+            self._transfer_targets[agent_id] = [
+                aid for aid in self.agent_ids if aid != agent_id
+            ]
+        return self._transfer_targets[agent_id]
+
+    def _raw_transfer_action(self, agent_id: str, target_agent_id: str) -> Optional[int]:
+        targets = self._transfer_target_list(agent_id)
+        if target_agent_id not in targets:
+            return None
+        return self.max_action_dim + targets.index(target_agent_id)
+
+    def _raw_transfer_target(self, agent_id: str, action: int) -> Optional[str]:
+        if not self._transfer_actions_enabled():
+            return None
+        idx = int(action) - self.max_action_dim
+        targets = self._transfer_target_list(agent_id)
+        if 0 <= idx < len(targets):
+            return targets[idx]
+        return None
+
+    def _is_raw_transfer_action(self, agent_id: str, action: int) -> bool:
+        return self._raw_transfer_target(agent_id, action) is not None
 
     def _full_action_mask(self, agent_id: str) -> np.ndarray:
         env = self.envs[agent_id]
-        mask = env._build_action_mask()
+        task_mask = env._build_action_mask()
         if self.coordinate and self.episode_assignment:
-            mask = self._apply_ownership_mask(agent_id, mask)
+            task_mask = self._apply_ownership_mask(agent_id, task_mask)
+        mask = np.zeros(self._raw_idle_action() + 1, dtype=np.float32)
+        mask[:self.max_action_dim] = task_mask[:self.max_action_dim]
+        if self._transfer_actions_enabled():
+            for target_id in self._transfer_target_list(agent_id):
+                action = self._raw_transfer_action(agent_id, target_id)
+                if action is not None and self._can_transfer_all_images(agent_id, target_id):
+                    mask[action] = 1.0
+        mask[self._raw_idle_action()] = 1.0
         return mask
 
     def _expose_obs_info(self, agent_id: str, full_mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Dict]:
@@ -398,16 +447,24 @@ class MultiSatelliteEnv:
         mapping = self._select_candidate_actions(agent_id, full_mask)
         self._candidate_action_maps[agent_id] = mapping
         obs = self._build_candidate_observation(agent_id, mapping)
-        mask = np.zeros(self.candidate_action_top_k + 1, dtype=np.float32)
+        transfer_count = self._transfer_action_count()
+        exposed_idle = self.idle_action
+        mask = np.zeros(self.candidate_action_top_k + transfer_count + 1, dtype=np.float32)
         for idx, raw_action in enumerate(mapping):
             if raw_action is not None and full_mask[raw_action] > 0:
                 mask[idx] = 1.0
-        mask[self.candidate_action_top_k] = 1.0
+        for offset, target_id in enumerate(self._transfer_target_list(agent_id)):
+            raw_action = self._raw_transfer_action(agent_id, target_id)
+            exposed_action = self.candidate_action_top_k + offset
+            if raw_action is not None and raw_action < len(full_mask) and full_mask[raw_action] > 0:
+                mask[exposed_action] = 1.0
+        mask[exposed_idle] = 1.0
         return obs, {
             "action_mask": mask,
             "candidate_action_slots": [
                 int(a) if a is not None else None for a in mapping
             ],
+            "transfer_action_targets": list(self._transfer_target_list(agent_id)),
         }
 
     def _select_candidate_actions(self, agent_id: str, full_mask: np.ndarray) -> List[Optional[int]]:
@@ -554,11 +611,21 @@ class MultiSatelliteEnv:
         if not self._candidate_actions_enabled():
             return dict(actions)
         raw_actions = {}
-        exposed_idle = self.candidate_action_top_k
+        transfer_count = self._transfer_action_count()
+        exposed_idle = self.candidate_action_top_k + transfer_count
         for aid in self.agent_ids:
             action = int(actions.get(aid, exposed_idle))
             if action == exposed_idle:
                 raw_actions[aid] = self._raw_idle_action()
+                continue
+            if self.candidate_action_top_k <= action < exposed_idle:
+                target_idx = action - self.candidate_action_top_k
+                targets = self._transfer_target_list(aid)
+                if 0 <= target_idx < len(targets):
+                    raw_action = self._raw_transfer_action(aid, targets[target_idx])
+                    raw_actions[aid] = raw_action if raw_action is not None else self._raw_idle_action()
+                else:
+                    raw_actions[aid] = self._raw_idle_action()
                 continue
             mapping = self._candidate_action_maps.get(aid, [])
             if 0 <= action < len(mapping) and mapping[action] is not None:
@@ -614,6 +681,7 @@ class MultiSatelliteEnv:
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
         self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
+        self._transfer_targets = {}
         if self.n_ground_stations > 0:
             self._ground_station_available_s[:] = [0.0] * self.n_ground_stations
             for env in self.envs.values():
@@ -661,14 +729,27 @@ class MultiSatelliteEnv:
         # 2) 每颗卫星执行（已去冲突的）动作
         prev_schedule_lens = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
         prev_ground_available = list(self._ground_station_available_s)
+        pending_transfer_actions: Dict[str, int] = {}
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
-            obs, reward, term, trunc, info = env.step(resolved_actions[agent_id])
+            action = resolved_actions[agent_id]
+            if self._is_raw_transfer_action(agent_id, action):
+                env._insert_arrived_dynamic_missions()
+                pending_transfer_actions[agent_id] = action
+                obs, reward, term, trunc, info = (
+                    env._build_observation(),
+                    0.0,
+                    env._all_missions_done() or env.current_time_s >= env.horizon_s,
+                    False,
+                    {"pending_inter_satellite_transfer": True},
+                )
+            else:
+                obs, reward, term, trunc, info = env.step(action)
             results[agent_id] = (obs, reward, term, trunc, info)
         if self.n_ground_stations > 0 and self.downlink_time_s > 0:
             self._rebatch_new_downlinks(prev_schedule_lens, prev_ground_available, results)
-            if self.enable_inter_satellite_transfer:
-                self._try_inter_satellite_transfers(prev_schedule_lens, results)
+        for agent_id, action in pending_transfer_actions.items():
+            results[agent_id] = self._step_transfer_action(agent_id, action)
 
         # 3) 同步观测状态 (仅协同模式: 一颗星完成则全体知晓, 避免重复)
         if self.coordinate:
@@ -777,13 +858,193 @@ class MultiSatelliteEnv:
                 obs, reward, term, trunc, info = results[aid]
                 results[aid] = (obs, float(reward + record.reward - old_reward), term, trunc, info)
 
+    def _transferable_records(self, source_aid: str) -> List[Any]:
+        """返回源星当前星上仍未交付、可一次性转发的图片记录。"""
+        if not self._transfer_actions_enabled():
+            return []
+        source_env = self.envs[source_aid]
+        t = float(source_env.current_time_s)
+        records = []
+        for record in source_env.schedule_log:
+            mission = self._mission_for_agent(source_aid, record.mission_id)
+            if mission is None:
+                continue
+            if getattr(record, "relay_satellite_name", ""):
+                continue
+            if not (record.storage_start_s <= t < record.storage_release_s):
+                continue
+            records.append(record)
+        records.sort(key=lambda r: (r.obs_end_s, r.mission_id))
+        return records
+
+    def _preview_transfer_plan(
+        self,
+        source_aid: str,
+        target_aid: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        预览"源星全部当前图片"转给目标星后的下传计划。
+
+        返回 None 表示动作不可行;否则返回每张图片的目标星下传预约方案。
+        """
+        if source_aid == target_aid or target_aid not in self.envs:
+            return None
+        records = self._transferable_records(source_aid)
+        if not records:
+            return None
+        source_env = self.envs[source_aid]
+        target_env = self.envs[target_aid]
+        transfer_start = float(source_env.current_time_s)
+        transfer_end = transfer_start + self.inter_satellite_transfer_time_s
+        if transfer_end > source_env.horizon_s:
+            return None
+
+        if target_env.storage_limited:
+            active = target_env._onboard_image_count(transfer_end)
+            if active + len(records) > target_env.satellite_storage_capacity:
+                return None
+
+        station_available = list(self._ground_station_available_s)
+        plan = []
+        for record in records:
+            mission = self._mission_for_agent(source_aid, record.mission_id)
+            if mission is None:
+                return None
+            latest_end_s = min(source_env.horizon_s, mission.deadline_s)
+            if transfer_end >= latest_end_s:
+                return None
+            dl_start, dl_end, station_id = target_env._find_downlink_slot(
+                transfer_end,
+                latest_end_s=latest_end_s,
+                station_available_s=station_available,
+            )
+            if station_id < 0:
+                return None
+            station_available[station_id] = dl_end
+            plan.append({
+                "record": record,
+                "mission": mission,
+                "transfer_start": transfer_start,
+                "transfer_end": transfer_end,
+                "downlink_start": dl_start,
+                "downlink_end": dl_end,
+                "ground_station_id": station_id,
+            })
+        return plan
+
+    def _can_transfer_all_images(self, source_aid: str, target_aid: str) -> bool:
+        return self._preview_transfer_plan(source_aid, target_aid) is not None
+
+    def _step_transfer_action(self, source_aid: str, action: int):
+        """执行智能体选择的全量星间转发动作。"""
+        source_env = self.envs[source_aid]
+        source_env._insert_arrived_dynamic_missions()
+        target_aid = self._raw_transfer_target(source_aid, action)
+        if target_aid is None:
+            obs = source_env._build_observation()
+            return obs, self.envs[source_aid].rw_cfg.penalty_invalid, False, False, {
+                "invalid_transfer": True,
+            }
+
+        plan = self._preview_transfer_plan(source_aid, target_aid)
+        if not plan:
+            obs = source_env._build_observation()
+            return obs, self.envs[source_aid].rw_cfg.penalty_invalid, False, False, {
+                "invalid_transfer": True,
+                "relay_target": target_aid,
+            }
+
+        target_env = self.envs[target_aid]
+        total_delta_reward = 0.0
+        transferred = 0
+        for item in plan:
+            record = item["record"]
+            mission = item["mission"]
+            old_reward = float(record.reward)
+            transfer_start = float(item["transfer_start"])
+            transfer_end = float(item["transfer_end"])
+            dl_start = float(item["downlink_start"])
+            dl_end = float(item["downlink_end"])
+            station_id = int(item["ground_station_id"])
+
+            # 预约真实共享基站窗口。若并发动作已占用该窗口,再次检查并重新找最早可行窗口。
+            latest_end_s = min(source_env.horizon_s, mission.deadline_s)
+            dl_start, dl_end, station_id = target_env._schedule_downlink(
+                transfer_end,
+                latest_end_s=latest_end_s,
+            )
+            if station_id < 0:
+                continue
+
+            record.relay_satellite_name = target_aid
+            record.relay_start_s = transfer_start
+            record.relay_end_s = transfer_end
+            record.downlink_start_s = dl_start
+            record.downlink_end_s = dl_end
+            record.ground_station_id = station_id
+            record.storage_release_s = transfer_end
+            record.storage_release_reason = "relay_transfer"
+
+            source_env._set_storage_record(
+                mission_id=record.mission_id,
+                storage_start_s=record.obs_end_s,
+                storage_release_s=transfer_end,
+                release_reason="relay_transfer",
+            )
+            target_env._set_storage_record(
+                mission_id=record.mission_id,
+                storage_start_s=transfer_end,
+                storage_release_s=dl_end,
+                release_reason="relay_downlink",
+                source_satellite_name=source_aid,
+            )
+
+            mission.relay_satellite_name = target_aid
+            mission.relay_start_s = transfer_start
+            mission.relay_end_s = transfer_end
+            mission.downlink_start_s = dl_start
+            mission.downlink_end_s = dl_end
+            mission.ground_station_id = station_id
+            mission.is_downlinked = dl_end <= latest_end_s
+            if mission.is_downlinked:
+                record.reward = source_env.compute_reward(
+                    mission,
+                    dl_end,
+                    off_nadir_deg=record.off_nadir_deg,
+                )
+            else:
+                record.reward = source_env.rw_cfg.penalty_deadline_miss
+            total_delta_reward += float(record.reward - old_reward)
+            transferred += 1
+
+        if transferred == 0:
+            obs = source_env._build_observation()
+            return obs, source_env.rw_cfg.penalty_invalid, False, False, {
+                "invalid_transfer": True,
+                "relay_target": target_aid,
+            }
+
+        source_env.current_time_s = min(
+            source_env.horizon_s,
+            max(source_env.current_time_s, plan[0]["transfer_end"]),
+        )
+        obs = source_env._build_observation()
+        done = source_env._all_missions_done() or source_env.current_time_s >= source_env.horizon_s
+        info = {
+            "inter_satellite_transfer": True,
+            "relay_target": target_aid,
+            "n_relay_images_sent": float(transferred),
+            "transfer_all_images": True,
+        }
+        return obs, float(total_delta_reward), bool(done), False, info
+
     def _try_inter_satellite_transfers(
         self,
         prev_schedule_lens: Dict[str, int],
         results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
     ) -> None:
         """
-        规则式星间转发 fallback。
+        历史保留的自动星间转发 fallback,当前默认不再由 step 调用。
 
         当前版本只在源卫星没有可行直接下传窗口时尝试转发。转发本身使用固定耗时,
         暂不建模星间链路可见窗口; 接收卫星必须有空余存储,且能在 deadline 前
@@ -1858,6 +2119,10 @@ class MultiSatelliteEnv:
         # 仅对"想行动"(非 idle)的卫星做指派; 主动 idle 的予以尊重
         desired = {aid: actions.get(aid, idle) for aid in self.agent_ids
                    if actions.get(aid, idle) != idle}
+        for aid, action in list(desired.items()):
+            if self._is_raw_transfer_action(aid, action):
+                resolved[aid] = action
+                desired.pop(aid, None)
         unassigned = set(desired.keys())
 
         max_iters = 4 * self.n_agents + 2
@@ -2334,5 +2599,5 @@ class MultiSatelliteEnv:
     @property
     def idle_action(self) -> int:
         if self._candidate_actions_enabled():
-            return self.candidate_action_top_k
-        return self.max_action_dim  # 与单星环境一致
+            return self.candidate_action_top_k + self._transfer_action_count()
+        return self._raw_idle_action()

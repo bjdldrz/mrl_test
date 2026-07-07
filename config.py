@@ -86,7 +86,7 @@ class MissionConfig:
     n_ground_stations: int = 0               # 0=关闭下传约束; >0 表示共享基站数量
     downlink_time_s: float = 0.0             # 每幅图像固定下传耗时(秒)
     satellite_storage_capacity: int = 0      # 每颗卫星最多同时存储多少张未交付图片; 0=不限制
-    enable_inter_satellite_transfer: bool = False  # 是否启用规则式星间转发释放源星存储
+    enable_inter_satellite_transfer: bool = False  # 是否启用智能体显式星间转发动作槽
     inter_satellite_transfer_time_s: float = 300.0 # 星间转发固定耗时(秒)
 
     # 动作空间

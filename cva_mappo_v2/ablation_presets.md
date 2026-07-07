@@ -37,6 +37,11 @@ python -m cva_mappo_v2.run_experiment \
   --device cuda:0
 ```
 
+With `--enable_inter_satellite_transfer`, v2 exposes explicit relay actions:
+`K` task slots + `n_satellites - 1` target-satellite relay slots + idle.  A
+relay action sends all currently stored, undelivered images from the source
+satellite to the selected target satellite.
+
 ## A1 Slot Scale
 
 Purpose: verify that a fixed typed action space can replace the global task

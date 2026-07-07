@@ -24,6 +24,11 @@ Instead:
    routine slots, dynamic slots, flex slots, plus idle;
 4. let low-level MAPPO choose a local slot index.
 
+When `--enable_inter_satellite_transfer` is enabled, each satellite also gets
+`n_satellites - 1` explicit relay actions between the task slots and idle.  A
+relay action selects the target satellite and sends all currently stored,
+undelivered images from the source satellite.
+
 ## Run
 
 Generate scenario cache first:
@@ -111,6 +116,8 @@ The v2 runner also exposes two knobs for the pressure-test stability issue:
   assigned owner.  This targets `avg_valid_slots` and dynamic completion.
 - `--owner_switch_margin`: keeps the current primary owner unless a new owner is
   clearly better.  This targets `owner_churn_rate` and slot non-stationarity.
+- `--enable_inter_satellite_transfer`: exposes explicit relay actions.  The
+  actor output dimension becomes `task_slots + n_satellites - 1 + idle`.
 
 Recommended diagnostic comparison:
 

@@ -239,7 +239,9 @@ class MAPPOTrainer:
         explore_actions = {}
         if joint_explore_prob > 0 and np.random.rand() < joint_explore_prob:
             explore_actions = self._joint_exploration_actions(
-                masks_used, multi_env.idle_action
+                masks_used,
+                multi_env.idle_action,
+                unique_action_limit=getattr(multi_env, "max_action_dim", multi_env.idle_action),
             )
 
         if explore_actions:
@@ -264,6 +266,7 @@ class MAPPOTrainer:
                 actions=actions,
                 log_probs=log_probs,
                 idle_action=multi_env.idle_action,
+                unique_action_limit=getattr(multi_env, "max_action_dim", multi_env.idle_action),
                 max_rounds=intent_replan_rounds,
             )
 
@@ -354,13 +357,15 @@ class MAPPOTrainer:
         actions: Dict[str, int],
         log_probs: Dict[str, float],
         idle_action: int,
+        unique_action_limit: Optional[int] = None,
         max_rounds: int = 1,
     ):
+        unique_action_limit = idle_action if unique_action_limit is None else int(unique_action_limit)
         rounds = max(0, int(max_rounds))
         for _ in range(rounds):
             groups: Dict[int, List[str]] = {}
             for aid, action in actions.items():
-                if action != idle_action:
+                if 0 <= action < unique_action_limit:
                     groups.setdefault(action, []).append(aid)
 
             conflicts = {a: aids for a, aids in groups.items() if len(aids) > 1}
@@ -374,12 +379,12 @@ class MAPPOTrainer:
 
             claimed = {
                 action for aid, action in actions.items()
-                if aid not in losers and action != idle_action
+                if aid not in losers and 0 <= action < unique_action_limit
             }
             for aid in losers:
                 new_mask = masks_used[aid].copy()
                 for action in claimed:
-                    if 0 <= action < idle_action:
+                    if 0 <= action < min(unique_action_limit, len(new_mask)):
                         new_mask[action] = 0.0
                 new_mask[idle_action] = 1.0
                 action_np, log_prob_np = self._sample_one_action(
@@ -393,6 +398,7 @@ class MAPPOTrainer:
         self,
         masks: Dict[str, np.ndarray],
         idle_action: int,
+        unique_action_limit: Optional[int] = None,
     ) -> Dict[str, int]:
         """
         I31 轻量联合探索: 在同一步为多个 agent 随机挑选互不重复的可行动作。
@@ -402,13 +408,18 @@ class MAPPOTrainer:
         """
         claimed = set()
         actions = {}
+        unique_action_limit = idle_action if unique_action_limit is None else int(unique_action_limit)
         for aid in np.random.permutation(list(masks.keys())):
             feasible = np.nonzero(masks[aid][:idle_action])[0].tolist()
-            feasible = [a for a in feasible if a not in claimed]
+            feasible = [
+                a for a in feasible
+                if not (0 <= a < unique_action_limit and a in claimed)
+            ]
             if feasible:
                 action = int(np.random.choice(feasible))
                 actions[aid] = action
-                claimed.add(action)
+                if 0 <= action < unique_action_limit:
+                    claimed.add(action)
         return actions
 
     # -------------------------------------------------------------------

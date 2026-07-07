@@ -166,9 +166,7 @@ def _eval_worker(payload):
             if mask is not None:
                 # Exclude the always-valid idle action.
                 valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
-            raw_mask = env.envs[aid]._build_action_mask()
-            if env._hard_ownership_mask_enabled():
-                raw_mask = env._apply_ownership_mask(aid, raw_mask)
+            raw_mask = env._full_action_mask(aid)
             raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
         actions = trainer.select_eval_actions(
             env,
@@ -502,7 +500,7 @@ def main():
     parser.add_argument("--satellite_storage_capacity", type=int, default=0,
                         help="每颗卫星最多同时存储的未交付图片数; 0 表示不限制")
     parser.add_argument("--enable_inter_satellite_transfer", action="store_true",
-                        help="启用规则式星间转发 fallback")
+                        help="启用智能体显式星间转发动作")
     parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=300.0,
                         help="星间转发固定耗时(秒)")
     parser.add_argument("--seed", type=int, default=42)
