@@ -97,6 +97,13 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
     return cfg
 
 
+def _parse_int_list(text: str) -> list:
+    values = [int(x.strip()) for x in str(text).split(",") if x.strip()]
+    if not values:
+        raise ValueError("列表参数不能为空")
+    return values
+
+
 def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
     n_sat = min(args.n_satellites, len(cfg.satellites))
     return CVAMAPPOV2Env(
@@ -493,6 +500,12 @@ def main():
                         help="评估时按策略分布随机采样动作, 即默认 compare_methods.py 口径")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
+    parser.add_argument("--train_match_eval_scale", action="store_true",
+                        help="无场景缓存时直接使用 --n_routine/--n_dynamic 作为训练规模; 默认保持简单到复杂的训练池")
+    parser.add_argument("--train_routine_pool_sizes", type=str, default=None,
+                        help="无场景缓存时覆盖常规任务训练池, 例如 300,600,900,1200")
+    parser.add_argument("--train_dynamic_pool_sizes", type=str, default=None,
+                        help="无场景缓存时覆盖每次插入动态任务训练池, 例如 75,150,225,300")
     parser.add_argument("--n_ground_stations", type=int, default=0,
                         help="共享基站数量; 0 表示关闭基站下传约束")
     parser.add_argument("--downlink_time_s", type=float, default=0.0,
@@ -571,8 +584,14 @@ def main():
     cfg.mission.satellite_storage_capacity = args.satellite_storage_capacity
     cfg.mission.enable_inter_satellite_transfer = args.enable_inter_satellite_transfer
     cfg.mission.inter_satellite_transfer_time_s = args.inter_satellite_transfer_time_s
-    cfg.mission.routine_pool_sizes = [int(args.n_routine)]
-    cfg.mission.dynamic_pool_sizes = [int(args.n_dynamic)]
+    if args.train_match_eval_scale:
+        cfg.mission.routine_pool_sizes = [int(args.n_routine)]
+        cfg.mission.dynamic_pool_sizes = [int(args.n_dynamic)]
+    else:
+        if args.train_routine_pool_sizes:
+            cfg.mission.routine_pool_sizes = _parse_int_list(args.train_routine_pool_sizes)
+        if args.train_dynamic_pool_sizes:
+            cfg.mission.dynamic_pool_sizes = _parse_int_list(args.train_dynamic_pool_sizes)
     required_action_dim = args.n_routine + cfg.mission.dynamic_insertions_per_day * args.n_dynamic
     cfg.mission.max_action_dim = max(cfg.mission.max_action_dim, required_action_dim)
 
