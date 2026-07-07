@@ -82,6 +82,11 @@ python compare_methods.py \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods oracle \
   --vtw_time_step_s 60 \
   --out_dir runs/main_compare_v2/oracle \
@@ -104,6 +109,11 @@ python compare_methods.py \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods indep \
   --rollout_steps 512 \
   --ppo_epochs 4 \
@@ -131,6 +141,11 @@ python compare_methods.py \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods mappo \
   --no_episode_assignment \
   --candidate_action_top_k 0 \
@@ -160,6 +175,11 @@ python compare_methods.py \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods mappo \
   --no_episode_assignment \
   --candidate_action_top_k 128 \
@@ -189,6 +209,11 @@ python -m cva_mappo_v2.run_experiment \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
@@ -217,6 +242,11 @@ python compare_methods.py \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods mappo --no_episode_assignment \
   --candidate_action_top_k 0 \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -235,6 +265,11 @@ python compare_methods.py \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --methods mappo --no_episode_assignment \
   --candidate_action_top_k 128 \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -253,6 +288,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 0 \
   --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -271,6 +311,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
   --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -293,6 +338,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_slots 56 --dynamic_slots 8 --flex_slots 0 \
   --slot_selection_mode typed \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -322,6 +372,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_candidate_owners 1 \
   --dynamic_candidate_owners 1 \
   --urgent_candidate_owners 1 \
@@ -348,6 +403,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_candidate_owners 1 \
   --dynamic_candidate_owners 2 \
   --urgent_candidate_owners 3 \
@@ -378,6 +438,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --w_quality 0 --w_priority 1 --w_deadline 0 --w_dynamic 0 \
   --w_scarcity 0 --w_future_opportunity_loss 0 --w_load 0 --w_owner_stability 0 \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
@@ -398,6 +463,11 @@ python -m cva_mappo_v2.run_experiment \
   --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --w_quality 1 --w_priority 0 --w_deadline 0 --w_dynamic 0 \
   --w_scarcity 0 --w_future_opportunity_loss 0 --w_load 0 --w_owner_stability 0 \
   --rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512 \
