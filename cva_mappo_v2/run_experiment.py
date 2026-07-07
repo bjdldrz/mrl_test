@@ -380,9 +380,12 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
     try:
         for it in pbar:
             if max_train_workers > 1:
-                step_counts = [cfg.meta.rollout_steps // max_train_workers] * max_train_workers
-                for wi in range(cfg.meta.rollout_steps % max_train_workers):
-                    step_counts[wi] += 1
+                if args.split_rollout_steps_across_workers:
+                    step_counts = [cfg.meta.rollout_steps // max_train_workers] * max_train_workers
+                    for wi in range(cfg.meta.rollout_steps % max_train_workers):
+                        step_counts[wi] += 1
+                else:
+                    step_counts = [cfg.meta.rollout_steps] * max_train_workers
                 model_state = _torch_state_to_numpy(model.state_dict())
                 payloads = []
                 for wi, worker_steps in enumerate(step_counts):
@@ -413,6 +416,7 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
                     [row["last_global_state"] for row in worker_results],
                 )
                 reward = sum(float(row.get("total_reward", 0.0)) for row in worker_results)
+                rollout_steps_done = sum(int(row.get("steps", 0)) for row in worker_results)
             else:
                 if train_payload is not None:
                     routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
@@ -434,8 +438,10 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
                     env, buffer, cfg.meta.rollout_steps, cur_obs, cur_info
                 )
                 metrics = trainer.update(buffer, env.get_global_state())
+                rollout_steps_done = len(buffer)
             pbar.set_postfix(
                 reward=f"{reward:.2f}",
+                steps=rollout_steps_done,
                 ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
                 vloss=f"{metrics.get('value_loss', 0.0):.3f}",
             )
@@ -523,6 +529,8 @@ def main():
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=1,
                         help="训练 rollout 并行环境进程数; worker 采样在 CPU, 主进程在 --device 上更新")
+    parser.add_argument("--split_rollout_steps_across_workers", action="store_true",
+                        help="兼容旧并行语义: 将 --rollout_steps 平分到各 worker; 默认每个 worker 都采集完整 rollout_steps")
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
     parser.add_argument("--vtw_time_step_s", type=float, default=60.0)
