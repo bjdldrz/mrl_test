@@ -1203,6 +1203,9 @@ def main():
                         help="meta_encoder_v1 透传给 train.py 的评估间隔")
     parser.add_argument("--eval_workers", type=int, default=None,
                         help="透传给 train.py/compare_methods.py 的评估 episode 并行 worker 数")
+    parser.add_argument("--eval_device", type=str, default=None,
+                        help="普通消融透传给 compare_methods.py 的评估设备; "
+                             "推荐 cuda 训练时设为 cpu, 才能配合 --eval_workers 多进程评估")
     parser.add_argument("--torch_num_threads", type=int, default=None,
                         help="透传给 compare_methods.py 的单训练进程 PyTorch CPU 线程数")
     parser.add_argument("--save_interval", type=int, default=None,
@@ -1414,6 +1417,7 @@ def main():
                 "ppo_batch_size",
                 "train_env_workers",
                 "eval_workers",
+                "eval_device",
                 "torch_num_threads",
                 "vtw_time_step_s",
                 "vtw_cache_dir",

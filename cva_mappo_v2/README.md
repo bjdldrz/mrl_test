@@ -36,10 +36,11 @@ python precompute_scenarios.py \
   --n_eval_scenarios 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
   --curriculum_stages 300:75,600:150,900:225,1200:300 \
   --vtw_time_step_s 60 \
   --vtw_workers 12 \
-  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
+  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42
 ```
 
 Train/evaluate v2:
@@ -47,13 +48,18 @@ Train/evaluate v2:
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \

@@ -12,7 +12,8 @@
 - 更新强度: `--rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512`, 增大每次 GPU update 的批量, 减少 GPU 只短暂闪一下的问题。
 - 使用 `--scenario_cache_dir` 时,实际评估 episode 数以缓存中的 `eval_scenarios.pkl` 为准。v2 的 `manifest.json` 会记录 `requested_eval_episodes` 和 `actual_eval_episodes`。
 - v2 默认 deterministic eval;如需随机采样评估,加 `--eval_stochastic`。
-- 使用预热 VTW 缓存的正式命令应同时包含 `--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache` 与 `--vtw_time_step_s 60`。
+- 使用预热 VTW 缓存的正式命令应同时包含 `--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache` 与 `--vtw_time_step_s 60`。
+- 最新联合约束口径默认追加 `--n_ground_stations 4 --downlink_time_s 300 --satellite_storage_capacity 8 --enable_inter_satellite_transfer --inter_satellite_transfer_time_s 300`。
 
 注意: 单卡 GPU 不建议多个评估进程同时使用。若显式设置 `--eval_device same/cuda:0` 且 `eval_workers > 1`, 代码会自动降为 1。
 
@@ -28,11 +29,12 @@ python precompute_scenarios.py \
   --n_eval_scenarios 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
   --curriculum_stages 300:75,600:150,900:225,1200:300 \
   --vtw_time_step_s 60 \
   --vtw_workers 16 \
   --map_max_scenarios 8 \
-  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42
+  --out_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42
 ```
 
 ## 2. 接口支持情况
@@ -73,8 +75,8 @@ python precompute_scenarios.py \
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 0 \
   --eval_episodes 20 \
@@ -95,8 +97,8 @@ python compare_methods.py \
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -122,8 +124,8 @@ python compare_methods.py \
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -151,8 +153,8 @@ python compare_methods.py \
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -180,8 +182,8 @@ python compare_methods.py \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
@@ -211,8 +213,8 @@ Full Action、Mixed Top-K 走旧版 `compare_methods.py`; Typed Slots 走 v2。
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
@@ -229,8 +231,8 @@ python compare_methods.py \
 ```bash
 python compare_methods.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --methods mappo --no_episode_assignment \
@@ -247,8 +249,8 @@ python compare_methods.py \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 0 \
@@ -265,8 +267,8 @@ python -m cva_mappo_v2.run_experiment \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 64 --dynamic_slots 32 --flex_slots 32 \
@@ -287,8 +289,8 @@ python -m cva_mappo_v2.run_experiment \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_slots 56 --dynamic_slots 8 --flex_slots 0 \
@@ -316,8 +318,8 @@ python -m cva_mappo_v2.run_experiment \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_candidate_owners 1 \
@@ -342,8 +344,8 @@ python -m cva_mappo_v2.run_experiment \
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --routine_candidate_owners 1 \
@@ -372,8 +374,8 @@ Priority-only:
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 0 --w_priority 1 --w_deadline 0 --w_dynamic 0 \
@@ -392,8 +394,8 @@ Visibility/quality-only:
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 --train_iters 30 --eval_episodes 20 \
   --n_routine 1200 --n_dynamic 300 \
   --w_quality 1 --w_priority 0 --w_deadline 0 --w_dynamic 0 \

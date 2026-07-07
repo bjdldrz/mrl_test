@@ -8,13 +8,18 @@ Base command:
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 30 \
   --eval_episodes 20 \
   --n_routine 1200 \
   --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
   --rollout_steps 512 \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \

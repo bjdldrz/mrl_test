@@ -1,5 +1,7 @@
 # CVA-MAPPO 主方案实验计划
 
+> 注意:本文档保留 CVA-MAPPO 早期“观测即完成”实验路线。当前论文最新版加入了基站可见下传和星上存储容量约束,最新可直接复制的运行命令以 `experiment.md`、`cva_mappo_v2/README.md` 和 `cva_mappo_v2/ablation_presets.md` 为准。
+
 本文档只围绕论文主方案 **CVA-MAPPO** 展开,用于执行训练、主对比和消融实验。
 
 主方案定义:
