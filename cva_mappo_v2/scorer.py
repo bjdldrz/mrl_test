@@ -93,6 +93,9 @@ class CandidateValueScorer:
         )
 
     def _pair_features(self, env, mission: Mission, current_time_s: float, allow_future: bool):
+        if mission.id not in env.mission_vtw and hasattr(env, "_compute_vtw_for_missions"):
+            env._compute_vtw_for_missions([mission])
+
         best_quality = None
         best_wait_s = 0.0
         future_windows = 0

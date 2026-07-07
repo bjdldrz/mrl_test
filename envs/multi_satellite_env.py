@@ -2101,7 +2101,8 @@ class MultiSatelliteEnv:
 
         无协同 baseline (coordinate=False): 原样返回各卫星动作, 不去冲突。
         """
-        idle = self.max_action_dim
+        env_idle = self.max_action_dim
+        exposed_idle = self._raw_idle_action()
         if not self.coordinate:
             return dict(actions)
 
@@ -2114,11 +2115,14 @@ class MultiSatelliteEnv:
                 mask = self._apply_ownership_mask(aid, mask)
             feasible[aid] = set(np.nonzero(mask[:self.max_action_dim])[0].tolist())
 
-        resolved = {aid: idle for aid in self.agent_ids}
+        resolved = {aid: env_idle for aid in self.agent_ids}
         claimed = set()                 # 已被指派的任务槽位
         # 仅对"想行动"(非 idle)的卫星做指派; 主动 idle 的予以尊重
-        desired = {aid: actions.get(aid, idle) for aid in self.agent_ids
-                   if actions.get(aid, idle) != idle}
+        desired = {
+            aid: actions.get(aid, exposed_idle)
+            for aid in self.agent_ids
+            if actions.get(aid, exposed_idle) not in (env_idle, exposed_idle)
+        }
         for aid, action in list(desired.items()):
             if self._is_raw_transfer_action(aid, action):
                 resolved[aid] = action
@@ -2133,8 +2137,8 @@ class MultiSatelliteEnv:
             groups: Dict[int, List[str]] = {}
             to_reassign: List[str] = []
             for aid in list(unassigned):
-                a = desired.get(aid, idle)
-                if a == idle or a in claimed or self._obs_value(aid, a, feasible) is None:
+                a = desired.get(aid, exposed_idle)
+                if a in (env_idle, exposed_idle) or a in claimed or self._obs_value(aid, a, feasible) is None:
                     to_reassign.append(aid)
                 else:
                     groups.setdefault(a, []).append(aid)
@@ -2155,7 +2159,7 @@ class MultiSatelliteEnv:
             for aid in to_reassign:
                 nxt = self._next_best_action(aid, claimed, feasible) if do_reassign else None
                 if nxt is None:
-                    resolved[aid] = idle
+                    resolved[aid] = env_idle
                     unassigned.discard(aid)
                 else:
                     desired[aid] = nxt
@@ -2164,7 +2168,7 @@ class MultiSatelliteEnv:
             if not groups and not progressed:
                 # 无人可再指派, 剩余全部 idle
                 for aid in unassigned:
-                    resolved[aid] = idle
+                    resolved[aid] = env_idle
                 break
 
         return resolved

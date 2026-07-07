@@ -235,13 +235,16 @@ class MAPPOTrainer:
             masks_used[aid] = current_infos[aid].get(
                 "action_mask", np.ones(multi_env.action_dim)
             ).copy()
+        action_identities = self._build_action_identities(
+            multi_env, current_infos, agent_ids
+        )
 
         explore_actions = {}
         if joint_explore_prob > 0 and np.random.rand() < joint_explore_prob:
             explore_actions = self._joint_exploration_actions(
                 masks_used,
                 multi_env.idle_action,
-                unique_action_limit=getattr(multi_env, "max_action_dim", multi_env.idle_action),
+                action_identities=action_identities,
             )
 
         if explore_actions:
@@ -266,11 +269,40 @@ class MAPPOTrainer:
                 actions=actions,
                 log_probs=log_probs,
                 idle_action=multi_env.idle_action,
-                unique_action_limit=getattr(multi_env, "max_action_dim", multi_env.idle_action),
+                action_identities=action_identities,
                 max_rounds=intent_replan_rounds,
             )
 
         return actions, log_probs, masks_used, obs_by_agent
+
+    def _build_action_identities(
+        self,
+        multi_env,
+        current_infos: Dict,
+        agent_ids: List[str],
+    ) -> Dict[str, Dict[int, Tuple[str, int]]]:
+        """Map exposed policy actions to comparable task identities.
+
+        Candidate-action environments expose local slot indices, so action 7 on
+        two satellites is not necessarily the same task.  Intent broadcast and
+        joint exploration must compare the raw task slot behind each exposed
+        action; transfer and idle actions intentionally have no shared identity.
+        """
+        identities: Dict[str, Dict[int, Tuple[str, int]]] = {}
+        max_task_action = int(getattr(multi_env, "max_action_dim", multi_env.idle_action))
+        for aid in agent_ids:
+            info = current_infos.get(aid, {})
+            slots = info.get("candidate_action_slots")
+            by_action: Dict[int, Tuple[str, int]] = {}
+            if slots is not None:
+                for exposed, raw_action in enumerate(slots):
+                    if raw_action is not None:
+                        by_action[int(exposed)] = ("task", int(raw_action))
+            else:
+                for action in range(min(max_task_action, int(multi_env.idle_action))):
+                    by_action[int(action)] = ("task", int(action))
+            identities[aid] = by_action
+        return identities
 
     def _sample_action_batch(
         self,
@@ -358,15 +390,21 @@ class MAPPOTrainer:
         log_probs: Dict[str, float],
         idle_action: int,
         unique_action_limit: Optional[int] = None,
+        action_identities: Optional[Dict[str, Dict[int, Tuple[str, int]]]] = None,
         max_rounds: int = 1,
     ):
         unique_action_limit = idle_action if unique_action_limit is None else int(unique_action_limit)
         rounds = max(0, int(max_rounds))
         for _ in range(rounds):
-            groups: Dict[int, List[str]] = {}
+            groups: Dict[Tuple[str, int], List[str]] = {}
             for aid, action in actions.items():
-                if 0 <= action < unique_action_limit:
-                    groups.setdefault(action, []).append(aid)
+                identity = None
+                if action_identities is not None:
+                    identity = action_identities.get(aid, {}).get(int(action))
+                elif 0 <= action < unique_action_limit:
+                    identity = ("task", int(action))
+                if identity is not None:
+                    groups.setdefault(identity, []).append(aid)
 
             conflicts = {a: aids for a, aids in groups.items() if len(aids) > 1}
             if not conflicts:
@@ -378,14 +416,28 @@ class MAPPOTrainer:
                 losers.extend(aid for aid in contenders if aid != winner)
 
             claimed = {
-                action for aid, action in actions.items()
-                if aid not in losers and 0 <= action < unique_action_limit
+                action_identities.get(aid, {}).get(int(action))
+                if action_identities is not None
+                else ("task", int(action))
+                for aid, action in actions.items()
+                if aid not in losers
+                and (
+                    (action_identities is not None and action_identities.get(aid, {}).get(int(action)) is not None)
+                    or (action_identities is None and 0 <= action < unique_action_limit)
+                )
             }
+            claimed.discard(None)
             for aid in losers:
                 new_mask = masks_used[aid].copy()
-                for action in claimed:
-                    if 0 <= action < min(unique_action_limit, len(new_mask)):
-                        new_mask[action] = 0.0
+                if action_identities is not None:
+                    identities = action_identities.get(aid, {})
+                    for action, identity in identities.items():
+                        if identity in claimed and 0 <= action < len(new_mask):
+                            new_mask[action] = 0.0
+                else:
+                    for _, action in claimed:
+                        if 0 <= action < min(unique_action_limit, len(new_mask)):
+                            new_mask[action] = 0.0
                 new_mask[idle_action] = 1.0
                 action_np, log_prob_np = self._sample_one_action(
                     obs_by_agent[aid], new_mask
@@ -399,6 +451,7 @@ class MAPPOTrainer:
         masks: Dict[str, np.ndarray],
         idle_action: int,
         unique_action_limit: Optional[int] = None,
+        action_identities: Optional[Dict[str, Dict[int, Tuple[str, int]]]] = None,
     ) -> Dict[str, int]:
         """
         I31 轻量联合探索: 在同一步为多个 agent 随机挑选互不重复的可行动作。
@@ -413,12 +466,19 @@ class MAPPOTrainer:
             feasible = np.nonzero(masks[aid][:idle_action])[0].tolist()
             feasible = [
                 a for a in feasible
-                if not (0 <= a < unique_action_limit and a in claimed)
+                if not (
+                    (action_identities is not None and action_identities.get(aid, {}).get(int(a)) in claimed)
+                    or (action_identities is None and 0 <= a < unique_action_limit and a in claimed)
+                )
             ]
             if feasible:
                 action = int(np.random.choice(feasible))
                 actions[aid] = action
-                if 0 <= action < unique_action_limit:
+                if action_identities is not None:
+                    identity = action_identities.get(aid, {}).get(action)
+                    if identity is not None:
+                        claimed.add(identity)
+                elif 0 <= action < unique_action_limit:
                     claimed.add(action)
         return actions
 
