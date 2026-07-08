@@ -548,7 +548,243 @@ Full score 使用主对比 CVA-MAPPO v2 默认权重。`+Urgency/+Scarcity/+Load
 - large: `--n_satellites 12 --n_routine 1200 --n_dynamic 300`
 - stress: `--n_satellites 18 --n_routine 1800 --n_dynamic 450`
 
-## 11. 当前仍需补充的接口
+## 11. 从简单到复杂的测试路线
+
+目的:验证当前任务是否因为约束过多而导致 agent 难学。建议先跑 Level 1/2/3,确认学习曲线、`eval_idle_action_rate`、`eval_avg_valid_action_count` 和完成率正常后,再进入 Level 4 压力场景。
+
+### Level 1: 无基站、无容量、无动态重分配
+
+该组只验证 MAPPO 是否能在 CVA 候选槽位中学会选择可观测任务。
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 20 \
+  --n_routine 300 \
+  --n_dynamic 75 \
+  --curriculum_stages 75:20,150:40,225:60,300:75 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 16 \
+  --map_max_scenarios 8 \
+  --out_dir runs/scenario_cache/cva_l1_basic_sat12_r300_d75_seed42
+```
+
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_l1_basic_sat12_r300_d75_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_l1_basic_sat12_r300_d75_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 50 \
+  --eval_episodes 20 \
+  --n_routine 300 \
+  --n_dynamic 75 \
+  --routine_slots 48 \
+  --dynamic_slots 16 \
+  --flex_slots 0 \
+  --slot_selection_mode typed \
+  --assignment_replan_trigger none \
+  --assignment_replan_interval_s 0 \
+  --satellite_storage_capacity 0 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/curriculum_tests/l1_basic \
+  --run_name cva_l1_basic \
+  --no_viz \
+  --device cuda:0
+```
+
+### Level 2: 加入卫星存储容量,但不加入基站下传
+
+该组验证拍摄容量约束是否会导致策略大量 idle 或有效动作骤降。
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 20 \
+  --n_routine 300 \
+  --n_dynamic 75 \
+  --curriculum_stages 75:20,150:40,225:60,300:75 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 16 \
+  --map_max_scenarios 8 \
+  --out_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42
+```
+
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 50 \
+  --eval_episodes 20 \
+  --n_routine 300 \
+  --n_dynamic 75 \
+  --routine_slots 48 \
+  --dynamic_slots 16 \
+  --flex_slots 0 \
+  --slot_selection_mode typed \
+  --assignment_replan_trigger none \
+  --assignment_replan_interval_s 0 \
+  --satellite_storage_capacity 8 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/curriculum_tests/l2_storage \
+  --run_name cva_l2_storage \
+  --no_viz \
+  --device cuda:0
+```
+
+### Level 3: 加入基站下传,但不加入星间传输
+
+该组验证“拍摄 + 下传后完成”的链路是否可学习。
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 300 \
+  --n_eval_scenarios 20 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --curriculum_stages 150:40,300:75,450:110,600:150 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 16 \
+  --map_max_scenarios 8 \
+  --out_dir runs/scenario_cache/cva_l3_downlink_sat12_r600_d150_gs4_seed42
+```
+
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_l3_downlink_sat12_r600_d150_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_l3_downlink_sat12_r600_d150_gs4_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 80 \
+  --eval_episodes 20 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --routine_slots 64 \
+  --dynamic_slots 24 \
+  --flex_slots 8 \
+  --slot_selection_mode mixed \
+  --assignment_replan_trigger periodic,dynamic,deadline \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --release_before_deadline_s 1800 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/curriculum_tests/l3_downlink \
+  --run_name cva_l3_downlink \
+  --no_viz \
+  --device cuda:0
+```
+
+### Level 4: 完整压力场景
+
+该组作为最终论文主场景,包含大规模任务、基站下传、卫星容量、星间传输和事件触发重分配。
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 800 \
+  --n_eval_scenarios 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 16 \
+  --map_max_scenarios 8 \
+  --out_dir runs/scenario_cache/cva_l4_full_sat12_r1200_d300_gs4_seed42
+```
+
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/cva_l4_full_sat12_r1200_d300_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_l4_full_sat12_r1200_d300_gs4_seed42/vtw_cache \
+  --n_satellites 12 \
+  --train_iters 100 \
+  --eval_episodes 20 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 8 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 64 \
+  --dynamic_slots 32 \
+  --flex_slots 32 \
+  --routine_candidate_owners 1 \
+  --dynamic_candidate_owners 2 \
+  --urgent_candidate_owners 3 \
+  --stale_candidate_owners 3 \
+  --capacity_slack_ratio 0.05 \
+  --cva_load_penalty 0.15 \
+  --release_before_deadline_s 1800 \
+  --dynamic_broadcast_window_s 1800 \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --assignment_switch_penalty 0.05 \
+  --owner_switch_margin 0.08 \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.06 \
+  --slot_selection_mode mixed \
+  --assignment_lock_window_s 600 \
+  --assignment_max_switches_per_task 2 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --torch_num_threads 1 \
+  --eval_device cpu \
+  --eval_workers 8 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/curriculum_tests/l4_full \
+  --run_name cva_l4_full \
+  --no_viz \
+  --device cuda:0
+```
+
+建议判据:
+
+- Level 1 若 `eval_idle_action_rate > 0.8` 或 `eval_avg_valid_action_count` 接近 0,优先检查候选槽位/动作 mask,不要继续做复杂约束。
+- Level 2 若完成率明显低于 Level 1,说明存储容量约束过紧或释放逻辑需要检查。
+- Level 3 若 routine 完成率正常但 dynamic 完成率下降,优先检查动态任务到达时间、下传 VTW 与 deadline。
+- Level 4 主要用于最终对比和消融,不建议作为第一次验证模型是否能学习的起点。
+
+## 12. 当前仍需补充的接口
 
 - Random Feasible-K: 需要新增随机可行候选采样器, 用于证明“不是任意缩小动作空间都有效”。
 - Adaptive Slot Ratio: 需要按当前任务压力动态调整 routine/dynamic/flex 槽位。
