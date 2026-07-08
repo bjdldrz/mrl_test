@@ -49,7 +49,7 @@ python precompute_scenarios.py \
 | 候选动作空间 | Full Action | 已支持 | 旧版 `candidate_action_top_k=0` |
 | 候选动作空间 | Random Feasible-K | 未完整实现 | 待实现随机可行动作候选采样器 |
 | 候选动作空间 | Mixed Top-K | 已支持 | 旧版 `--candidate_action_top_k` |
-| 候选动作空间 | Typed Slots | 已支持 | v2, `--flex_slots 0` |
+| 候选动作空间 | Typed Slots | 已支持 | v2, `--slot_selection_mode typed --flex_slots 0` |
 | 候选动作空间 | Typed Slots + Flex | 已支持 | v2 默认 |
 | 槽位比例 | 固定比例 | 已支持 | v2 `--routine_slots/--dynamic_slots/--flex_slots` |
 | 槽位比例 | Adaptive | 未完整实现 | 待实现自适应槽位分配 |
@@ -602,9 +602,9 @@ python -m cva_mappo_v2.run_experiment \
   --device cuda:0
 ```
 
-### Level 2: 加入卫星存储容量,但不加入基站下传
+### Level 2: 加入基站下传,但不限制卫星存储容量
 
-该组验证拍摄容量约束是否会导致策略大量 idle 或有效动作骤降。
+该组验证“拍摄 + 下传后完成”的链路是否可学习,但暂不引入星上存储容量约束。
 
 ```bash
 python precompute_scenarios.py \
@@ -614,47 +614,50 @@ python precompute_scenarios.py \
   --n_eval_scenarios 20 \
   --n_routine 300 \
   --n_dynamic 75 \
+  --n_ground_stations 4 \
   --curriculum_stages 75:20,150:40,225:60,300:75 \
   --vtw_time_step_s 60 \
   --vtw_workers 16 \
   --map_max_scenarios 8 \
-  --out_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42
+  --out_dir runs/scenario_cache/cva_l2_downlink_sat12_r300_d75_gs4_seed42
 ```
 
 ```bash
 python -m cva_mappo_v2.run_experiment \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --scenario_cache_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42 \
-  --vtw_cache_dir runs/scenario_cache/cva_l2_storage_sat12_r300_d75_seed42/vtw_cache \
+  --scenario_cache_dir runs/scenario_cache/cva_l2_downlink_sat12_r300_d75_gs4_seed42 \
+  --vtw_cache_dir runs/scenario_cache/cva_l2_downlink_sat12_r300_d75_gs4_seed42/vtw_cache \
   --n_satellites 12 \
   --train_iters 50 \
   --eval_episodes 20 \
   --n_routine 300 \
   --n_dynamic 75 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
   --routine_slots 48 \
   --dynamic_slots 16 \
   --flex_slots 0 \
   --slot_selection_mode typed \
   --assignment_replan_trigger none \
   --assignment_replan_interval_s 0 \
-  --satellite_storage_capacity 8 \
+  --satellite_storage_capacity 0 \
   --rollout_steps 512 \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
-  --train_env_workers 8 \
+  --train_env_workers 16 \
   --torch_num_threads 1 \
   --eval_device cpu \
-  --eval_workers 8 \
+  --eval_workers 16 \
   --vtw_time_step_s 60 \
-  --out_dir runs/curriculum_tests/l2_storage \
-  --run_name cva_l2_storage \
+  --out_dir runs/curriculum_tests/l2_downlink \
+  --run_name cva_l2_downlink \
   --no_viz \
   --device cuda:0
 ```
 
-### Level 3: 加入基站下传,但不加入星间传输
+### Level 3: 加入基站下传和卫星存储容量,但不加入星间传输
 
-该组验证“拍摄 + 下传后完成”的链路是否可学习。
+该组验证下传排队产生的星上图片占用是否会导致策略大量 idle 或有效动作骤降。
 
 ```bash
 python precompute_scenarios.py \
@@ -780,8 +783,8 @@ python -m cva_mappo_v2.run_experiment \
 建议判据:
 
 - Level 1 若 `eval_idle_action_rate > 0.8` 或 `eval_avg_valid_action_count` 接近 0,优先检查候选槽位/动作 mask,不要继续做复杂约束。
-- Level 2 若完成率明显低于 Level 1,说明存储容量约束过紧或释放逻辑需要检查。
-- Level 3 若 routine 完成率正常但 dynamic 完成率下降,优先检查动态任务到达时间、下传 VTW 与 deadline。
+- Level 2 若完成率明显低于 Level 1,优先检查下传 VTW、基站排队时间和 deadline 是否过紧。
+- Level 3 若完成率明显低于 Level 2,说明存储容量约束过紧或释放逻辑需要检查。
 - Level 4 主要用于最终对比和消融,不建议作为第一次验证模型是否能学习的起点。
 
 ## 12. 当前仍需补充的接口

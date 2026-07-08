@@ -156,6 +156,9 @@ class MultiSatelliteEnv:
         # 底层 SatelliteSchedulingEnv 仍保留 max_action_dim 个真实槽位,用于 VTW、统计和结果可视化。
         self.candidate_action_top_k = max(0, int(candidate_action_top_k or 0))
         self._candidate_action_maps: Dict[str, List[Optional[int]]] = {}
+        self._candidate_slot_valid_sum = 0.0
+        self._candidate_slot_filled_sum = 0.0
+        self._candidate_slot_exposure_count = 0
         # --- 基站下传约束 ---
         # n_ground_stations=0 时保持旧口径: 观测结束即完成。
         # >0 时所有卫星共享 n 个基站服务台, 观测图像排队下传, 下传完成才计入任务完成。
@@ -503,7 +506,24 @@ class MultiSatelliteEnv:
 
         if len(selected) < self.candidate_action_top_k:
             selected.extend([None] * (self.candidate_action_top_k - len(selected)))
+        self._record_candidate_slot_stats(selected, full_mask)
         return selected
+
+    def _record_candidate_slot_stats(
+        self,
+        selected: List[Optional[int]],
+        full_mask: np.ndarray,
+    ) -> None:
+        """Track how many exposed Top-K task slots are filled and executable."""
+        if not self._candidate_actions_enabled():
+            return
+        self._candidate_slot_exposure_count += 1
+        for raw_action in selected[:self.candidate_action_top_k]:
+            if raw_action is None:
+                continue
+            self._candidate_slot_filled_sum += 1.0
+            if 0 <= raw_action < len(full_mask) and full_mask[raw_action] > 0:
+                self._candidate_slot_valid_sum += 1.0
 
     def _candidate_action_score(
         self,
@@ -681,6 +701,9 @@ class MultiSatelliteEnv:
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
         self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
+        self._candidate_slot_valid_sum = 0.0
+        self._candidate_slot_filled_sum = 0.0
+        self._candidate_slot_exposure_count = 0
         self._transfer_targets = {}
         if self.n_ground_stations > 0:
             self._ground_station_available_s[:] = [0.0] * self.n_ground_stations
@@ -2101,8 +2124,7 @@ class MultiSatelliteEnv:
 
         无协同 baseline (coordinate=False): 原样返回各卫星动作, 不去冲突。
         """
-        env_idle = self.max_action_dim
-        exposed_idle = self._raw_idle_action()
+        raw_idle = self._raw_idle_action()
         if not self.coordinate:
             return dict(actions)
 
@@ -2115,13 +2137,13 @@ class MultiSatelliteEnv:
                 mask = self._apply_ownership_mask(aid, mask)
             feasible[aid] = set(np.nonzero(mask[:self.max_action_dim])[0].tolist())
 
-        resolved = {aid: env_idle for aid in self.agent_ids}
+        resolved = {aid: raw_idle for aid in self.agent_ids}
         claimed = set()                 # 已被指派的任务槽位
         # 仅对"想行动"(非 idle)的卫星做指派; 主动 idle 的予以尊重
         desired = {
-            aid: actions.get(aid, exposed_idle)
+            aid: actions.get(aid, raw_idle)
             for aid in self.agent_ids
-            if actions.get(aid, exposed_idle) not in (env_idle, exposed_idle)
+            if actions.get(aid, raw_idle) != raw_idle
         }
         for aid, action in list(desired.items()):
             if self._is_raw_transfer_action(aid, action):
@@ -2137,8 +2159,8 @@ class MultiSatelliteEnv:
             groups: Dict[int, List[str]] = {}
             to_reassign: List[str] = []
             for aid in list(unassigned):
-                a = desired.get(aid, exposed_idle)
-                if a in (env_idle, exposed_idle) or a in claimed or self._obs_value(aid, a, feasible) is None:
+                a = desired.get(aid, raw_idle)
+                if a == raw_idle or a in claimed or self._obs_value(aid, a, feasible) is None:
                     to_reassign.append(aid)
                 else:
                     groups.setdefault(a, []).append(aid)
@@ -2159,7 +2181,7 @@ class MultiSatelliteEnv:
             for aid in to_reassign:
                 nxt = self._next_best_action(aid, claimed, feasible) if do_reassign else None
                 if nxt is None:
-                    resolved[aid] = env_idle
+                    resolved[aid] = raw_idle
                     unassigned.discard(aid)
                 else:
                     desired[aid] = nxt
@@ -2168,7 +2190,7 @@ class MultiSatelliteEnv:
             if not groups and not progressed:
                 # 无人可再指派, 剩余全部 idle
                 for aid in unassigned:
-                    resolved[aid] = env_idle
+                    resolved[aid] = raw_idle
                 break
 
         return resolved
@@ -2528,7 +2550,7 @@ class MultiSatelliteEnv:
             / max(len(self._deadline_release_mission_ids), 1)
         )
 
-        return {
+        metrics = {
             "total_reward": total_reward,
             # 论文 Table 4 口径: 分母 = feasible 任务
             "observation_success_rate": feas_observed / max(feas_total, 1),
@@ -2592,6 +2614,25 @@ class MultiSatelliteEnv:
             "n_deadline_rescue_tasks": len(self._deadline_rescue_mission_ids),
             "deadline_rescue_rate": deadline_rescue_rate,
         }
+        if self._candidate_actions_enabled():
+            denom = max(self._candidate_slot_exposure_count * self.candidate_action_top_k, 1)
+            exposures = max(self._candidate_slot_exposure_count, 1)
+            metrics.update({
+                "candidate_action_top_k": float(self.candidate_action_top_k),
+                "slot_valid_ratio": self._candidate_slot_valid_sum / denom,
+                "slot_filled_ratio": self._candidate_slot_filled_sum / denom,
+                "avg_valid_slots": self._candidate_slot_valid_sum / exposures,
+                "avg_filled_slots": self._candidate_slot_filled_sum / exposures,
+            })
+        else:
+            metrics.update({
+                "candidate_action_top_k": 0.0,
+                "slot_valid_ratio": 0.0,
+                "slot_filled_ratio": 0.0,
+                "avg_valid_slots": 0.0,
+                "avg_filled_slots": 0.0,
+            })
+        return metrics
 
     def is_done(self) -> bool:
         """检查是否所有卫星的 episode 都结束"""

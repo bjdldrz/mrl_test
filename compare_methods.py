@@ -404,7 +404,18 @@ def _eval_multi_worker(args):
     cur_obs = {a: r[0] for a, r in res.items()}
     cur_info = {a: r[1] for a, r in res.items()}
     max_steps = int(env.horizon_s / 10.0) + 100
+    n_steps = 0
+    n_idle_actions = 0
+    n_agent_actions = 0
+    valid_action_sum = 0.0
+    raw_valid_action_sum = 0.0
     for _ in range(max_steps):
+        for aid in env.agent_ids:
+            mask = cur_info[aid].get("action_mask")
+            if mask is not None:
+                valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
+            raw_mask = env._full_action_mask(aid)
+            raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
         if eval_deterministic:
             actions = trainer.select_eval_actions(
                 env,
@@ -420,13 +431,26 @@ def _eval_multi_worker(args):
                 intent_broadcast=args["intent_broadcast"],
                 intent_replan_rounds=args["intent_replan_rounds"],
             )
+        n_steps += 1
+        n_agent_actions += len(actions)
+        n_idle_actions += sum(1 for action in actions.values() if int(action) == env.idle_action)
         step_res = env.step(actions)
         for aid, (obs, _, _, _, info) in step_res.items():
             cur_obs[aid] = obs
             cur_info[aid] = info
         if env.is_done():
             break
-    return {"idx": idx, "metrics": env.get_metrics()}
+    metrics = env.get_metrics()
+    current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
+    metrics.update({
+        "eval_steps": float(n_steps),
+        "eval_end_time_s": float(np.mean(current_times)) if current_times else 0.0,
+        "eval_finished_early": 1.0 if n_steps < max_steps else 0.0,
+        "eval_idle_action_rate": n_idle_actions / max(n_agent_actions, 1),
+        "eval_avg_valid_action_count": valid_action_sum / max(n_agent_actions, 1),
+        "eval_avg_raw_valid_action_count": raw_valid_action_sum / max(n_agent_actions, 1),
+    })
+    return {"idx": idx, "metrics": metrics}
 
 
 def _collect_multi_rollout_worker(args):
@@ -1188,7 +1212,18 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         cur_obs = {a: r[0] for a, r in res.items()}
         cur_info = {a: r[1] for a, r in res.items()}
         max_steps = int(env.horizon_s / 10.0) + 100
+        n_steps = 0
+        n_idle_actions = 0
+        n_agent_actions = 0
+        valid_action_sum = 0.0
+        raw_valid_action_sum = 0.0
         for _ in range(max_steps):
+            for aid in env.agent_ids:
+                mask = cur_info[aid].get("action_mask")
+                if mask is not None:
+                    valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
+                raw_mask = env._full_action_mask(aid)
+                raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
             if eval_deterministic:
                 actions = trainer.select_eval_actions(
                     env,
@@ -1204,13 +1239,26 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
                     intent_broadcast=(coordinate and intent_broadcast),
                     intent_replan_rounds=intent_replan_rounds,
                 )
+            n_steps += 1
+            n_agent_actions += len(actions)
+            n_idle_actions += sum(1 for action in actions.values() if int(action) == env.idle_action)
             step_res = env.step(actions)
             for aid, (o, r, term, trunc, inf) in step_res.items():
                 cur_obs[aid] = o
                 cur_info[aid] = inf
             if env.is_done():
                 break
-        metrics_list.append(env.get_metrics())
+        metrics = env.get_metrics()
+        current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
+        metrics.update({
+            "eval_steps": float(n_steps),
+            "eval_end_time_s": float(np.mean(current_times)) if current_times else 0.0,
+            "eval_finished_early": 1.0 if n_steps < max_steps else 0.0,
+            "eval_idle_action_rate": n_idle_actions / max(n_agent_actions, 1),
+            "eval_avg_valid_action_count": valid_action_sum / max(n_agent_actions, 1),
+            "eval_avg_raw_valid_action_count": raw_valid_action_sum / max(n_agent_actions, 1),
+        })
+        metrics_list.append(metrics)
         if viz_out_dir is not None and ep_idx == len(scenarios) - 1:
             _save_multi_viz_data(env, viz_out_dir, method_name)
     return _avg_metrics(metrics_list)
@@ -1808,6 +1856,13 @@ def main():
         ("load_balance_cv", "负载变异系数", ""),
         ("avg_off_nadir_deg", "平均off-nadir", "°"),
         ("avg_dynamic_response_s", "动态响应延迟", "s"),
+        ("eval_idle_action_rate", "评估idle动作率", "%"),
+        ("eval_avg_valid_action_count", "评估可选动作数", ""),
+        ("eval_avg_raw_valid_action_count", "评估原始可选动作数", ""),
+        ("avg_valid_slots", "TopK平均有效槽位", ""),
+        ("avg_filled_slots", "TopK平均填充槽位", ""),
+        ("slot_valid_ratio", "TopK有效槽位率", "%"),
+        ("slot_filled_ratio", "TopK填充槽位率", "%"),
         ("avg_downlink_queue_s", "平均下传排队", "s"),
         ("n_ground_station_vtws", "基站可见窗口数", ""),
         ("avg_ground_station_vtws", "平均基站窗口数", ""),

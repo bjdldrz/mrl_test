@@ -35,21 +35,21 @@
     "coordination_gain": 0.9333333333333333
   },
   "MAPPO": {
-    "total_reward": 29.492361072192473,
-    "observation_success_rate": 0.964375,
+    "total_reward": 29.54859987814682,
+    "observation_success_rate": 0.98,
     "dynamic_completion_rate": 1.0,
-    "routine_completion_rate": 0.9589490968801313,
-    "observation_success_rate_raw": 0.34375,
+    "routine_completion_rate": 0.9761904761904762,
+    "observation_success_rate_raw": 0.35,
     "dynamic_completion_rate_raw": 0.11666666666666667,
-    "routine_completion_rate_raw": 0.48000000000000004,
+    "routine_completion_rate_raw": 0.49,
     "feasible_ratio": 0.35625,
     "dynamic_feasible_ratio": 0.11666666666666667,
     "n_duplicates": 0.0,
     "duplicate_rate": 0.0,
-    "load_balance_cv": 0.46398443209378426,
-    "avg_off_nadir_deg": 14.501754150724668,
+    "load_balance_cv": 0.1468517443166613,
+    "avg_off_nadir_deg": 13.88224141537486,
     "avg_dynamic_response_s": 16341.088875922735,
-    "n_scheduled": 27.5,
-    "coordination_gain": 0.9166666666666666
+    "n_scheduled": 28.0,
+    "coordination_gain": 0.9333333333333333
   }
 }
