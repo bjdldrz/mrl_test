@@ -11,7 +11,7 @@
 - 评估: `--eval_device cpu --eval_workers 8`, 多 CPU 进程并行评估 episode。
 - 更新强度: `--rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512`, 增大每次 GPU update 的批量, 减少 GPU 只短暂闪一下的问题。
 - 使用 `--scenario_cache_dir` 时,实际评估 episode 数以缓存中的 `eval_scenarios.pkl` 为准。v2 的 `manifest.json` 会记录 `requested_eval_episodes` 和 `actual_eval_episodes`。
-- v2 默认 deterministic eval;如需随机采样评估,加 `--eval_stochastic`。
+- v2 与旧版 `compare_methods.py` 默认均为 stochastic eval;如需确定性评估,加 `--eval_deterministic`。
 - 使用预热 VTW 缓存的正式命令应同时包含 `--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache` 与 `--vtw_time_step_s 60`。
 - 最新联合约束口径默认追加 `--n_ground_stations 4 --downlink_time_s 300 --satellite_storage_capacity 8 --enable_inter_satellite_transfer --inter_satellite_transfer_time_s 300`。
 
@@ -44,7 +44,7 @@ python precompute_scenarios.py \
 | 主对比 | Greedy/Heuristic | 已支持 | `compare_methods.py --methods oracle` |
 | 主对比 | Indep-PPO/IPPO | 已支持 | `compare_methods.py --methods indep` |
 | 主对比 | Vanilla MAPPO | 已支持 | `compare_methods.py --methods mappo --no_episode_assignment --candidate_action_top_k 0` |
-| 主对比 | MAPPO + Mixed Top-K | 已支持 | `compare_methods.py --methods mappo --candidate_action_top_k 128` |
+| 主对比 | MAPPO + Mixed Top-K | 已支持 | `compare_methods.py --methods mappo --no_episode_assignment --candidate_action_top_k 128` |
 | 主对比 | CVA-MAPPO | 已支持 | `python -m cva_mappo_v2.run_experiment` |
 | 候选动作空间 | Full Action | 已支持 | 旧版 `candidate_action_top_k=0` |
 | 候选动作空间 | Random Feasible-K | 未完整实现 | 待实现随机可行动作候选采样器 |
@@ -217,6 +217,32 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
+  --routine_candidate_owners 1 \
+  --dynamic_candidate_owners 2 \
+  --urgent_candidate_owners 3 \
+  --stale_candidate_owners 3 \
+  --capacity_slack_ratio 0.05 \
+  --cva_load_penalty 0.15 \
+  --w_quality 0.42 \
+  --w_priority 0.18 \
+  --w_deadline 0.14 \
+  --w_dynamic 0.10 \
+  --w_scarcity 0.10 \
+  --w_future_opportunity_loss 0.08 \
+  --w_load 0.16 \
+  --w_owner_stability 0.04 \
+  --release_before_deadline_s 1800 \
+  --dynamic_broadcast_window_s 1800 \
+  --assignment_replan_interval_s 3600 \
+  --assignment_replan_horizon_s 7200 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --assignment_switch_penalty 0.05 \
+  --owner_switch_margin 0.08 \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.06 \
+  --slot_selection_mode mixed \
+  --assignment_lock_window_s 600 \
+  --assignment_max_switches_per_task 2 \
   --rollout_steps 512 \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
