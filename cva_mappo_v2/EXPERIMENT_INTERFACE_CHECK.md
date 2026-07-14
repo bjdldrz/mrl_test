@@ -6,12 +6,14 @@
 
 当前推荐使用高吞吐配置:
 
-- 训练 rollout: `--train_env_workers 8 --torch_num_threads 1`, 多 CPU 进程并行采样环境。
+- 训练 rollout: `--train_env_workers 8 --torch_num_threads 1`, 多 CPU 进程并行采样环境。v2 入口现在默认把 `--rollout_steps` 作为每轮总采样步数并切分到 worker;如需旧语义可加 `--rollout_steps_per_worker`。旧版 `compare_methods.py` 仍需显式加 `--split_rollout_steps_across_workers` 才是同一总采样步数口径。
 - 策略更新: `--device cuda:0`, 主进程在 GPU 上进行 MAPPO update。
 - 评估: `--eval_device cpu --eval_workers 8`, 多 CPU 进程并行评估 episode。
 - 更新强度: `--rollout_steps 512 --ppo_epochs 4 --ppo_batch_size 512`, 增大每次 GPU update 的批量, 减少 GPU 只短暂闪一下的问题。
 - 使用 `--scenario_cache_dir` 时,实际评估 episode 数以缓存中的 `eval_scenarios.pkl` 为准。v2 的 `manifest.json` 会记录 `requested_eval_episodes` 和 `actual_eval_episodes`。
+- 不使用 `--scenario_cache_dir` 时,v2 默认用 `--n_routine/--n_dynamic` 作为训练规模;如需旧的简单到复杂训练池,加 `--curriculum_train_scale`。
 - v2 与旧版 `compare_methods.py` 默认均为 stochastic eval;如需确定性评估,加 `--eval_deterministic`。
+- v2 默认评估步数上限为 `horizon/10 + 100`;完整压力场景调试时可加 `--eval_max_steps 2000` 快速定位问题,正式结果需记录该截断设置。
 - 使用预热 VTW 缓存的正式命令应同时包含 `--vtw_cache_dir runs/scenario_cache/cva_stress_sat12_r1200_d300_gs4_seed42/vtw_cache` 与 `--vtw_time_step_s 60`。
 - 最新联合约束口径默认追加 `--n_ground_stations 4 --downlink_time_s 300 --satellite_storage_capacity 8 --enable_inter_satellite_transfer --inter_satellite_transfer_time_s 300`。
 
@@ -119,6 +121,7 @@ python compare_methods.py \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -153,6 +156,7 @@ python compare_methods.py \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -187,6 +191,7 @@ python compare_methods.py \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -247,6 +252,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -592,6 +598,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -645,6 +652,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 16 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 16 \
@@ -700,6 +708,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -742,7 +751,7 @@ python -m cva_mappo_v2.run_experiment \
   --n_dynamic 300 \
   --n_ground_stations 4 \
   --downlink_time_s 300 \
-  --satellite_storage_capacity 8 \
+  --satellite_storage_capacity 50 \
   --enable_inter_satellite_transfer \
   --inter_satellite_transfer_time_s 300 \
   --routine_slots 64 \
@@ -770,9 +779,10 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
-  --eval_workers 8 \
+  --eval_workers 16 \
   --vtw_time_step_s 60 \
   --out_dir runs/curriculum_tests/l4_full \
   --run_name cva_l4_full \

@@ -444,8 +444,13 @@ class MultiSatelliteEnv:
         env = self.envs[agent_id]
         if full_mask is None:
             full_mask = self._full_action_mask(agent_id)
+        raw_valid_count = max(float(np.sum(full_mask)) - 1.0, 0.0)
         if not self._candidate_actions_enabled():
-            return env._build_observation(), {"action_mask": full_mask}
+            return env._build_observation(), {
+                "action_mask": full_mask,
+                "raw_valid_action_count": raw_valid_count,
+                "exposed_valid_action_count": raw_valid_count,
+            }
 
         mapping = self._select_candidate_actions(agent_id, full_mask)
         self._candidate_action_maps[agent_id] = mapping
@@ -464,6 +469,8 @@ class MultiSatelliteEnv:
         mask[exposed_idle] = 1.0
         return obs, {
             "action_mask": mask,
+            "raw_valid_action_count": raw_valid_count,
+            "exposed_valid_action_count": max(float(np.sum(mask)) - 1.0, 0.0),
             "candidate_action_slots": [
                 int(a) if a is not None else None for a in mapping
             ],

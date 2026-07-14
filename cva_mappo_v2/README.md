@@ -78,6 +78,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
   --eval_workers 8 \
@@ -88,9 +89,21 @@ python -m cva_mappo_v2.run_experiment \
   --device cuda:0
 ```
 
-Evaluation is deterministic by default. Add `--eval_stochastic` only when you
-explicitly want sampled-policy evaluation. For a cleaner background log, add
-`--no_progress`.
+Evaluation is stochastic by default to match `compare_methods.py`. Add
+`--eval_deterministic` only when you explicitly want actor argmax evaluation.
+For a cleaner background log, add `--no_progress`.
+
+Without `--scenario_cache_dir`, training now uses `--n_routine/--n_dynamic` by
+default so quick tests run at the scale requested on the command line. Add
+`--curriculum_train_scale` to restore the old generated curriculum pools. With
+multiple train workers, `--rollout_steps` is treated as total samples per
+iteration and split across workers; add `--rollout_steps_per_worker` to restore
+the old per-worker sampling budget.
+
+Evaluation uses a defensive per-episode step cap of `horizon/10 + 100` when
+`--eval_max_steps 0` (the default). For slow pressure-test debugging, set a
+smaller explicit cap such as `--eval_max_steps 2000`; this does not change the
+policy, only truncates very long evaluation rollouts.
 
 ## CVA-Guided Mixed-TopK
 

@@ -101,6 +101,16 @@ def select_compare_train_scenario(train_payload, iteration, total_iterations, rn
     return select_train_scenario(train_payload, iteration, total_iterations, rng)
 
 
+def _info_valid_action_count(info: dict, key: str, mask_key: str = "action_mask"):
+    value = info.get(key)
+    if value is not None:
+        return float(value)
+    mask = info.get(mask_key)
+    if mask is None:
+        return None
+    return max(float(np.sum(mask)) - 1.0, 0.0)
+
+
 METHOD_ORDER = ["Single-PPO", "Indep-PPO", "MAPPO", "Greedy-Oracle"]
 METHOD_ALIASES = {
     "single": "Single-PPO",
@@ -411,11 +421,20 @@ def _eval_multi_worker(args):
     raw_valid_action_sum = 0.0
     for _ in range(max_steps):
         for aid in env.agent_ids:
-            mask = cur_info[aid].get("action_mask")
-            if mask is not None:
-                valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
-            raw_mask = env._full_action_mask(aid)
-            raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
+            valid_count = _info_valid_action_count(
+                cur_info[aid],
+                "exposed_valid_action_count",
+            )
+            if valid_count is not None:
+                valid_action_sum += valid_count
+            raw_valid_count = _info_valid_action_count(
+                cur_info[aid],
+                "raw_valid_action_count",
+            )
+            if raw_valid_count is None:
+                raw_mask = env._full_action_mask(aid)
+                raw_valid_count = max(float(np.sum(raw_mask)) - 1.0, 0.0)
+            raw_valid_action_sum += raw_valid_count
         if eval_deterministic:
             actions = trainer.select_eval_actions(
                 env,
@@ -1219,11 +1238,20 @@ def run_multi(cfg, mission_gen, scenarios, train_iters, device, coordinate,
         raw_valid_action_sum = 0.0
         for _ in range(max_steps):
             for aid in env.agent_ids:
-                mask = cur_info[aid].get("action_mask")
-                if mask is not None:
-                    valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
-                raw_mask = env._full_action_mask(aid)
-                raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
+                valid_count = _info_valid_action_count(
+                    cur_info[aid],
+                    "exposed_valid_action_count",
+                )
+                if valid_count is not None:
+                    valid_action_sum += valid_count
+                raw_valid_count = _info_valid_action_count(
+                    cur_info[aid],
+                    "raw_valid_action_count",
+                )
+                if raw_valid_count is None:
+                    raw_mask = env._full_action_mask(aid)
+                    raw_valid_count = max(float(np.sum(raw_mask)) - 1.0, 0.0)
+                raw_valid_action_sum += raw_valid_count
             if eval_deterministic:
                 actions = trainer.select_eval_actions(
                     env,

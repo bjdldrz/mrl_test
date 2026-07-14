@@ -416,18 +416,38 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             self.v2_cfg.slot_selection_mode == "mixed"
             and not self._hard_ownership_mask_enabled()
         )
+        candidate_ids = {
+            int(mid)
+            for mid, owners in self.task_candidate_owners.items()
+            if agent_id in owners
+        }
         if use_shared_mixed_pool:
-            # True Mixed-TopK: score the full local task pool and use CVA owner
-            # assignment only as a soft ranking bonus.  Restricting this path to
-            # candidate_ids underfilled slots when the assignment horizon was
-            # short, causing the actor to see almost only idle.
-            action_iter = range(self.max_action_dim)
+            # Mixed-TopK keeps every currently executable task visible, but it
+            # should not rescore all future non-owner tasks at stress scale.
+            # The bounded pool preserves the intended soft-owner behavior while
+            # avoiding O(n_agents * max_action_dim) full scans every env step.
+            for action in np.nonzero(full_mask[:self.max_action_dim])[0].tolist():
+                mission = env.missions[action]
+                if mission is not None and not mission.is_observed:
+                    candidate_ids.add(int(mission.id))
+
+            for mid in stale:
+                mission = self._mission_by_id(agent_id).get(int(mid))
+                if mission is not None and not mission.is_observed:
+                    candidate_ids.add(int(mid))
+
+            # Rare fallback for scenarios where assignment produced no owner
+            # candidates for this satellite.  Expose the actual executable set
+            # rather than falling back to the full task pool.
+            if not candidate_ids:
+                action_iter = np.nonzero(full_mask[:self.max_action_dim])[0].tolist()
+            else:
+                action_iter = [
+                    action_lookup[mid]
+                    for mid in candidate_ids
+                    if mid in action_lookup
+                ]
         else:
-            candidate_ids = {
-                int(mid)
-                for mid, owners in self.task_candidate_owners.items()
-                if agent_id in owners
-            }
             if not candidate_ids:
                 action_iter = range(self.max_action_dim)
             else:

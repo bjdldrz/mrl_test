@@ -24,6 +24,7 @@ python -m cva_mappo_v2.run_experiment \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --slot_selection_mode mixed \
   --ownership_mask_mode soft \

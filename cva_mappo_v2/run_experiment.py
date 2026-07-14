@@ -17,6 +17,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -104,6 +105,33 @@ def _parse_int_list(text: str) -> list:
     return values
 
 
+def _rollout_step_counts(total_steps: int, n_workers: int, split_across_workers: bool) -> list:
+    total_steps = max(int(total_steps), 1)
+    n_workers = max(1, min(int(n_workers), total_steps))
+    if not split_across_workers or n_workers <= 1:
+        return [total_steps] * n_workers
+    step_counts = [total_steps // n_workers] * n_workers
+    for wi in range(total_steps % n_workers):
+        step_counts[wi] += 1
+    return [steps for steps in step_counts if steps > 0]
+
+
+def _eval_step_limit(args, env) -> int:
+    if getattr(args, "eval_max_steps", 0):
+        return max(1, int(args.eval_max_steps))
+    return int(env.horizon_s / 10.0) + 100
+
+
+def _info_valid_action_count(info: dict, key: str, mask_key: str = "action_mask") -> Optional[float]:
+    value = info.get(key)
+    if value is not None:
+        return float(value)
+    mask = info.get(mask_key)
+    if mask is None:
+        return None
+    return max(float(np.sum(mask)) - 1.0, 0.0)
+
+
 def _make_env(cfg, args, v2_cfg: CVAMAPPOV2Config) -> CVAMAPPOV2Env:
     n_sat = min(args.n_satellites, len(cfg.satellites))
     return CVAMAPPOV2Env(
@@ -161,7 +189,7 @@ def _eval_worker(payload):
     })
     cur_obs = {aid: item[0] for aid, item in reset.items()}
     cur_info = {aid: item[1] for aid, item in reset.items()}
-    max_steps = int(env.horizon_s / 10.0) + 100
+    max_steps = _eval_step_limit(args, env)
     n_steps = 0
     n_idle_actions = 0
     n_agent_actions = 0
@@ -169,12 +197,20 @@ def _eval_worker(payload):
     raw_valid_action_sum = 0.0
     for _ in range(max_steps):
         for aid in env.agent_ids:
-            mask = cur_info[aid].get("action_mask")
-            if mask is not None:
-                # Exclude the always-valid idle action.
-                valid_action_sum += max(float(np.sum(mask)) - 1.0, 0.0)
-            raw_mask = env._full_action_mask(aid)
-            raw_valid_action_sum += max(float(np.sum(raw_mask)) - 1.0, 0.0)
+            valid_count = _info_valid_action_count(
+                cur_info[aid],
+                "exposed_valid_action_count",
+            )
+            if valid_count is not None:
+                valid_action_sum += valid_count
+            raw_valid_count = _info_valid_action_count(
+                cur_info[aid],
+                "raw_valid_action_count",
+            )
+            if raw_valid_count is None:
+                raw_mask = env._full_action_mask(aid)
+                raw_valid_count = max(float(np.sum(raw_mask)) - 1.0, 0.0)
+            raw_valid_action_sum += raw_valid_count
         actions = trainer.select_eval_actions(
             env,
             cur_obs,
@@ -340,6 +376,78 @@ def _collect_rollout_worker(payload):
     }
 
 
+def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios, training_scale_mode: str) -> dict:
+    worker_count = 0
+    step_counts = []
+    if args.train_iters > 0:
+        worker_count = max(1, min(int(args.train_env_workers or 1), int(cfg.meta.rollout_steps)))
+        step_counts = _rollout_step_counts(
+            cfg.meta.rollout_steps,
+            worker_count,
+            args.split_rollout_steps_across_workers,
+        )
+        worker_count = len(step_counts)
+
+    if train_payload is not None:
+        train_source = "scenario_cache"
+    else:
+        train_source = "generated"
+
+    task_slots = int(v2_cfg.slots.total_slots)
+    transfer_slots = max(int(args.n_satellites) - 1, 0) if args.enable_inter_satellite_transfer else 0
+    plan = {
+        "train_source": train_source,
+        "training_scale_mode": training_scale_mode,
+        "routine_pool_sizes": [int(x) for x in cfg.mission.routine_pool_sizes],
+        "dynamic_pool_sizes": [int(x) for x in cfg.mission.dynamic_pool_sizes],
+        "dynamic_insertions_per_day": int(cfg.mission.dynamic_insertions_per_day),
+        "eval_scenarios": int(len(eval_scenarios)),
+        "eval_max_steps": int(getattr(args, "eval_max_steps", 0) or 0),
+        "max_action_dim": int(cfg.mission.max_action_dim),
+        "task_slots": task_slots,
+        "transfer_slots": transfer_slots,
+        "exposed_action_dim": int(task_slots + transfer_slots + 1),
+        "train_env_workers": int(worker_count),
+        "rollout_steps_arg": int(cfg.meta.rollout_steps),
+        "rollout_steps_per_worker": [int(x) for x in step_counts],
+        "rollout_steps_total_per_iter": int(sum(step_counts)),
+        "rollout_steps_semantics": (
+            "total_split_across_workers"
+            if args.split_rollout_steps_across_workers
+            else "per_worker"
+        ),
+    }
+    return plan
+
+
+def _print_runtime_plan(plan: dict) -> None:
+    print(
+        "运行计划: "
+        f"train_source={plan['train_source']}, "
+        f"training_scale={plan['training_scale_mode']}, "
+        f"routine_pool={plan['routine_pool_sizes']}, "
+        f"dynamic_pool={plan['dynamic_pool_sizes']}x{plan['dynamic_insertions_per_day']}, "
+        f"eval_scenarios={plan['eval_scenarios']}"
+    )
+    print(
+        "采样计划: "
+        f"workers={plan['train_env_workers']}, "
+        f"rollout_steps_arg={plan['rollout_steps_arg']}, "
+        f"per_worker={plan['rollout_steps_per_worker']}, "
+        f"total_per_iter={plan['rollout_steps_total_per_iter']}, "
+        f"semantics={plan['rollout_steps_semantics']}"
+    )
+    print(
+        "动作空间: "
+        f"max_action_dim={plan['max_action_dim']}, "
+        f"task_slots={plan['task_slots']}, "
+        f"transfer_slots={plan['transfer_slots']}, "
+        f"exposed_action_dim={plan['exposed_action_dim']}"
+    )
+    if plan["eval_max_steps"] > 0:
+        print(f"评估上限: eval_max_steps={plan['eval_max_steps']}")
+
+
 def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen, out_dir: Path):
     device = torch.device(args.device)
     env = _make_env(cfg, args, v2_cfg)
@@ -364,7 +472,12 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
     )
 
     rng = np.random.RandomState(args.seed + 500)
-    max_train_workers = max(1, min(int(args.train_env_workers or 1), int(cfg.meta.rollout_steps)))
+    step_counts = _rollout_step_counts(
+        cfg.meta.rollout_steps,
+        int(args.train_env_workers or 1),
+        args.split_rollout_steps_across_workers,
+    )
+    max_train_workers = len(step_counts) if args.train_iters > 0 else 1
     train_pool = None
     if max_train_workers > 1:
         from multiprocessing import get_context
@@ -380,12 +493,6 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
     try:
         for it in pbar:
             if max_train_workers > 1:
-                if args.split_rollout_steps_across_workers:
-                    step_counts = [cfg.meta.rollout_steps // max_train_workers] * max_train_workers
-                    for wi in range(cfg.meta.rollout_steps % max_train_workers):
-                        step_counts[wi] += 1
-                else:
-                    step_counts = [cfg.meta.rollout_steps] * max_train_workers
                 model_state = _torch_state_to_numpy(model.state_dict())
                 payloads = []
                 for wi, worker_steps in enumerate(step_counts):
@@ -468,7 +575,7 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
         })
         cur_obs = {aid: item[0] for aid, item in reset.items()}
         cur_info = {aid: item[1] for aid, item in reset.items()}
-        max_steps = int(env.horizon_s / 10.0) + 100
+        max_steps = _eval_step_limit(args, env)
         for _ in range(max_steps):
             actions = trainer.select_eval_actions(
                 env,
@@ -504,10 +611,14 @@ def main():
     parser.add_argument("--eval_stochastic", dest="eval_deterministic",
                         action="store_false",
                         help="评估时按策略分布随机采样动作, 即默认 compare_methods.py 口径")
+    parser.add_argument("--eval_max_steps", type=int, default=0,
+                        help="每个评估 episode 的最大环境步数; 0 使用 horizon/10+100 的默认防御性上限")
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
     parser.add_argument("--train_match_eval_scale", action="store_true",
-                        help="无场景缓存时直接使用 --n_routine/--n_dynamic 作为训练规模; 默认保持简单到复杂的训练池")
+                        help="无场景缓存时直接使用 --n_routine/--n_dynamic 作为训练规模; 当前也是默认行为, 保留用于显式记录")
+    parser.add_argument("--curriculum_train_scale", action="store_true",
+                        help="无场景缓存时使用默认简单到复杂训练池; 不设置时训练规模默认匹配 --n_routine/--n_dynamic")
     parser.add_argument("--train_routine_pool_sizes", type=str, default=None,
                         help="无场景缓存时覆盖常规任务训练池, 例如 300,600,900,1200")
     parser.add_argument("--train_dynamic_pool_sizes", type=str, default=None,
@@ -529,8 +640,12 @@ def main():
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=1,
                         help="训练 rollout 并行环境进程数; worker 采样在 CPU, 主进程在 --device 上更新")
-    parser.add_argument("--split_rollout_steps_across_workers", action="store_true",
-                        help="兼容旧并行语义: 将 --rollout_steps 平分到各 worker; 默认每个 worker 都采集完整 rollout_steps")
+    parser.add_argument("--split_rollout_steps_across_workers", dest="split_rollout_steps_across_workers",
+                        action="store_true", default=True,
+                        help="将 --rollout_steps 作为每轮总采样步数并平分到各 worker; v2 默认开启")
+    parser.add_argument("--rollout_steps_per_worker", dest="split_rollout_steps_across_workers",
+                        action="store_false",
+                        help="旧语义: 每个 worker 都采集完整 --rollout_steps, 总采样步数会乘以 worker 数")
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
     parser.add_argument("--vtw_time_step_s", type=float, default=60.0)
@@ -592,14 +707,30 @@ def main():
     cfg.mission.satellite_storage_capacity = args.satellite_storage_capacity
     cfg.mission.enable_inter_satellite_transfer = args.enable_inter_satellite_transfer
     cfg.mission.inter_satellite_transfer_time_s = args.inter_satellite_transfer_time_s
-    if args.train_match_eval_scale:
+    training_scale_mode = "scenario_cache"
+    if args.scenario_cache_dir:
+        training_scale_mode = "scenario_cache"
+    elif (
+        args.train_match_eval_scale
+        or (
+            not args.curriculum_train_scale
+            and not args.train_routine_pool_sizes
+            and not args.train_dynamic_pool_sizes
+        )
+    ):
         cfg.mission.routine_pool_sizes = [int(args.n_routine)]
         cfg.mission.dynamic_pool_sizes = [int(args.n_dynamic)]
+        training_scale_mode = "match_eval"
     else:
         if args.train_routine_pool_sizes:
             cfg.mission.routine_pool_sizes = _parse_int_list(args.train_routine_pool_sizes)
         if args.train_dynamic_pool_sizes:
             cfg.mission.dynamic_pool_sizes = _parse_int_list(args.train_dynamic_pool_sizes)
+        training_scale_mode = (
+            "explicit_pool_sizes"
+            if args.train_routine_pool_sizes or args.train_dynamic_pool_sizes
+            else "default_curriculum"
+        )
     required_action_dim = args.n_routine + cfg.mission.dynamic_insertions_per_day * args.n_dynamic
     cfg.mission.max_action_dim = max(cfg.mission.max_action_dim, required_action_dim)
 
@@ -632,6 +763,15 @@ def main():
     out_dir = unique_dir(args.out_dir, safe_name(args.run_name))
     out_dir.mkdir(parents=True, exist_ok=True)
     v2_cfg = _build_v2_config(args)
+    plan = _runtime_plan(
+        cfg=cfg,
+        args=args,
+        v2_cfg=v2_cfg,
+        train_payload=train_payload,
+        eval_scenarios=eval_scenarios,
+        training_scale_mode=training_scale_mode,
+    )
+    _print_runtime_plan(plan)
     start = time.time()
     results = {
         "CVA-MAPPO-v2": train_and_eval(
@@ -651,6 +791,7 @@ def main():
         "requested_eval_episodes": int(args.eval_episodes),
         "actual_eval_episodes": int(len(eval_scenarios)),
         "scenario_cache_summary": cache_summary,
+        "runtime_plan": plan,
         "v2_config": {
             "routine_slots": v2_cfg.slots.routine_slots,
             "dynamic_slots": v2_cfg.slots.dynamic_slots,
