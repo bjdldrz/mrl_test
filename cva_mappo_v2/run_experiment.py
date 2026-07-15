@@ -38,7 +38,7 @@ from utils.scenario_cache import (
     scenario_summary,
     select_train_scenario,
 )
-from compare_methods import (
+from utils.experiment_common import (
     _avg_metrics,
     _configure_torch_threads,
     _git_metadata,
@@ -607,10 +607,10 @@ def main():
                         help="评估设备: cpu 使用多进程 CPU 并行; cuda:0/same 使用单 GPU 串行评估")
     parser.add_argument("--eval_deterministic", dest="eval_deterministic",
                         action="store_true", default=False,
-                        help="评估时使用 actor argmax; 默认按 PPO 策略采样以对齐 compare_methods.py")
+                        help="评估时使用 actor argmax; 默认按 PPO 策略随机采样")
     parser.add_argument("--eval_stochastic", dest="eval_deterministic",
                         action="store_false",
-                        help="评估时按策略分布随机采样动作, 即默认 compare_methods.py 口径")
+                        help="评估时按策略分布随机采样动作, 即默认口径")
     parser.add_argument("--eval_max_steps", type=int, default=0,
                         help="每个评估 episode 的最大环境步数; 0 使用 horizon/10+100 的默认防御性上限")
     parser.add_argument("--n_routine", type=int, default=1200)

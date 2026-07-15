@@ -1,8 +1,0 @@
-{
-  "exp_name": "mrl_dms_1782046266",
-  "total_iters": 4,
-  "global_step": 4096,
-  "best_reward": -Infinity,
-  "train_log": "runs/mrl_dms_1782046266/train_log.csv",
-  "eval_log": "runs/mrl_dms_1782046266/eval_log.csv"
-}

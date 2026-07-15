@@ -89,7 +89,7 @@ python -m cva_mappo_v2.run_experiment \
   --device cuda:0
 ```
 
-Evaluation is stochastic by default to match `compare_methods.py`. Add
+Evaluation is stochastic by default. Add
 `--eval_deterministic` only when you explicitly want actor argmax evaluation.
 For a cleaner background log, add `--no_progress`.
 
@@ -111,7 +111,7 @@ The current default is `--slot_selection_mode mixed --ownership_mask_mode soft`.
 This is the actual CVA-guided Mixed-TopK path:
 
 - current executable tasks are kept visible, matching the strongest Mixed-TopK
-  baseline behavior;
+  reference behavior;
 - all candidate tasks are ranked in one shared Top-K list instead of being
   truncated by fixed routine/dynamic/flex quotas;
 - CVA owner assignment adds a ranking bonus through `--candidate_owner_bonus`;
@@ -135,7 +135,7 @@ The v2 runner also exposes two knobs for the pressure-test stability issue:
 Recommended diagnostic comparison:
 
 ```bash
-# Strong Mixed-TopK baseline inside v2: no hard owner mask, no owner bonus.
+# Strong Mixed-TopK reference inside v2: no hard owner mask, no owner bonus.
 ... --slot_selection_mode mixed --ownership_mask_mode soft --candidate_owner_bonus 0
 
 # Current CVA-guided Mixed-TopK.

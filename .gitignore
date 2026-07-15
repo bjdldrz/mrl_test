@@ -16,6 +16,7 @@ build/
 checkpoints/
 
 # Generated experiment outputs
+runs/
 runs/compare*/
 runs/ablation_*/
 runs/mrl_dms*/
