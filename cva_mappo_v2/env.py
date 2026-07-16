@@ -359,16 +359,30 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     append_item(slot_type, score, action)
                     slot_type_counts[slot_type] += 1
 
-            # Put dynamic candidates before routine candidates in typed
-            # exposure. Routine still receives its own quota before flex
-            # fallback so flex slots do not starve routine throughput.
+            # Put dynamic candidates first, then give currently executable
+            # flex tasks an early chance before routine future-only context
+            # fills the middle of the action set. Remaining flex slots are
+            # filled after routine quota so routine throughput is still visible.
             take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
-            take(routine, self.v2_cfg.slots.routine_slots, "routine")
-            # Flex slots first use urgent/stale/dynamic tasks. If that pool is
-            # exhausted, use the best remaining task candidates instead of
-            # leaving the flex quota empty.
             flex_count = self.v2_cfg.slots.flex_slots
             flex_items = self._flex_slot_items(flex, dynamic, routine)
+            early_flex_target = min(flex_count, max(1, flex_count // 2)) if flex_count > 0 else 0
+
+            def take_flex(group_items, n, require_available=False):
+                for is_available, score, action in group_items:
+                    if slot_type_counts["flex"] >= n:
+                        break
+                    if require_available and not is_available:
+                        continue
+                    if action in used:
+                        continue
+                    append_item("flex", score, action)
+                    slot_type_counts["flex"] += 1
+
+            take_flex(flex_items, early_flex_target, require_available=True)
+            take(routine, self.v2_cfg.slots.routine_slots, "routine")
+            # If the urgent/current flex pool is small, backfill flex with the
+            # best remaining dynamic/routine candidates as context.
             for _, score, action in flex_items:
                 if slot_type_counts["flex"] >= flex_count:
                     break

@@ -1,5 +1,27 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.11.0
+
+Status: implemented.
+
+Scope:
+
+- Keeps dynamic slots first, then lets currently executable flex tasks enter
+  early before routine future-only context fills the typed action set.
+- Keeps routine quota visible, and only backfills remaining flex slots after
+  routine quota is considered.
+- Extends eval-time rescue from dynamic-only idle rescue to executable-task
+  idle rescue, while keeping dynamic and routine rescue counts separate.
+- Adds `n_routine_idle_rescues` and `n_idle_executable_rescues` metrics.
+
+Expected effect:
+
+- Recover routine and total throughput after V0.10 without dropping dynamic
+  completion sharply.
+- Reduce wasted valid windows when the policy selects idle despite current
+  executable tasks.
+- Make it clear whether gains come from dynamic rescue or routine rescue.
+
 ## DAS-CVA-MAPPO V0.10.0
 
 Status: implemented.
