@@ -82,18 +82,20 @@ python3 -m das_cva_mappo.run_experiment \
   --candidate_adapter_mode v2_compat \
   --candidate_dropout_prob 0.05 \
   --rollout_steps 512 \
-  --ppo_epochs 2 \
-  --ppo_batch_size 256 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
   --eval_max_steps 8000 \
   --eval_device cpu \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
   --run_name das_v0_17 \
-  --device cpu
+  --device cuda:0
 ```
 
-If CUDA is available and stable on the target machine, replace the final device
-settings with `--device cuda:0 --eval_device cuda:0`.
+The DAS runner does not currently accept `--train_env_workers` or
+`--eval_workers`; those worker flags are only available in the compatibility
+runner. To evaluate on GPU, change `--eval_device cpu` to
+`--eval_device cuda:0`.
 
 Primary DAS ablation knobs:
 
@@ -200,12 +202,12 @@ python -m cva_mappo_v2.run_experiment \
   --split_rollout_steps_across_workers \
   --torch_num_threads 1 \
   --eval_device cpu \
-  --eval_workers 8 \
+  --eval_workers 24 \
   --vtw_time_step_s 60 \
   --out_dir runs/cva_mappo_v2 \
   --run_name cva_mappo_v2_compat \
   --no_viz \
-  --device cpu
+  --device cuda:0
 ```
 
 ```bash

@@ -16,6 +16,8 @@ Scope:
   rates.
 - Synchronizes the README run command with the current V0.17 DAS experiment
   settings and explicit idle-ablation parameters.
+- Clarifies that `das_cva_mappo.run_experiment` does not accept the
+  compatibility-runner worker flags `--train_env_workers` and `--eval_workers`.
 
 Expected effect:
 
