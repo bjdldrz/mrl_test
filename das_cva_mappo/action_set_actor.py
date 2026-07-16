@@ -28,7 +28,7 @@ class ActionSetActor(nn.Module):
         action_feature_dim: int,
         hidden_dims=(256, 256),
         action_hidden_dim: int = 128,
-        matcher: str = "additive",
+        matcher: str = "set_transformer",
         use_set_context: bool = True,
     ):
         super().__init__()
@@ -44,9 +44,30 @@ class ActionSetActor(nn.Module):
         elif matcher == "dot":
             self.state_proj = nn.Linear(action_hidden_dim, action_hidden_dim)
             self.action_proj = nn.Linear(action_hidden_dim, action_hidden_dim)
+        elif matcher == "set_transformer":
+            nhead = self._attention_heads(action_hidden_dim)
+            layer = nn.TransformerEncoderLayer(
+                d_model=action_hidden_dim,
+                nhead=nhead,
+                dim_feedforward=action_hidden_dim * 4,
+                dropout=0.0,
+                activation="gelu",
+                batch_first=True,
+            )
+            self.state_token_proj = nn.Linear(action_hidden_dim, action_hidden_dim)
+            self.set_encoder = nn.TransformerEncoder(layer, num_layers=2)
+            self.context_proj = nn.Linear(action_hidden_dim, action_hidden_dim)
+            self.logit_head = nn.Linear(action_hidden_dim, 1)
         else:
-            raise ValueError("matcher must be additive or dot")
+            raise ValueError("matcher must be additive, dot, or set_transformer")
         self._init_weights()
+
+    @staticmethod
+    def _attention_heads(hidden_dim: int) -> int:
+        for nhead in (8, 4, 2):
+            if hidden_dim % nhead == 0:
+                return nhead
+        return 1
 
     def _init_weights(self) -> None:
         for module in self.modules():
@@ -71,6 +92,27 @@ class ActionSetActor(nn.Module):
             query = self.state_proj(state_h).unsqueeze(1)
             keys = self.action_proj(action_h)
             logits = torch.sum(query * keys, dim=-1) / np.sqrt(keys.shape[-1])
+        elif self.matcher == "set_transformer":
+            # Let filled future-task tokens contribute context even when they
+            # are not currently selectable. The final action mask still gates
+            # logits, so invalid/future slots cannot be sampled.
+            if self.use_set_context:
+                present = (torch.sum(torch.abs(action_features), dim=-1) > 0) | (action_mask > 0)
+                state_token = self.state_token_proj(state_h).unsqueeze(1)
+                tokens = torch.cat([state_token, action_h], dim=1)
+                state_present = torch.ones(
+                    (present.shape[0], 1),
+                    dtype=torch.bool,
+                    device=present.device,
+                )
+                token_present = torch.cat([state_present, present], dim=1)
+                encoded = self.set_encoder(tokens, src_key_padding_mask=~token_present)
+                global_context = self.context_proj(encoded[:, 0]).unsqueeze(1)
+                action_context = encoded[:, 1:]
+            else:
+                global_context = self.context_proj(state_h).unsqueeze(1)
+                action_context = action_h
+            logits = self.logit_head(torch.tanh(action_context + global_context)).squeeze(-1)
         else:
             state_term = self.state_proj(state_h).unsqueeze(1)
             action_term = self.action_proj(action_h)
@@ -121,7 +163,7 @@ class ActionSetActorCritic(nn.Module):
         actor_hidden_dims=(256, 256),
         action_hidden_dim: int = 128,
         critic_hidden_dims=(256, 256),
-        matcher: str = "additive",
+        matcher: str = "set_transformer",
         use_set_context: bool = True,
     ):
         super().__init__()

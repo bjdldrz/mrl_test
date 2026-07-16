@@ -1,5 +1,27 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.14.0
+
+Status: implemented.
+
+Scope:
+
+- Adds `set_transformer` as an action matcher and makes it the DAS default.
+- Encodes the state as a global token and all exposed action entities as set
+  tokens, then scores each action from contextualized token embeddings.
+- Preserves future-task tokens as attention context even when they are not
+  currently executable; the final action mask still prevents sampling invalid
+  actions.
+- Keeps `additive` and `dot` matchers for ablation via `--matcher`.
+
+Expected effect:
+
+- Improve action ranking when routine, dynamic, flex, transfer, and idle choices
+  compete in the same exposed action set.
+- Let the policy reason over future-window context rather than only per-action
+  MLP features plus mean pooling.
+- Provide a cleaner model-structure ablation target for DAS-CVA-MAPPO.
+
 ## DAS-CVA-MAPPO V0.13.0
 
 Status: implemented.
@@ -403,7 +425,7 @@ Implemented modules:
 
 Ablation interfaces:
 
-- `--matcher additive|dot`
+- `--matcher additive|dot|set_transformer`
 - `--action_feature_mode full|minimal|no_score`
 - `--no_candidate_score_feature`
 - `--no_set_context`

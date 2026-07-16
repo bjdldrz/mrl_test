@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.13.
+Run DAS-CVA-MAPPO V0.14.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.13 adds dynamic
-near-window takeover release on top of the V0.11 throughput rescue path.
+action-set-aware MAPPO policy over action entities. V0.14 makes a
+set-transformer action matcher the default policy structure.
 """
 
 from __future__ import annotations
@@ -530,7 +530,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.13 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.14 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -552,7 +552,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_13")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_14")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -584,7 +584,7 @@ def main() -> None:
     parser.add_argument("--global_state_task_stats", action="store_true")
 
     # DAS ablation interface.
-    parser.add_argument("--matcher", choices=["additive", "dot"], default="additive")
+    parser.add_argument("--matcher", choices=["additive", "dot", "set_transformer"], default="set_transformer")
     parser.add_argument("--action_feature_mode", choices=["full", "minimal", "no_score"], default="full")
     parser.add_argument("--no_candidate_score_feature", action="store_true")
     parser.add_argument("--no_set_context", action="store_true")
@@ -661,7 +661,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.13"
+    method_name = "DAS-CVA-MAPPO-v0.14"
     results = {
         method_name: train_and_eval(
             cfg,

@@ -12,13 +12,13 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.13.0"
+    version: str = "0.14.0"
     state_dim: int = 12
     action_feature_dim: int = 24
     actor_hidden_dims: Tuple[int, ...] = (256, 256)
     action_hidden_dim: int = 128
     critic_hidden_dims: Tuple[int, ...] = (256, 256)
-    matcher: str = "additive"
+    matcher: str = "set_transformer"
     action_feature_mode: str = "full"
     use_candidate_score_feature: bool = True
     use_set_context: bool = True
@@ -45,7 +45,7 @@ class DASConfig:
     candidate_aux_load_penalty: float = 0.1
     candidate_adapter_mode: str = "v2_compat"
 
-    supported_matchers: Tuple[str, ...] = field(default=("additive", "dot"), init=False)
+    supported_matchers: Tuple[str, ...] = field(default=("additive", "dot", "set_transformer"), init=False)
     supported_feature_modes: Tuple[str, ...] = field(default=("full", "minimal", "no_score"), init=False)
     supported_scorers: Tuple[str, ...] = field(default=("v2_heuristic", "learned", "hybrid"), init=False)
     supported_adapters: Tuple[str, ...] = field(default=("v2_compat",), init=False)
