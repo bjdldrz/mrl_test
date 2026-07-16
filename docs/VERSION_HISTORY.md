@@ -1,5 +1,28 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.17.0
+
+Status: implemented.
+
+Scope:
+
+- Disables the hard `idle_valid_penalty` by default after V0.16 showed no
+  improvement.
+- Adds a PPO auxiliary loss controlled by `--idle_aux_coeff`: when a sampled
+  action set has at least one valid non-idle action, the update penalizes the
+  policy's idle probability.
+- Logs `idle_aux_loss` in the training metrics.
+- Keeps V0.16 eval diagnostics for `eval_idle_when_valid_rate` and related
+  rates.
+
+Expected effect:
+
+- Teach lower idle probability at valid decision points without forcing a fixed
+  inference-time logit penalty.
+- Preserve necessary waiting in only-idle states.
+- Make `--idle_aux_coeff 0` and `--idle_valid_penalty 0` a clean ablation of
+  idle-specific learning pressure.
+
 ## DAS-CVA-MAPPO V0.16.0
 
 Status: implemented.
@@ -471,6 +494,7 @@ Ablation interfaces:
 - `--no_set_context`
 - `--no_action_type_gate`
 - `--idle_valid_penalty`
+- `--idle_aux_coeff`
 - `--candidate_dropout_prob`
 - `--candidate_scorer_mode v2_heuristic`
 - inherited candidate-layer controls such as `--slot_selection_mode`,

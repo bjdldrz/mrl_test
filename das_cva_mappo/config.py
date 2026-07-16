@@ -12,7 +12,7 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.16.0"
+    version: str = "0.17.0"
     state_dim: int = 12
     action_feature_dim: int = 24
     actor_hidden_dims: Tuple[int, ...] = (256, 256)
@@ -23,7 +23,8 @@ class DASConfig:
     use_candidate_score_feature: bool = True
     use_set_context: bool = True
     use_action_type_gate: bool = True
-    idle_valid_penalty: float = 2.0
+    idle_valid_penalty: float = 0.0
+    idle_aux_coeff: float = 0.05
     candidate_dropout_prob: float = 0.0
 
     candidate_scorer_mode: str = "hybrid"
@@ -65,6 +66,8 @@ class DASConfig:
             raise ValueError("candidate_dropout_prob must be in [0, 1)")
         if float(self.idle_valid_penalty) < 0:
             raise ValueError("idle_valid_penalty must be non-negative")
+        if float(self.idle_aux_coeff) < 0:
+            raise ValueError("idle_aux_coeff must be non-negative")
         if not 0.0 <= float(self.candidate_scorer_mix) <= 1.0:
             raise ValueError("candidate_scorer_mix must be in [0, 1]")
         if self.candidate_scorer_hidden_dim <= 0:

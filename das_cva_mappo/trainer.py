@@ -38,6 +38,7 @@ class ActionSetMAPPOTrainer:
         ppo_epochs: int = 4,
         batch_size: int = 128,
         candidate_dropout_prob: float = 0.0,
+        idle_aux_coeff: float = 0.0,
         device: str = "cpu",
     ):
         self.model = model
@@ -51,6 +52,7 @@ class ActionSetMAPPOTrainer:
         self.ppo_epochs = int(ppo_epochs)
         self.batch_size = int(batch_size)
         self.candidate_dropout_prob = float(candidate_dropout_prob)
+        self.idle_aux_coeff = max(0.0, float(idle_aux_coeff))
         self.device = torch.device(device)
         self.optimizer = optim.Adam(model.parameters(), lr=lr)
         self.model.to(self.device)
@@ -327,18 +329,19 @@ class ActionSetMAPPOTrainer:
         global_t = torch.FloatTensor(np.concatenate(all_global_states)).to(self.device)
 
         dataset_size = len(state_t)
-        total_policy = total_value = total_entropy = 0.0
+        total_policy = total_value = total_entropy = total_idle_aux = 0.0
         n_updates = 0
         for _ in range(self.ppo_epochs):
             indices = np.random.permutation(dataset_size)
             for start in range(0, dataset_size, self.batch_size):
                 idx = indices[start:min(start + self.batch_size, dataset_size)]
-                _, new_lp, entropy = self.model.actor.get_action(
+                dist = self.model.actor.forward(
                     state_t[idx],
                     action_feat_t[idx],
                     mask_t[idx],
-                    action_t[idx],
                 )
+                new_lp = dist.log_prob(action_t[idx])
+                entropy = dist.entropy()
                 values = self.model.critic(global_t[idx])
                 ratio = torch.exp(new_lp - old_lp_t[idx])
                 surr1 = ratio * adv_t[idx]
@@ -346,7 +349,13 @@ class ActionSetMAPPOTrainer:
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = F.mse_loss(values, ret_t[idx])
                 entropy_loss = entropy.mean()
-                loss = policy_loss + self.value_loss_coeff * value_loss - self.entropy_coeff * entropy_loss
+                idle_aux_loss = self._idle_aux_loss(dist, action_feat_t[idx], mask_t[idx])
+                loss = (
+                    policy_loss
+                    + self.value_loss_coeff * value_loss
+                    - self.entropy_coeff * entropy_loss
+                    + self.idle_aux_coeff * idle_aux_loss
+                )
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -354,6 +363,7 @@ class ActionSetMAPPOTrainer:
                 total_policy += float(policy_loss.item())
                 total_value += float(value_loss.item())
                 total_entropy += float(entropy_loss.item())
+                total_idle_aux += float(idle_aux_loss.item())
                 n_updates += 1
 
         denom = max(n_updates, 1)
@@ -361,7 +371,20 @@ class ActionSetMAPPOTrainer:
             "policy_loss": total_policy / denom,
             "value_loss": total_value / denom,
             "entropy": total_entropy / denom,
+            "idle_aux_loss": total_idle_aux / denom,
         }
+
+    @staticmethod
+    def _idle_aux_loss(dist, action_features: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+        """Penalize idle probability only when non-idle actions are executable."""
+        if action_features.shape[-1] <= 2:
+            return torch.zeros((), device=action_mask.device)
+        idle = torch.clamp(action_features[..., 2], 0.0, 1.0)
+        valid_non_idle = torch.sum(action_mask * (1.0 - idle), dim=1) > 0
+        if not torch.any(valid_non_idle):
+            return torch.zeros((), device=action_mask.device)
+        idle_prob = torch.sum(dist.probs * idle, dim=1)
+        return -torch.log(torch.clamp(1.0 - idle_prob[valid_non_idle], min=1e-6)).mean()
 
     def compute_gae(
         self,

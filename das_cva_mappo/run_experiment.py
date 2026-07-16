@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.16.
+Run DAS-CVA-MAPPO V0.17.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.16 adds an idle-valid
-penalty and diagnostics for idle decisions when executable actions exist.
+action-set-aware MAPPO policy over action entities. V0.17 replaces the default
+hard idle penalty with a PPO idle-when-valid auxiliary loss.
 """
 
 from __future__ import annotations
@@ -105,6 +105,7 @@ def _build_das_config(args) -> DASConfig:
         use_set_context=not args.no_set_context,
         use_action_type_gate=not args.no_action_type_gate,
         idle_valid_penalty=args.idle_valid_penalty,
+        idle_aux_coeff=args.idle_aux_coeff,
         candidate_dropout_prob=args.candidate_dropout_prob,
         candidate_scorer_mode=args.candidate_scorer_mode,
         candidate_scorer_mix=args.candidate_scorer_mix,
@@ -258,6 +259,7 @@ def _eval_policy(
         ppo_epochs=cfg.ppo.ppo_epochs,
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=0.0,
+        idle_aux_coeff=0.0,
         device=str(device),
     )
 
@@ -372,6 +374,7 @@ def train_and_eval(
         ppo_epochs=cfg.ppo.ppo_epochs,
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=das_cfg.candidate_dropout_prob,
+        idle_aux_coeff=das_cfg.idle_aux_coeff,
         device=str(device),
     )
 
@@ -558,7 +561,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.16 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.17 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -580,7 +583,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_16")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_17")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -617,7 +620,8 @@ def main() -> None:
     parser.add_argument("--no_candidate_score_feature", action="store_true")
     parser.add_argument("--no_set_context", action="store_true")
     parser.add_argument("--no_action_type_gate", action="store_true")
-    parser.add_argument("--idle_valid_penalty", type=float, default=2.0)
+    parser.add_argument("--idle_valid_penalty", type=float, default=0.0)
+    parser.add_argument("--idle_aux_coeff", type=float, default=0.05)
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
     parser.add_argument("--candidate_scorer_mode", choices=["v2_heuristic", "learned", "hybrid"], default="hybrid")
     parser.add_argument("--candidate_scorer_mix", type=float, default=0.35)
@@ -691,7 +695,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.16"
+    method_name = "DAS-CVA-MAPPO-v0.17"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -724,6 +728,7 @@ def main() -> None:
             "use_set_context": das_cfg.use_set_context,
             "use_action_type_gate": das_cfg.use_action_type_gate,
             "idle_valid_penalty": das_cfg.idle_valid_penalty,
+            "idle_aux_coeff": das_cfg.idle_aux_coeff,
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,
             "candidate_scorer_mode": das_cfg.candidate_scorer_mode,
             "candidate_scorer_mix": das_cfg.candidate_scorer_mix,
