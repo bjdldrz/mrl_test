@@ -135,6 +135,8 @@ class MultiSatelliteEnv:
         self._n_dynamic_preemptions = 0
         self._n_routine_idle_rescues = 0
         self._n_idle_executable_rescues = 0
+        self._n_dynamic_idle_rescue_opportunities = 0
+        self._n_dynamic_preemption_opportunities = 0
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
@@ -2254,7 +2256,7 @@ class MultiSatelliteEnv:
         raw_idle: int,
     ) -> None:
         """Let high-value current dynamic tasks preempt routine eval actions."""
-        margin = 0.25
+        margin = 0.0
         for aid in self.agent_ids:
             current_action = int(resolved.get(aid, raw_idle))
             if current_action == raw_idle or self._is_raw_transfer_action(aid, current_action):
@@ -2269,6 +2271,7 @@ class MultiSatelliteEnv:
             rescue = self._best_dynamic_rescue_action(aid, claimed - {current_action}, feasible)
             if rescue is None:
                 continue
+            self._n_dynamic_preemption_opportunities += 1
             rescue_value = self._dynamic_rescue_value(aid, rescue, feasible)
             if rescue_value is None:
                 continue
@@ -2289,7 +2292,12 @@ class MultiSatelliteEnv:
         for aid in self.agent_ids:
             if resolved.get(aid, raw_idle) != raw_idle:
                 continue
-            action = self._best_executable_rescue_action(aid, claimed, feasible)
+            dynamic_action = self._best_dynamic_rescue_action(aid, claimed, feasible)
+            if dynamic_action is not None:
+                self._n_dynamic_idle_rescue_opportunities += 1
+            action = dynamic_action
+            if action is None:
+                action = self._best_executable_rescue_action(aid, claimed, feasible)
             if action is None:
                 continue
             resolved[aid] = action
@@ -2793,6 +2801,8 @@ class MultiSatelliteEnv:
             "n_dynamic_preemptions": self._n_dynamic_preemptions,
             "n_routine_idle_rescues": self._n_routine_idle_rescues,
             "n_idle_executable_rescues": self._n_idle_executable_rescues,
+            "n_dynamic_idle_rescue_opportunities": self._n_dynamic_idle_rescue_opportunities,
+            "n_dynamic_preemption_opportunities": self._n_dynamic_preemption_opportunities,
             "n_released_tasks": len(self._released_mission_ids),
             "n_deadline_release_tasks": len(self._deadline_release_mission_ids),
             "n_rescued_tasks": len(self._rescued_mission_ids),

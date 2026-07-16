@@ -554,6 +554,10 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 continue
             score += self._soft_owner_score_bonus(agent_id, mission)
             is_available = 1 if full_mask[action] > 0 else 0
+            if is_available:
+                score += 0.15
+                if mission.is_dynamic:
+                    score += 0.35
             item = (is_available, float(score), int(action))
             if not mission.is_dynamic:
                 routine.append(item)

@@ -1,5 +1,27 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.12.0
+
+Status: implemented.
+
+Scope:
+
+- Keeps the V0.11 executable idle rescue path, but tries executable dynamic
+  rescues before routine rescues.
+- Lowers eval-time routine-to-dynamic preemption margin to neutral so a current
+  dynamic task can replace routine when its rescue value is at least comparable.
+- Adds a current-executable dynamic score bonus in typed candidate exposure.
+- Adds `n_dynamic_idle_rescue_opportunities` and
+  `n_dynamic_preemption_opportunities` metrics.
+
+Expected effect:
+
+- Recover part of the V0.10/V0.9 dynamic completion rate while preserving most
+  of the V0.11 routine throughput.
+- Reduce `avg_dynamic_response_s` when executable dynamic opportunities exist.
+- Distinguish "no dynamic opportunity existed" from "dynamic opportunity was
+  ignored by the rescue layer."
+
 ## DAS-CVA-MAPPO V0.11.0
 
 Status: implemented.
