@@ -14,6 +14,8 @@ Scope:
 - Logs `idle_aux_loss` in the training metrics.
 - Keeps V0.16 eval diagnostics for `eval_idle_when_valid_rate` and related
   rates.
+- Synchronizes the README run command with the current V0.17 DAS experiment
+  settings and explicit idle-ablation parameters.
 
 Expected effect:
 
