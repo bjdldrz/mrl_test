@@ -27,9 +27,9 @@ class CVAMAPPOV2Config:
 
     # Task-centered candidate ownership.
     routine_candidate_owners: int = 1
-    dynamic_candidate_owners: int = 2
-    urgent_candidate_owners: int = 3
-    stale_candidate_owners: int = 3
+    dynamic_candidate_owners: int = 4
+    urgent_candidate_owners: int = 6
+    stale_candidate_owners: int = 6
     capacity_slack_ratio: float = 0.05
     load_penalty: float = 0.15
     switch_penalty: float = 0.05
@@ -40,9 +40,9 @@ class CVAMAPPOV2Config:
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
-    replan_horizon_s: float = 7200.0
-    release_before_deadline_s: float = 1800.0
-    dynamic_broadcast_window_s: float = 1800.0
+    replan_horizon_s: float = 21600.0
+    release_before_deadline_s: float = 3600.0
+    dynamic_broadcast_window_s: float = 3600.0
     lock_window_s: float = 600.0
     max_switches_per_task: int = 2
     triggers: Tuple[str, ...] = ("periodic", "dynamic", "stale_owner", "deadline")
@@ -51,7 +51,7 @@ class CVAMAPPOV2Config:
     w_quality: float = 0.42
     w_priority: float = 0.18
     w_deadline: float = 0.14
-    w_dynamic: float = 0.10
+    w_dynamic: float = 0.18
     w_scarcity: float = 0.10
     w_future_opportunity_loss: float = 0.08
     w_load: float = 0.16

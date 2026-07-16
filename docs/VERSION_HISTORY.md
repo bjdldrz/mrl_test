@@ -1,5 +1,43 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.8.0
+
+Status: implemented.
+
+Scope:
+
+- Fills typed `flex` slots with urgent/stale/dynamic candidates first, then
+  uses the best remaining dynamic/routine candidates instead of leaving flex
+  quota empty.
+- Adds a typed-mode dynamic rescue pool so arrived dynamic tasks can be exposed
+  to non-owner agents during broadcast, stale-owner, deadline, or currently
+  executable windows.
+- Raises default dynamic, urgent, and stale candidate owner counts to improve
+  rescue coverage.
+- Expands the default dynamic broadcast and deadline release windows to 3600s.
+- Expands the default assignment replan horizon to 21600s to reduce underfilled
+  candidate pools in dense stress scenarios.
+- Increases the default dynamic task score weight in the compatibility scorer.
+- Narrows event-triggered replans to the tasks matching the trigger reason,
+  while periodic and imbalance replans still consider the full eligible set.
+- Allows stale/deadline tasks to bypass the normal owner-switch cap so they can
+  still be rescued when the current owner no longer has a feasible window.
+
+Expected effect:
+
+- Improve `avg_filled_dynamic_slots`, `avg_filled_flex_slots`, and dynamic task
+  exposure.
+- Reduce owner churn from event-triggered replans that previously touched the
+  full task set.
+- Improve feasible dynamic completion without treating `cva_mappo_v2` as the
+  main experimental method.
+
+Run:
+
+```bash
+python -m das_cva_mappo.run_experiment
+```
+
 ## DAS-CVA-MAPPO V0.7.0
 
 Status: implemented.

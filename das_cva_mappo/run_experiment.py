@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.7.
+Run DAS-CVA-MAPPO V0.8.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities.  V0.7 adds actionable idle
-advancement and typed candidate exposure defaults in the compatibility layer.
+action-set-aware MAPPO policy over action entities.  V0.8 improves dynamic and
+flex candidate exposure while limiting stale-owner replan churn.
 """
 
 from __future__ import annotations
@@ -530,7 +530,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.7 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.8 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -552,7 +552,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_7")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_8")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -563,15 +563,15 @@ def main() -> None:
     parser.add_argument("--dynamic_slots", type=int, default=32)
     parser.add_argument("--flex_slots", type=int, default=32)
     parser.add_argument("--routine_candidate_owners", type=int, default=1)
-    parser.add_argument("--dynamic_candidate_owners", type=int, default=2)
-    parser.add_argument("--urgent_candidate_owners", type=int, default=3)
-    parser.add_argument("--stale_candidate_owners", type=int, default=3)
+    parser.add_argument("--dynamic_candidate_owners", type=int, default=4)
+    parser.add_argument("--urgent_candidate_owners", type=int, default=6)
+    parser.add_argument("--stale_candidate_owners", type=int, default=6)
     parser.add_argument("--capacity_slack_ratio", type=float, default=0.05)
     parser.add_argument("--cva_load_penalty", type=float, default=0.15)
-    parser.add_argument("--release_before_deadline_s", type=float, default=1800.0)
-    parser.add_argument("--dynamic_broadcast_window_s", type=float, default=1800.0)
+    parser.add_argument("--release_before_deadline_s", type=float, default=3600.0)
+    parser.add_argument("--dynamic_broadcast_window_s", type=float, default=3600.0)
     parser.add_argument("--assignment_replan_interval_s", type=float, default=3600.0)
-    parser.add_argument("--assignment_replan_horizon_s", type=float, default=7200.0)
+    parser.add_argument("--assignment_replan_horizon_s", type=float, default=21600.0)
     parser.add_argument("--assignment_replan_trigger", type=str, default="periodic,dynamic,stale_owner,deadline")
     parser.add_argument("--assignment_switch_penalty", type=float, default=0.05)
     parser.add_argument("--owner_switch_margin", type=float, default=0.08)
@@ -661,7 +661,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.7"
+    method_name = "DAS-CVA-MAPPO-v0.8"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -722,10 +722,17 @@ def main() -> None:
             "routine_slots": v2_cfg.slots.routine_slots,
             "dynamic_slots": v2_cfg.slots.dynamic_slots,
             "flex_slots": v2_cfg.slots.flex_slots,
+            "routine_candidate_owners": v2_cfg.routine_candidate_owners,
+            "dynamic_candidate_owners": v2_cfg.dynamic_candidate_owners,
+            "urgent_candidate_owners": v2_cfg.urgent_candidate_owners,
+            "stale_candidate_owners": v2_cfg.stale_candidate_owners,
+            "replan_interval_s": v2_cfg.replan_interval_s,
+            "replan_horizon_s": v2_cfg.replan_horizon_s,
+            "release_before_deadline_s": v2_cfg.release_before_deadline_s,
+            "dynamic_broadcast_window_s": v2_cfg.dynamic_broadcast_window_s,
             "ownership_mask_mode": v2_cfg.ownership_mask_mode,
             "slot_selection_mode": v2_cfg.slot_selection_mode,
             "candidate_owner_bonus": v2_cfg.candidate_owner_bonus,
-            "dynamic_broadcast_window_s": v2_cfg.dynamic_broadcast_window_s,
         },
         "git": _git_metadata(),
         "results": results,

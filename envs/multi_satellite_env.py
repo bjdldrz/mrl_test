@@ -1361,6 +1361,11 @@ class MultiSatelliteEnv:
             return
 
         missions = self._eligible_replan_missions(current_time)
+        if "periodic" not in reasons and "imbalance" not in reasons:
+            missions = [
+                mission for mission in missions
+                if self._mission_matches_replan_reasons(mission, current_time, reasons)
+            ]
         if not missions:
             self._last_replan_time_s = current_time
             self._update_stale_owner_diagnostics()
@@ -1516,16 +1521,41 @@ class MultiSatelliteEnv:
                 continue
             if not self._mission_alive_for_any_agent(mission):
                 continue
-            if self.assignment_max_switches_per_task == 0:
-                continue
-            if self._owner_switch_counts.get(mission.id, 0) >= self.assignment_max_switches_per_task:
-                continue
             owner = self.task_owner.get(mission.id)
+            owner_stale = owner is not None and not self._has_future_feasible_window(owner, mission.id)
+            near_deadline = (
+                self.release_before_deadline_s > 0
+                and current_time >= mission.deadline_s - self.release_before_deadline_s
+            )
+            if self.assignment_max_switches_per_task == 0 and not (owner_stale or near_deadline):
+                continue
+            if (
+                self.assignment_max_switches_per_task > 0
+                and self._owner_switch_counts.get(mission.id, 0) >= self.assignment_max_switches_per_task
+                and not (owner_stale or near_deadline)
+            ):
+                continue
             owner_time = self.envs[owner].current_time_s if owner in self.envs else current_time
             if self._is_replan_locked(mission, owner_time):
                 continue
             missions.append(mission)
         return missions
+
+    def _mission_matches_replan_reasons(self, mission, current_time: float, reasons: list) -> bool:
+        owner = self.task_owner.get(mission.id)
+        owner_stale = owner is not None and not self._has_future_feasible_window(owner, mission.id)
+        near_deadline = (
+            self.release_before_deadline_s > 0
+            and current_time >= mission.deadline_s - self.release_before_deadline_s
+            and current_time < mission.deadline_s
+        )
+        if "stale_owner" in reasons and owner_stale:
+            return True
+        if "deadline" in reasons and near_deadline:
+            return True
+        if "dynamic" in reasons and getattr(mission, "is_dynamic", False):
+            return True
+        return False
 
     def _is_replan_locked(self, mission, current_time: float) -> bool:
         """

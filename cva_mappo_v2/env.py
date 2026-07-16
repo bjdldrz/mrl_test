@@ -361,9 +361,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
             take(routine, self.v2_cfg.slots.routine_slots, "routine")
             take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
-            # Flex slots can use urgent dynamic, stale owner, or high-value routine tasks.
+            # Flex slots first use urgent/stale/dynamic tasks. If that pool is
+            # exhausted, use the best remaining task candidates instead of
+            # leaving the flex quota empty.
             flex_count = self.v2_cfg.slots.flex_slots
-            for _, score, action in flex:
+            flex_items = self._flex_slot_items(flex, dynamic, routine)
+            for _, score, action in flex_items:
                 if slot_type_counts["flex"] >= flex_count:
                     break
                 if action in used:
@@ -398,6 +401,24 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             if full_mask[action] > 0:
                 self._slot_type_valid_sum[slot_type] += 1
         return selected[:self.v2_cfg.slots.total_slots]
+
+    @staticmethod
+    def _flex_slot_items(flex, dynamic, routine):
+        items = []
+        seen = set()
+
+        def add(group_items, bonus=0.0):
+            for is_available, score, action in group_items:
+                if action in seen:
+                    continue
+                seen.add(action)
+                items.append((is_available, float(score) + float(bonus), action))
+
+        add(flex, bonus=0.08)
+        add(dynamic, bonus=0.04)
+        add(routine, bonus=0.0)
+        items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return items
 
     def _rank_all_slot_groups(self, agent_id: str, full_mask: np.ndarray):
         """Rank all typed slot groups with a single pass over the task list.
@@ -469,6 +490,10 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     mission = env.missions[action]
                     if mission is not None and not mission.is_observed:
                         candidate_ids.add(int(mission.id))
+                for action in self._dynamic_rescue_actions(agent_id, full_mask, current_time, stale):
+                    mission = env.missions[action]
+                    if mission is not None and not mission.is_observed:
+                        candidate_ids.add(int(mission.id))
                 action_iter = [
                     action_lookup[mid]
                     for mid in candidate_ids
@@ -527,6 +552,36 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         dynamic.sort(key=lambda x: (x[0], x[1]), reverse=True)
         flex.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return routine, dynamic, flex
+
+    def _dynamic_rescue_actions(
+        self,
+        agent_id: str,
+        full_mask: np.ndarray,
+        current_time: float,
+        stale: set,
+    ) -> List[int]:
+        """Expose arrived dynamic tasks to rescue agents for typed slots."""
+        env = self.envs[agent_id]
+        actions: List[int] = []
+        release_window = max(
+            float(self.v2_cfg.release_before_deadline_s or 0.0),
+            float(self.v2_cfg.dynamic_broadcast_window_s or 0.0),
+        )
+        for action, mission in enumerate(env.missions[:self.max_action_dim]):
+            if mission is None or mission.is_observed or not mission.is_dynamic:
+                continue
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if arrival_s > current_time or current_time > mission.deadline_s:
+                continue
+            near_release = current_time >= mission.deadline_s - release_window
+            if (
+                full_mask[action] > 0
+                or self._dynamic_broadcast_open(mission, current_time)
+                or mission.id in stale
+                or near_release
+            ):
+                actions.append(int(action))
+        return actions
 
     def _rank_slot_group(self, agent_id: str, full_mask: np.ndarray, group: str):
         env = self.envs[agent_id]

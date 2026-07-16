@@ -186,7 +186,7 @@ python -m cva_mappo_v2.run_experiment \
   --n_routine 600 \
   --n_dynamic 150 \
   --n_ground_stations 4 \
-  --downlink_time_s 300 \
+  --downlink_time_s 30 \
   --satellite_storage_capacity 30 \
   --enable_inter_satellite_transfer \
   --inter_satellite_transfer_time_s 300 \
@@ -207,7 +207,7 @@ python -m cva_mappo_v2.run_experiment \
   --eval_episodes 2 \
   --eval_max_steps 8000 \
   --eval_device cpu \
-  --eval_workers 16 \
+  --eval_workers 24 \
   --vtw_time_step_s 60 \
   --out_dir runs/cva_mappo_v2 \
   --run_name cva_mappo_v2_compat \
