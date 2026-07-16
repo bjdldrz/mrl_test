@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.15.
+Run DAS-CVA-MAPPO V0.16.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.15 adds a learnable
-action-type gate on top of the set-transformer policy structure.
+action-set-aware MAPPO policy over action entities. V0.16 adds an idle-valid
+penalty and diagnostics for idle decisions when executable actions exist.
 """
 
 from __future__ import annotations
@@ -104,6 +104,7 @@ def _build_das_config(args) -> DASConfig:
         use_candidate_score_feature=use_score,
         use_set_context=not args.no_set_context,
         use_action_type_gate=not args.no_action_type_gate,
+        idle_valid_penalty=args.idle_valid_penalty,
         candidate_dropout_prob=args.candidate_dropout_prob,
         candidate_scorer_mode=args.candidate_scorer_mode,
         candidate_scorer_mix=args.candidate_scorer_mix,
@@ -272,14 +273,35 @@ def _eval_policy(
         env.set_eval_mode(True)
         infos = _reset_infos(env, routine, dynamic)
         idle_actions = 0
+        idle_with_valid_actions = 0
+        idle_without_valid_actions = 0
+        valid_decision_points = 0
         agent_actions = 0
         for _ in range(_eval_step_limit(args, env)):
+            valid_by_agent = {}
+            for aid in env.agent_ids:
+                mask = np.asarray(infos[aid].get("action_mask", []), dtype=np.float32)
+                if mask.size == 0:
+                    valid_by_agent[aid] = False
+                    continue
+                idle = int(env.idle_action)
+                idle_valid = mask[idle] if 0 <= idle < len(mask) else 0.0
+                valid_by_agent[aid] = bool(float(np.sum(mask)) - float(idle_valid) > 0)
             actions = trainer.select_eval_actions(
                 env,
                 infos,
                 deterministic=args.eval_deterministic,
             )
-            idle_actions += sum(1 for action in actions.values() if int(action) == env.idle_action)
+            for aid, action in actions.items():
+                is_idle = int(action) == env.idle_action
+                has_valid = bool(valid_by_agent.get(aid, False))
+                valid_decision_points += int(has_valid)
+                if is_idle:
+                    idle_actions += 1
+                    if has_valid:
+                        idle_with_valid_actions += 1
+                    else:
+                        idle_without_valid_actions += 1
             agent_actions += len(actions)
             step = env.step(actions)
             infos = {aid: item[4] for aid, item in step.items()}
@@ -287,6 +309,9 @@ def _eval_policy(
                 break
         row = env.get_metrics()
         row["eval_idle_action_rate"] = idle_actions / max(agent_actions, 1)
+        row["eval_valid_decision_rate"] = valid_decision_points / max(agent_actions, 1)
+        row["eval_idle_when_valid_rate"] = idle_with_valid_actions / max(valid_decision_points, 1)
+        row["eval_idle_without_valid_rate"] = idle_without_valid_actions / max(agent_actions - valid_decision_points, 1)
         metrics.append(row)
     return _avg_metrics(metrics)
 
@@ -333,6 +358,7 @@ def train_and_eval(
         matcher=das_cfg.matcher,
         use_set_context=das_cfg.use_set_context,
         use_action_type_gate=das_cfg.use_action_type_gate,
+        idle_valid_penalty=das_cfg.idle_valid_penalty,
     ).to(device)
     trainer = ActionSetMAPPOTrainer(
         model,
@@ -532,7 +558,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.15 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.16 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -554,7 +580,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_15")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_16")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -591,6 +617,7 @@ def main() -> None:
     parser.add_argument("--no_candidate_score_feature", action="store_true")
     parser.add_argument("--no_set_context", action="store_true")
     parser.add_argument("--no_action_type_gate", action="store_true")
+    parser.add_argument("--idle_valid_penalty", type=float, default=2.0)
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
     parser.add_argument("--candidate_scorer_mode", choices=["v2_heuristic", "learned", "hybrid"], default="hybrid")
     parser.add_argument("--candidate_scorer_mix", type=float, default=0.35)
@@ -664,7 +691,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.15"
+    method_name = "DAS-CVA-MAPPO-v0.16"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -696,6 +723,7 @@ def main() -> None:
             "use_candidate_score_feature": das_cfg.use_candidate_score_feature,
             "use_set_context": das_cfg.use_set_context,
             "use_action_type_gate": das_cfg.use_action_type_gate,
+            "idle_valid_penalty": das_cfg.idle_valid_penalty,
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,
             "candidate_scorer_mode": das_cfg.candidate_scorer_mode,
             "candidate_scorer_mix": das_cfg.candidate_scorer_mix,

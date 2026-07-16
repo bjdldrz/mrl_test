@@ -1,5 +1,25 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.16.0
+
+Status: implemented.
+
+Scope:
+
+- Adds `idle_valid_penalty`, which subtracts from the idle logit only when the
+  current action mask contains at least one valid non-idle action.
+- Keeps idle available when no executable action exists, so the policy is not
+  punished for unavoidable waiting.
+- Adds eval diagnostics: `eval_valid_decision_rate`,
+  `eval_idle_when_valid_rate`, and `eval_idle_without_valid_rate`.
+
+Expected effect:
+
+- Reduce raw policy idle selections at decision points where a task or transfer
+  action is executable.
+- Preserve waiting behavior in only-idle states.
+- Make future idle analysis separate action scarcity from policy over-waiting.
+
 ## DAS-CVA-MAPPO V0.15.0
 
 Status: implemented.
@@ -450,6 +470,7 @@ Ablation interfaces:
 - `--no_candidate_score_feature`
 - `--no_set_context`
 - `--no_action_type_gate`
+- `--idle_valid_penalty`
 - `--candidate_dropout_prob`
 - `--candidate_scorer_mode v2_heuristic`
 - inherited candidate-layer controls such as `--slot_selection_mode`,

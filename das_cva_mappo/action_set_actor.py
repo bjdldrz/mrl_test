@@ -31,11 +31,13 @@ class ActionSetActor(nn.Module):
         matcher: str = "set_transformer",
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
+        idle_valid_penalty: float = 2.0,
     ):
         super().__init__()
         self.matcher = matcher
         self.use_set_context = bool(use_set_context)
         self.use_action_type_gate = bool(use_action_type_gate)
+        self.idle_valid_penalty = max(0.0, float(idle_valid_penalty))
         self.state_encoder = _mlp(state_dim, hidden_dims, action_hidden_dim)
         self.action_encoder = _mlp(action_feature_dim, hidden_dims[:1], action_hidden_dim)
         if matcher == "additive":
@@ -138,6 +140,8 @@ class ActionSetActor(nn.Module):
 
         if self.use_action_type_gate:
             logits = logits + self._action_type_gate(gate_context, action_features)
+        if self.idle_valid_penalty > 0:
+            logits = logits - self._idle_valid_penalty(action_features, action_mask)
         logits = logits + (1.0 - action_mask) * (-1e8)
         return Categorical(logits=logits)
 
@@ -163,6 +167,14 @@ class ActionSetActor(nn.Module):
         weights = torch.stack([routine, dynamic, flex, transfer, idle], dim=-1)
         weights = weights / torch.clamp(weights.sum(dim=-1, keepdim=True), min=1.0)
         return torch.sum(weights * gate_logits.unsqueeze(1), dim=-1)
+
+    def _idle_valid_penalty(self, action_features: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+        """Penalize idle only when a valid non-idle action is available."""
+        if action_features.shape[-1] <= 2:
+            return torch.zeros(action_mask.shape, device=action_mask.device)
+        idle = torch.clamp(action_features[..., 2], 0.0, 1.0)
+        valid_non_idle = torch.sum(action_mask * (1.0 - idle), dim=1, keepdim=True) > 0
+        return idle * valid_non_idle.to(action_mask.dtype) * self.idle_valid_penalty
 
     def get_action(
         self,
@@ -203,6 +215,7 @@ class ActionSetActorCritic(nn.Module):
         matcher: str = "set_transformer",
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
+        idle_valid_penalty: float = 2.0,
     ):
         super().__init__()
         self.actor = ActionSetActor(
@@ -213,6 +226,7 @@ class ActionSetActorCritic(nn.Module):
             matcher=matcher,
             use_set_context=use_set_context,
             use_action_type_gate=use_action_type_gate,
+            idle_valid_penalty=idle_valid_penalty,
         )
         self.critic = SetCritic(global_state_dim, tuple(critic_hidden_dims))
 
