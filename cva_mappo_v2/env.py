@@ -11,6 +11,22 @@ from .config import CVAMAPPOV2Config
 from .scorer import CandidateScore, CandidateValueScorer
 
 
+SLOT_INVALID_REASONS = (
+    "empty",
+    "observed",
+    "not_arrived",
+    "deadline_missed",
+    "storage_full_current",
+    "future_vtw",
+    "no_feasible_vtw",
+    "transition_infeasible",
+    "schedule_conflict",
+    "storage_full",
+    "ownership_masked",
+    "other",
+)
+
+
 class CVAMAPPOV2Env(MultiSatelliteEnv):
     """Clean CVA-MAPPO v2 environment.
 
@@ -42,6 +58,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_invalid_reason_sum = {reason: 0 for reason in SLOT_INVALID_REASONS}
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -65,6 +82,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
+        self._slot_invalid_reason_sum = {reason: 0 for reason in SLOT_INVALID_REASONS}
         self._clear_v2_step_cache()
         result = super().reset(*args, **kwargs)
         self._clear_v2_step_cache()
@@ -402,26 +420,108 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
         self._slot_types[agent_id] = slot_types
         self._slot_scores[agent_id] = slot_scores
-        self._slot_valid_sum += sum(
-            1
-            for action in selected
-            if action is not None and full_mask[action] > 0
-        )
-        self._slot_filled_sum += sum(1 for action in selected if action is not None)
-        self._slot_exposure_count += 1
         for slot_type in ("routine", "dynamic", "flex"):
             if self.v2_cfg.slot_selection_mode == "mixed":
                 capacity = self.v2_cfg.slots.total_slots
             else:
                 capacity = int(getattr(self.v2_cfg.slots, f"{slot_type}_slots"))
             self._slot_type_capacity_sum[slot_type] += capacity
-        for slot_type, action in zip(slot_types, selected):
-            if slot_type not in self._slot_type_valid_sum or action is None:
-                continue
-            self._slot_type_filled_sum[slot_type] += 1
-            if full_mask[action] > 0:
-                self._slot_type_valid_sum[slot_type] += 1
+        self._record_slot_diagnostics(agent_id, selected, full_mask, slot_types)
         return selected[:self.v2_cfg.slots.total_slots]
+
+    def _record_slot_diagnostics(
+        self,
+        agent_id: str,
+        selected: List[Optional[int]],
+        full_mask: np.ndarray,
+        slot_types: List[str],
+    ) -> None:
+        self._slot_exposure_count += 1
+        local_mask = None
+        for slot_type, action in zip(slot_types, selected):
+            if action is not None:
+                self._slot_filled_sum += 1
+            valid = (
+                action is not None
+                and 0 <= action < len(full_mask)
+                and full_mask[action] > 0
+            )
+            if valid:
+                self._slot_valid_sum += 1
+            if slot_type in self._slot_type_valid_sum and action is not None:
+                self._slot_type_filled_sum[slot_type] += 1
+                if valid:
+                    self._slot_type_valid_sum[slot_type] += 1
+            if not valid:
+                reason, local_mask = self._slot_invalid_reason(
+                    agent_id=agent_id,
+                    action=action,
+                    full_mask=full_mask,
+                    local_mask=local_mask,
+                )
+                self._slot_invalid_reason_sum[reason] = (
+                    self._slot_invalid_reason_sum.get(reason, 0) + 1
+                )
+
+    def _slot_invalid_reason(
+        self,
+        agent_id: str,
+        action: Optional[int],
+        full_mask: np.ndarray,
+        local_mask: Optional[np.ndarray],
+    ):
+        if action is None:
+            return "empty", local_mask
+        if action < 0 or action >= self.max_action_dim:
+            return "other", local_mask
+        env = self.envs[agent_id]
+        mission = env.missions[action]
+        if mission is None:
+            return "empty", local_mask
+        if mission.is_observed or self._mission_observed_anywhere(mission.id):
+            return "observed", local_mask
+
+        if local_mask is None:
+            local_mask = env._build_action_mask()
+        if action < len(local_mask) and local_mask[action] > 0 and full_mask[action] <= 0:
+            return "ownership_masked", local_mask
+
+        current_time = float(env.current_time_s)
+        if getattr(env, "storage_limited", False) and not env._has_storage_capacity(current_time):
+            return "storage_full_current", local_mask
+        if mission.earliest_time_s > current_time:
+            return "not_arrived", local_mask
+        if current_time > mission.deadline_s:
+            return "deadline_missed", local_mask
+
+        usable_vtw = None
+        for vtw in env.mission_vtw.get(mission.id, []):
+            if vtw.start_time <= current_time <= vtw.end_time - mission.duration_s:
+                usable_vtw = vtw
+                break
+        if usable_vtw is None:
+            next_start = env._earliest_feasible_observation_start(mission, current_time)
+            return ("future_vtw" if next_start is not None else "no_feasible_vtw"), local_mask
+
+        obs_start = current_time
+        last_obs_end = env.schedule_log[-1].obs_end_s if env.schedule_log else None
+        if last_obs_end is not None:
+            transition = env.propagator.compute_transition_time(
+                env._last_off_nadir_deg,
+                usable_vtw.off_nadir_deg,
+            )
+            obs_start = max(obs_start, float(last_obs_end) + float(transition))
+            if obs_start > usable_vtw.end_time - mission.duration_s:
+                return "transition_infeasible", local_mask
+            if obs_start + mission.duration_s > mission.deadline_s:
+                return "transition_infeasible", local_mask
+        obs_end = obs_start + mission.duration_s
+
+        if env._conflicts_with_schedule(obs_start, obs_end):
+            return "schedule_conflict", local_mask
+        if not env._has_storage_capacity(obs_start):
+            return "storage_full", local_mask
+        return "other", local_mask
 
     @staticmethod
     def _flex_slot_items(flex, dynamic, routine):
@@ -678,7 +778,11 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         owner_env = self.envs.get(owner)
         owner_time = float(owner_env.current_time_s) if owner_env is not None else current_time
         owner_next = self._next_feasible_window_start(owner, mission.id, owner_time)
-        handoff_margin_s = max(60.0, min(float(self.assignment_lock_window_s), 600.0))
+        configured_margin = float(getattr(self.v2_cfg, "dynamic_takeover_margin_s", 0.0) or 0.0)
+        if configured_margin > 0:
+            handoff_margin_s = configured_margin
+        else:
+            handoff_margin_s = max(60.0, min(float(self.assignment_lock_window_s), 600.0))
         if owner_next is not None and owner_next <= agent_next + handoff_margin_s:
             return False
 
@@ -754,16 +858,27 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     def get_metrics(self):
         metrics = super().get_metrics()
         denom = max(self._slot_exposure_count * self.v2_cfg.slots.total_slots, 1)
+        exposures = max(self._slot_exposure_count, 1)
+        invalid_total = sum(self._slot_invalid_reason_sum.values())
+        empty_invalid = self._slot_invalid_reason_sum.get("empty", 0)
+        filled_invalid = max(invalid_total - empty_invalid, 0)
         metrics.update({
             "slot_valid_ratio": self._slot_valid_sum / denom,
             "slot_filled_ratio": self._slot_filled_sum / denom,
-            "avg_valid_slots": self._slot_valid_sum / max(self._slot_exposure_count, 1),
-            "avg_filled_slots": self._slot_filled_sum / max(self._slot_exposure_count, 1),
+            "slot_invalid_ratio": invalid_total / denom,
+            "slot_filled_invalid_ratio": filled_invalid / denom,
+            "avg_valid_slots": self._slot_valid_sum / exposures,
+            "avg_filled_slots": self._slot_filled_sum / exposures,
+            "avg_invalid_slots": invalid_total / exposures,
+            "avg_filled_invalid_slots": filled_invalid / exposures,
             "slot_selection_mixed": 1.0 if self.v2_cfg.slot_selection_mode == "mixed" else 0.0,
         })
+        for reason in SLOT_INVALID_REASONS:
+            count = self._slot_invalid_reason_sum.get(reason, 0)
+            metrics[f"slot_invalid_{reason}_ratio"] = count / denom
+            metrics[f"avg_invalid_{reason}_slots"] = count / exposures
         for slot_type in ("routine", "dynamic", "flex"):
             capacity = max(self._slot_type_capacity_sum.get(slot_type, 0), 1)
-            exposures = max(self._slot_exposure_count, 1)
             metrics[f"{slot_type}_slot_valid_ratio"] = (
                 self._slot_type_valid_sum.get(slot_type, 0) / capacity
             )

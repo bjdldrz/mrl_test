@@ -20,6 +20,7 @@ class CandidateScore:
     future_loss: float
     load_pressure: float
     visible: bool
+    wait_s: float = 0.0
 
 
 class CandidateValueScorer:
@@ -63,22 +64,29 @@ class CandidateValueScorer:
         scarcity = 1.0 - float(np.clip(n_visible_agents / max(1, n_agents), 0.0, 1.0))
         owner_stability = 0.0
         if current_owner == agent_id:
-            owner_stability = 1.0
+            owner_stability = 0.25 if owner_stale else 1.0
         elif owner_stale:
-            owner_stability = 0.5
+            owner_stability = 0.75
 
         wait_penalty = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+        storage_pressure = 0.0
+        if getattr(env, "storage_limited", False) and hasattr(env, "_onboard_image_count"):
+            capacity = max(int(getattr(env, "satellite_storage_capacity", 0) or 0), 1)
+            storage_pressure = float(np.clip(env._onboard_image_count(current_time_s) / capacity, 0.0, 1.0))
+        dynamic_urgency = dynamic * deadline_pressure
         cfg = self.cfg
         score = (
             cfg.w_quality * quality
             + cfg.w_priority * priority
             + cfg.w_deadline * deadline_pressure
             + cfg.w_dynamic * dynamic
+            + getattr(cfg, "w_dynamic_urgency", 0.0) * dynamic_urgency
             + cfg.w_scarcity * scarcity
             + cfg.w_future_opportunity_loss * future_loss
             + cfg.w_owner_stability * owner_stability
             - cfg.w_load * load_pressure
-            - 0.05 * wait_penalty
+            - getattr(cfg, "w_wait", 0.05) * wait_penalty
+            - getattr(cfg, "w_storage_pressure", 0.0) * storage_pressure
         )
         return CandidateScore(
             agent_id=agent_id,
@@ -90,6 +98,7 @@ class CandidateValueScorer:
             future_loss=float(future_loss),
             load_pressure=float(load_pressure),
             visible=True,
+            wait_s=float(wait_s),
         )
 
     def _pair_features(self, env, mission: Mission, current_time_s: float, allow_future: bool):

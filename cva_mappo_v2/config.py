@@ -56,6 +56,16 @@ class CVAMAPPOV2Config:
     w_future_opportunity_loss: float = 0.08
     w_load: float = 0.16
     w_owner_stability: float = 0.04
+    w_wait: float = 0.08
+    w_storage_pressure: float = 0.08
+    w_dynamic_urgency: float = 0.12
+
+    # Allocator repair weights. These bias ownership toward agents with earlier
+    # feasible windows, especially for stale owners and urgent dynamic tasks.
+    allocator_wait_penalty: float = 0.10
+    allocator_stale_rescue_bonus: float = 0.25
+    allocator_dynamic_urgency_bonus: float = 0.10
+    dynamic_takeover_margin_s: float = 300.0
 
     def validate(self) -> None:
         if self.slots.total_slots <= 0:
@@ -78,3 +88,14 @@ class CVAMAPPOV2Config:
             raise ValueError("candidate_owner_bonus 必须大于等于 0")
         if self.slot_selection_mode not in {"mixed", "typed"}:
             raise ValueError("slot_selection_mode 必须是 mixed 或 typed")
+        for name in [
+            "w_wait",
+            "w_storage_pressure",
+            "w_dynamic_urgency",
+            "allocator_wait_penalty",
+            "allocator_stale_rescue_bonus",
+            "allocator_dynamic_urgency_bonus",
+            "dynamic_takeover_margin_s",
+        ]:
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} 必须大于等于 0")

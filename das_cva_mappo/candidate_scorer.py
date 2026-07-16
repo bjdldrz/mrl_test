@@ -149,6 +149,7 @@ class TrainableCandidateValueScorer:
             future_loss=heuristic_score.future_loss,
             load_pressure=heuristic_score.load_pressure,
             visible=heuristic_score.visible,
+            wait_s=float(getattr(heuristic_score, "wait_s", 0.0)),
         )
 
     def edge_features(

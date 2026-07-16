@@ -1,5 +1,38 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.19.0
+
+Status: implemented.
+
+Scope:
+
+- Adds slot-invalid diagnostics for typed candidate exposure. Evaluation
+  metrics now include `slot_invalid_*`, `slot_filled_invalid_ratio`, and
+  `avg_filled_invalid_slots` so filled-but-not-executable candidate slots can
+  be separated from empty slots.
+- Extends the v2 candidate scorer with configurable wait penalty, storage
+  pressure penalty, and dynamic urgency bonus.
+- Extends the capacity-aware allocator with earlier-window ranking,
+  stale-owner rescue bonus, and dynamic urgency bonus.
+- Adds `--dynamic_takeover_margin_s` to tune how aggressively arrived dynamic
+  tasks can be released to a non-owner with an earlier feasible window.
+- Records the new candidate/allocator weights in `manifest.json`.
+- Adds staged optimization commands to the README for diagnosis,
+  candidate-owner repair, dynamic-task optimization, and storage/downlink
+  pressure experiments.
+- Sets the DAS runner defaults to parallel rollout/evaluation
+  (`--train_env_workers 16`, `--eval_workers 24`) and CUDA training
+  (`--device cuda:0`).
+
+Expected effect:
+
+- Explain why `avg_filled_slots` can be high while `avg_valid_slots` is near
+  zero.
+- Reduce stale-owner lock-in by favoring satellites with nearer feasible
+  windows during candidate ownership repair.
+- Improve dynamic-task raw completion by increasing candidate visibility and
+  urgency-aware rescue opportunities before tuning PPO further.
+
 ## DAS-CVA-MAPPO V0.18.0
 
 Status: implemented.

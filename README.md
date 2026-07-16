@@ -9,7 +9,7 @@ version:
   policy, PPO buffer snapshots, a learnable CVA candidate edge scorer, and
   rollout-advantage auxiliary scorer updates with hard-negative candidate
   sampling plus conflict/load target shaping. Compatibility-layer access is
-  isolated behind a DAS candidate adapter, with V0.18 set-transformer action
+  isolated behind a DAS candidate adapter, with V0.19 set-transformer action
   matching, action-type gating, idle auxiliary loss, DAS-native worker
   support, and typed candidate exposure defaults.
 - `cva_mappo_v2/`: compatibility layer for candidate generation and the
@@ -35,11 +35,12 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.18
+## DAS V0.19
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
-loss. Rollout collection and CPU evaluation can run across worker processes:
+loss. The default runner uses parallel rollout workers, parallel CPU
+evaluation, and `cuda:0` for PPO/candidate-scorer training:
 
 ```bash
 python3 -m das_cva_mappo.run_experiment \
@@ -65,6 +66,13 @@ python3 -m das_cva_mappo.run_experiment \
   --ownership_mask_mode soft \
   --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 3600 \
+  --dynamic_takeover_margin_s 300 \
+  --candidate_wait_penalty 0.08 \
+  --candidate_storage_penalty 0.08 \
+  --candidate_dynamic_urgency_bonus 0.12 \
+  --allocator_wait_penalty 0.10 \
+  --allocator_stale_rescue_bonus 0.25 \
+  --allocator_dynamic_urgency_bonus 0.10 \
   --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
   --matcher set_transformer \
   --idle_valid_penalty 0.0 \
@@ -92,15 +100,17 @@ python3 -m das_cva_mappo.run_experiment \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_18 \
+  --run_name das_v0_19 \
   --device cuda:0
 ```
 
-By default `--rollout_steps` is split across `--train_env_workers`, so the
-total rollout budget per iteration stays at 512 in the command above. Use
+By default `--train_env_workers 16`, `--eval_workers 24`, and `--device cuda:0`
+are used. `--rollout_steps` is split across `--train_env_workers`, so the total
+rollout budget per iteration stays at 512 in the command above. Use
 `--rollout_steps_per_worker` only when each worker should collect the full
 rollout budget. If `--eval_device` is a CUDA device, DAS automatically uses one
-eval worker to avoid multiple processes competing for the same GPU.
+eval worker to avoid multiple processes competing for the same GPU. On a CPU-only
+machine, explicitly pass `--device cpu`.
 
 Primary DAS ablation knobs:
 
@@ -126,6 +136,13 @@ Primary DAS ablation knobs:
 - `--candidate_aux_conflict_penalty`
 - `--candidate_aux_load_penalty`
 - `--candidate_adapter_mode v2_compat`
+- `--candidate_wait_penalty`
+- `--candidate_storage_penalty`
+- `--candidate_dynamic_urgency_bonus`
+- `--allocator_wait_penalty`
+- `--allocator_stale_rescue_bonus`
+- `--allocator_dynamic_urgency_bonus`
+- `--dynamic_takeover_margin_s`
 - `--routine_candidate_owners`
 - `--dynamic_candidate_owners`
 - `--urgent_candidate_owners`
@@ -140,6 +157,243 @@ Primary DAS ablation knobs:
 Auxiliary scorer updates apply to `learned` and `hybrid` scorer modes. Runs
 with `--candidate_scorer_mode v2_heuristic` automatically record the auxiliary
 path as disabled.
+
+## Staged Optimization Runs
+
+Use these commands after generating the scenario cache below. Stage 1 is a
+diagnostic run; stages 2-4 progressively enable the candidate/owner, dynamic,
+and storage-pressure optimizations.
+
+Stage 1: slot-invalid diagnosis. Inspect `slot_invalid_*`,
+`avg_filled_invalid_slots`, `eval_valid_decision_rate`, and
+`stale_owner_rate` in `comparison_results.json`.
+
+```bash
+python3 -m das_cva_mappo.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/das_cva_stress_seed42 \
+  --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
+  --n_satellites 6 \
+  --train_iters 0 \
+  --eval_episodes 5 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 30 \
+  --satellite_storage_capacity 30 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 64 \
+  --dynamic_slots 32 \
+  --flex_slots 32 \
+  --slot_selection_mode typed \
+  --ownership_mask_mode soft \
+  --candidate_scorer_mode v2_heuristic \
+  --eval_max_steps 8000 \
+  --eval_device cpu \
+  --eval_workers 24 \
+  --torch_num_threads 1 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/das_cva_mappo \
+  --run_name das_stage1_slot_diagnosis \
+  --device cuda:0 \
+  --no_progress
+```
+
+Stage 2: candidate/owner repair. This keeps the heuristic scorer so the effect
+comes from candidate exposure, stale-owner rescue, and earlier feasible-window
+allocation.
+
+```bash
+python3 -m das_cva_mappo.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/das_cva_stress_seed42 \
+  --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
+  --n_satellites 6 \
+  --train_iters 20 \
+  --eval_episodes 10 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 30 \
+  --satellite_storage_capacity 30 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 48 \
+  --dynamic_slots 48 \
+  --flex_slots 32 \
+  --routine_candidate_owners 1 \
+  --dynamic_candidate_owners 8 \
+  --urgent_candidate_owners 8 \
+  --stale_candidate_owners 8 \
+  --slot_selection_mode typed \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.08 \
+  --assignment_replan_interval_s 900 \
+  --assignment_replan_horizon_s 21600 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --release_before_deadline_s 7200 \
+  --dynamic_broadcast_window_s 7200 \
+  --dynamic_takeover_margin_s 120 \
+  --candidate_wait_penalty 0.10 \
+  --candidate_dynamic_urgency_bonus 0.16 \
+  --allocator_wait_penalty 0.14 \
+  --allocator_stale_rescue_bonus 0.35 \
+  --allocator_dynamic_urgency_bonus 0.16 \
+  --candidate_scorer_mode v2_heuristic \
+  --rollout_steps 512 \
+  --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --eval_max_steps 8000 \
+  --eval_device cpu \
+  --eval_workers 16 \
+  --torch_num_threads 1 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/das_cva_mappo \
+  --run_name das_stage2_candidate_owner_repair \
+  --device cuda:0
+```
+
+Stage 3: dynamic-task optimization. This turns the DAS hybrid scorer back on
+and lets invalid hard negatives teach the edge scorer which future-only or
+stale candidates should move down.
+
+```bash
+python3 -m das_cva_mappo.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/das_cva_stress_seed42 \
+  --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
+  --n_satellites 6 \
+  --train_iters 40 \
+  --eval_episodes 10 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 30 \
+  --satellite_storage_capacity 30 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 48 \
+  --dynamic_slots 48 \
+  --flex_slots 32 \
+  --routine_candidate_owners 1 \
+  --dynamic_candidate_owners 8 \
+  --urgent_candidate_owners 8 \
+  --stale_candidate_owners 8 \
+  --slot_selection_mode typed \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.08 \
+  --assignment_replan_interval_s 900 \
+  --assignment_replan_horizon_s 21600 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --release_before_deadline_s 7200 \
+  --dynamic_broadcast_window_s 7200 \
+  --dynamic_takeover_margin_s 120 \
+  --candidate_wait_penalty 0.10 \
+  --candidate_dynamic_urgency_bonus 0.18 \
+  --allocator_wait_penalty 0.14 \
+  --allocator_stale_rescue_bonus 0.35 \
+  --allocator_dynamic_urgency_bonus 0.18 \
+  --matcher set_transformer \
+  --idle_aux_coeff 0.05 \
+  --action_feature_mode full \
+  --candidate_scorer_mode hybrid \
+  --candidate_scorer_mix 0.45 \
+  --candidate_warmup_edges 8192 \
+  --candidate_warmup_epochs 3 \
+  --candidate_aux_rank_weight 0.30 \
+  --candidate_hard_negative_samples 4 \
+  --candidate_hard_negative_include_invalid \
+  --candidate_hard_negative_margin 0.30 \
+  --candidate_aux_conflict_penalty 0.5 \
+  --candidate_aux_load_penalty 0.1 \
+  --candidate_dropout_prob 0.05 \
+  --rollout_steps 512 \
+  --train_env_workers 16 \
+  --split_rollout_steps_across_workers \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --eval_max_steps 8000 \
+  --eval_device cpu \
+  --eval_workers 24 \
+  --torch_num_threads 1 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/das_cva_mappo \
+  --run_name das_stage3_dynamic_hybrid \
+  --device cuda:0
+```
+
+Stage 4: storage/downlink pressure. Compare this with stage 3 on
+`n_storage_expired_drops`, `avg_downlink_queue_s`, `n_relay_storage_images`,
+and raw completion rates.
+
+```bash
+python3 -m das_cva_mappo.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/das_cva_stress_seed42 \
+  --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
+  --n_satellites 6 \
+  --train_iters 40 \
+  --eval_episodes 10 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 30 \
+  --satellite_storage_capacity 30 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 48 \
+  --dynamic_slots 48 \
+  --flex_slots 32 \
+  --routine_candidate_owners 1 \
+  --dynamic_candidate_owners 8 \
+  --urgent_candidate_owners 8 \
+  --stale_candidate_owners 8 \
+  --slot_selection_mode typed \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.08 \
+  --assignment_replan_interval_s 900 \
+  --assignment_replan_horizon_s 21600 \
+  --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
+  --release_before_deadline_s 7200 \
+  --dynamic_broadcast_window_s 7200 \
+  --dynamic_takeover_margin_s 120 \
+  --candidate_wait_penalty 0.10 \
+  --candidate_storage_penalty 0.16 \
+  --candidate_dynamic_urgency_bonus 0.18 \
+  --allocator_wait_penalty 0.14 \
+  --allocator_stale_rescue_bonus 0.35 \
+  --allocator_dynamic_urgency_bonus 0.18 \
+  --matcher set_transformer \
+  --idle_aux_coeff 0.05 \
+  --action_feature_mode full \
+  --candidate_scorer_mode hybrid \
+  --candidate_scorer_mix 0.45 \
+  --candidate_warmup_edges 8192 \
+  --candidate_warmup_epochs 3 \
+  --candidate_aux_rank_weight 0.30 \
+  --candidate_hard_negative_samples 4 \
+  --candidate_hard_negative_include_invalid \
+  --candidate_hard_negative_margin 0.30 \
+  --candidate_aux_conflict_penalty 0.5 \
+  --candidate_aux_load_penalty 0.20 \
+  --candidate_dropout_prob 0.05 \
+  --rollout_steps 512 \
+  --train_env_workers 16 \
+  --split_rollout_steps_across_workers \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --eval_max_steps 8000 \
+  --eval_device cpu \
+  --eval_workers 24 \
+  --torch_num_threads 1 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/das_cva_mappo \
+  --run_name das_stage4_storage_pressure \
+  --device cuda:0
+```
 
 Version notes are tracked in
 `docs/VERSION_HISTORY.md`.
@@ -258,8 +512,8 @@ python -m cva_mappo_v2.run_experiment \
   --no_viz \
   --device cuda:0
 ```
-Use `--device cuda:0` on a CUDA machine. On local Mac CPU runs, keep
-`--device cpu`.
+The DAS runner defaults to `--device cuda:0`. On a CPU-only compatibility run,
+explicitly pass `--device cpu`.
 
 ## DAS-CVA-MAPPO Target
 

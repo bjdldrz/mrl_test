@@ -71,7 +71,18 @@ class CapacityAwareTaskAllocator:
             old_primary = assignment.primary_owner.get(mission.id)
             ranked_pairs = sorted(
                 (
-                    (score, self._capacity_adjusted_score(score, load, capacities))
+                    (
+                        score,
+                        self._capacity_adjusted_score(
+                            score=score,
+                            mission=mission,
+                            load=load,
+                            capacity=capacities,
+                            current_time_s=current_time_s,
+                            horizon_s=horizon_s,
+                            stale=mission.id in stale_tasks,
+                        ),
+                    )
                     for score in agent_scores.values()
                 ),
                 key=lambda item: item[1],
@@ -127,11 +138,27 @@ class CapacityAwareTaskAllocator:
     def _capacity_adjusted_score(
         self,
         score: CandidateScore,
+        mission: Mission,
         load: Dict[str, int],
         capacity: Dict[str, int],
+        current_time_s: float,
+        horizon_s: float,
+        stale: bool,
     ) -> float:
         pressure = load.get(score.agent_id, 0) / max(capacity.get(score.agent_id, 1), 1)
-        return score.score - self.cfg.load_penalty * pressure
+        wait_s = max(float(getattr(score, "wait_s", 0.0)), 0.0)
+        wait_norm = float(np.clip(wait_s / max(float(horizon_s), 1.0), 0.0, 1.0))
+        adjusted = (
+            score.score
+            - self.cfg.load_penalty * pressure
+            - getattr(self.cfg, "allocator_wait_penalty", 0.0) * wait_norm
+        )
+        if stale:
+            adjusted += getattr(self.cfg, "allocator_stale_rescue_bonus", 0.0) * (1.0 - wait_norm)
+        if mission.is_dynamic:
+            urgency = float(getattr(score, "deadline_pressure", 0.0))
+            adjusted += getattr(self.cfg, "allocator_dynamic_urgency_bonus", 0.0) * urgency
+        return adjusted
 
     def _choose_candidates(
         self,
