@@ -1,5 +1,25 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.15.0
+
+Status: implemented.
+
+Scope:
+
+- Adds a learnable action-type gate on top of the action matcher.
+- The gate predicts routine/dynamic/flex/transfer/idle mode logits from the
+  current state or set context and adds the matching mode logit to each action.
+- Initializes the gate to zero, so the initial policy matches V0.14 before
+  PPO learns type preferences.
+- Adds `--no_action_type_gate` for ablation.
+
+Expected effect:
+
+- Help the policy distinguish "which mode should act now" from "which entity
+  within that mode is best".
+- Improve dynamic/routine/idle tradeoffs without hard-coding another rule.
+- Preserve V0.14's set-transformer contextual action ranking.
+
 ## DAS-CVA-MAPPO V0.14.0
 
 Status: implemented.
@@ -429,6 +449,7 @@ Ablation interfaces:
 - `--action_feature_mode full|minimal|no_score`
 - `--no_candidate_score_feature`
 - `--no_set_context`
+- `--no_action_type_gate`
 - `--candidate_dropout_prob`
 - `--candidate_scorer_mode v2_heuristic`
 - inherited candidate-layer controls such as `--slot_selection_mode`,

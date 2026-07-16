@@ -30,10 +30,12 @@ class ActionSetActor(nn.Module):
         action_hidden_dim: int = 128,
         matcher: str = "set_transformer",
         use_set_context: bool = True,
+        use_action_type_gate: bool = True,
     ):
         super().__init__()
         self.matcher = matcher
         self.use_set_context = bool(use_set_context)
+        self.use_action_type_gate = bool(use_action_type_gate)
         self.state_encoder = _mlp(state_dim, hidden_dims, action_hidden_dim)
         self.action_encoder = _mlp(action_feature_dim, hidden_dims[:1], action_hidden_dim)
         if matcher == "additive":
@@ -60,6 +62,8 @@ class ActionSetActor(nn.Module):
             self.logit_head = nn.Linear(action_hidden_dim, 1)
         else:
             raise ValueError("matcher must be additive, dot, or set_transformer")
+        if self.use_action_type_gate:
+            self.type_gate_head = nn.Linear(action_hidden_dim, 5)
         self._init_weights()
 
     @staticmethod
@@ -76,6 +80,9 @@ class ActionSetActor(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
         if hasattr(self, "logit_head"):
             nn.init.orthogonal_(self.logit_head.weight, gain=0.01)
+        if hasattr(self, "type_gate_head"):
+            nn.init.constant_(self.type_gate_head.weight, 0.0)
+            nn.init.constant_(self.type_gate_head.bias, 0.0)
 
     def forward(
         self,
@@ -92,6 +99,7 @@ class ActionSetActor(nn.Module):
             query = self.state_proj(state_h).unsqueeze(1)
             keys = self.action_proj(action_h)
             logits = torch.sum(query * keys, dim=-1) / np.sqrt(keys.shape[-1])
+            gate_context = state_h
         elif self.matcher == "set_transformer":
             # Let filled future-task tokens contribute context even when they
             # are not currently selectable. The final action mask still gates
@@ -109,9 +117,11 @@ class ActionSetActor(nn.Module):
                 encoded = self.set_encoder(tokens, src_key_padding_mask=~token_present)
                 global_context = self.context_proj(encoded[:, 0]).unsqueeze(1)
                 action_context = encoded[:, 1:]
+                gate_context = encoded[:, 0]
             else:
                 global_context = self.context_proj(state_h).unsqueeze(1)
                 action_context = action_h
+                gate_context = state_h
             logits = self.logit_head(torch.tanh(action_context + global_context)).squeeze(-1)
         else:
             state_term = self.state_proj(state_h).unsqueeze(1)
@@ -120,12 +130,39 @@ class ActionSetActor(nn.Module):
                 denom = torch.clamp(action_mask.sum(dim=1, keepdim=True), min=1.0)
                 context = (action_h * action_mask.unsqueeze(-1)).sum(dim=1) / denom
                 context_term = self.context_proj(context).unsqueeze(1)
+                gate_context = state_h + context
             else:
                 context_term = 0.0
+                gate_context = state_h
             logits = self.logit_head(torch.tanh(state_term + action_term + context_term)).squeeze(-1)
 
+        if self.use_action_type_gate:
+            logits = logits + self._action_type_gate(gate_context, action_features)
         logits = logits + (1.0 - action_mask) * (-1e8)
         return Categorical(logits=logits)
+
+    def _action_type_gate(self, context: torch.Tensor, action_features: torch.Tensor) -> torch.Tensor:
+        """Add learnable routine/dynamic/flex/transfer/idle mode logits."""
+        gate_logits = self.type_gate_head(context)
+
+        def feat(idx: int) -> torch.Tensor:
+            if action_features.shape[-1] <= idx:
+                return torch.zeros(action_features.shape[:2], device=action_features.device)
+            return torch.clamp(action_features[..., idx], 0.0, 1.0)
+
+        task = feat(0)
+        transfer = feat(1)
+        idle = feat(2)
+        slot_routine = feat(5)
+        slot_dynamic = feat(6)
+        slot_flex = feat(7)
+        mission_dynamic = feat(19)
+        dynamic = task * torch.clamp(slot_dynamic + mission_dynamic, 0.0, 1.0)
+        routine = task * slot_routine * (1.0 - mission_dynamic)
+        flex = task * slot_flex
+        weights = torch.stack([routine, dynamic, flex, transfer, idle], dim=-1)
+        weights = weights / torch.clamp(weights.sum(dim=-1, keepdim=True), min=1.0)
+        return torch.sum(weights * gate_logits.unsqueeze(1), dim=-1)
 
     def get_action(
         self,
@@ -165,6 +202,7 @@ class ActionSetActorCritic(nn.Module):
         critic_hidden_dims=(256, 256),
         matcher: str = "set_transformer",
         use_set_context: bool = True,
+        use_action_type_gate: bool = True,
     ):
         super().__init__()
         self.actor = ActionSetActor(
@@ -174,6 +212,7 @@ class ActionSetActorCritic(nn.Module):
             action_hidden_dim=action_hidden_dim,
             matcher=matcher,
             use_set_context=use_set_context,
+            use_action_type_gate=use_action_type_gate,
         )
         self.critic = SetCritic(global_state_dim, tuple(critic_hidden_dims))
 

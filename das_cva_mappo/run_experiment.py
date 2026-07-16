@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.14.
+Run DAS-CVA-MAPPO V0.15.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.14 makes a
-set-transformer action matcher the default policy structure.
+action-set-aware MAPPO policy over action entities. V0.15 adds a learnable
+action-type gate on top of the set-transformer policy structure.
 """
 
 from __future__ import annotations
@@ -103,6 +103,7 @@ def _build_das_config(args) -> DASConfig:
         action_feature_mode=args.action_feature_mode,
         use_candidate_score_feature=use_score,
         use_set_context=not args.no_set_context,
+        use_action_type_gate=not args.no_action_type_gate,
         candidate_dropout_prob=args.candidate_dropout_prob,
         candidate_scorer_mode=args.candidate_scorer_mode,
         candidate_scorer_mix=args.candidate_scorer_mix,
@@ -331,6 +332,7 @@ def train_and_eval(
         critic_hidden_dims=das_cfg.critic_hidden_dims,
         matcher=das_cfg.matcher,
         use_set_context=das_cfg.use_set_context,
+        use_action_type_gate=das_cfg.use_action_type_gate,
     ).to(device)
     trainer = ActionSetMAPPOTrainer(
         model,
@@ -530,7 +532,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.14 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.15 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -552,7 +554,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_14")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_15")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -588,6 +590,7 @@ def main() -> None:
     parser.add_argument("--action_feature_mode", choices=["full", "minimal", "no_score"], default="full")
     parser.add_argument("--no_candidate_score_feature", action="store_true")
     parser.add_argument("--no_set_context", action="store_true")
+    parser.add_argument("--no_action_type_gate", action="store_true")
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
     parser.add_argument("--candidate_scorer_mode", choices=["v2_heuristic", "learned", "hybrid"], default="hybrid")
     parser.add_argument("--candidate_scorer_mix", type=float, default=0.35)
@@ -661,7 +664,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.14"
+    method_name = "DAS-CVA-MAPPO-v0.15"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -692,6 +695,7 @@ def main() -> None:
             "action_feature_mode": das_cfg.action_feature_mode,
             "use_candidate_score_feature": das_cfg.use_candidate_score_feature,
             "use_set_context": das_cfg.use_set_context,
+            "use_action_type_gate": das_cfg.use_action_type_gate,
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,
             "candidate_scorer_mode": das_cfg.candidate_scorer_mode,
             "candidate_scorer_mix": das_cfg.candidate_scorer_mix,
