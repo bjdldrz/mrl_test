@@ -2236,7 +2236,53 @@ class MultiSatelliteEnv:
                     resolved[aid] = raw_idle
                 break
 
+        if self.eval_mode:
+            self._assign_idle_dynamic_rescues(resolved, claimed, feasible, raw_idle)
+
         return resolved
+
+    def _assign_idle_dynamic_rescues(
+        self,
+        resolved: Dict[str, int],
+        claimed: set,
+        feasible: Dict[str, set],
+        raw_idle: int,
+    ) -> None:
+        """Use idle eval agents to rescue currently executable dynamic tasks."""
+        for aid in self.agent_ids:
+            if resolved.get(aid, raw_idle) != raw_idle:
+                continue
+            action = self._best_dynamic_rescue_action(aid, claimed, feasible)
+            if action is None:
+                continue
+            resolved[aid] = action
+            claimed.add(action)
+
+    def _best_dynamic_rescue_action(
+        self,
+        agent_id: str,
+        claimed: set,
+        feasible: Dict[str, set],
+    ) -> Optional[int]:
+        best_action = None
+        best_value = float("-inf")
+        env = self.envs[agent_id]
+        for action in feasible.get(agent_id, ()):
+            if action in claimed:
+                continue
+            mission = env.missions[action]
+            if mission is None or mission.is_observed or not getattr(mission, "is_dynamic", False):
+                continue
+            value = self._obs_value(agent_id, action, feasible)
+            if value is None:
+                continue
+            slack_s = max(float(mission.deadline_s) - float(env.current_time_s), 0.0)
+            urgency = 1.0 - float(np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0))
+            value += 0.5 + urgency
+            if value > best_value:
+                best_action = int(action)
+                best_value = float(value)
+        return best_action
 
     def _observed_mission_ids(self) -> set:
         observed = set()

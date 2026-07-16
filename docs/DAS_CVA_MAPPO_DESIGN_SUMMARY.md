@@ -92,11 +92,11 @@ Important auxiliary losses:
 ## Recommended Code Direction
 
 Keep `cva_mappo_v2` only as the environment and candidate-generation support
-layer for early DAS versions. DAS V0.8 now implements the first action-set
+layer for early DAS versions. DAS V0.9 now implements the first action-set
 policy path, a DAS-owned candidate edge scorer, rollout-advantage auxiliary
 updates, hard-negative candidate sampling, conflict/load target shaping, a
 candidate adapter boundary, event-aware compatibility-layer iteration, and
-dynamic/flex exposure repair in `das_cva_mappo/`:
+dynamic-priority exposure/rescue in `das_cva_mappo/`:
 
 ```text
 das_cva_mappo/

@@ -1,5 +1,28 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.9.0
+
+Status: implemented.
+
+Scope:
+
+- Changes typed candidate exposure order to place dynamic slots before flex
+  and routine slots. This reduces fixed-slot actor bias toward early routine
+  indices.
+- Adds eval-time dynamic rescue in the multi-agent resolver: if a satellite
+  selected idle but currently has an executable dynamic task, the resolver can
+  assign that dynamic task while preserving normal conflict checks.
+- Keeps this rescue path evaluation-only to avoid corrupting training credit
+  assignment for sampled idle actions.
+
+Expected effect:
+
+- Prevent currently valid dynamic windows from being skipped by idle-heavy
+  policies.
+- Improve `n_feasible_dynamic_done`, `dynamic_completion_rate`, and
+  `dynamic_completion_rate_raw` without treating the compatibility layer as the
+  main method.
+
 ## DAS-CVA-MAPPO V0.8.0
 
 Status: implemented.

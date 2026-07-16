@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.8.
+Run DAS-CVA-MAPPO V0.9.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities.  V0.8 improves dynamic and
-flex candidate exposure while limiting stale-owner replan churn.
+action-set-aware MAPPO policy over action entities.  V0.9 adds dynamic-first
+typed exposure and eval-time dynamic rescue for idle agents.
 """
 
 from __future__ import annotations
@@ -530,7 +530,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.8 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.9 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -552,7 +552,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_8")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_9")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -661,7 +661,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.8"
+    method_name = "DAS-CVA-MAPPO-v0.9"
     results = {
         method_name: train_and_eval(
             cfg,
