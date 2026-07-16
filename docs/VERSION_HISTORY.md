@@ -1,5 +1,31 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.13.0
+
+Status: implemented.
+
+Scope:
+
+- Adds near-window dynamic takeover release: if an arrived dynamic task is owned
+  by another satellite, but a non-owner has an earlier near-term feasible
+  window and the owner does not, that non-owner may see and take over the task.
+- Adds a candidate-score bonus for dynamic tasks released through this takeover
+  path.
+- Raises the default dynamic candidate owner count from 4 to 6 while leaving
+  routine ownership narrow.
+- Adds `n_dynamic_takeover_release_events`.
+- Resets all rescue/takeover counters during environment reset to keep
+  multi-episode metrics clean.
+
+Expected effect:
+
+- Improve dynamic completion and response time when V0.12 reports zero dynamic
+  idle/preemption opportunities.
+- Preserve the V0.11 routine rescue path instead of globally increasing dynamic
+  pressure.
+- Diagnose whether dynamic misses come from no near-window takeover candidates
+  or from downstream action selection.
+
 ## DAS-CVA-MAPPO V0.12.0
 
 Status: implemented.

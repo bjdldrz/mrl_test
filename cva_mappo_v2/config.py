@@ -27,7 +27,7 @@ class CVAMAPPOV2Config:
 
     # Task-centered candidate ownership.
     routine_candidate_owners: int = 1
-    dynamic_candidate_owners: int = 4
+    dynamic_candidate_owners: int = 6
     urgent_candidate_owners: int = 6
     stale_candidate_owners: int = 6
     capacity_slack_ratio: float = 0.05

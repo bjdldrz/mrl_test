@@ -285,6 +285,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         owner = self.task_owner.get(mission.id)
         if self._dynamic_broadcast_open(mission, env.current_time_s):
             return True
+        if self._dynamic_takeover_release_open(agent_id, mission, env.current_time_s):
+            return True
         if owner is None:
             return False
         near_deadline = env.current_time_s >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
@@ -313,6 +315,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         owner = self.task_owner.get(mission.id)
         if owner is None:
             return False
+        if self._dynamic_takeover_release_open(agent_id, mission, current_time):
+            return True
         near_deadline = current_time >= mission.deadline_s - self.v2_cfg.release_before_deadline_s
         released = near_deadline or mission.id in stale
         if released:
@@ -553,6 +557,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             if score is None:
                 continue
             score += self._soft_owner_score_bonus(agent_id, mission)
+            if self._dynamic_takeover_release_open(agent_id, mission, current_time):
+                score += 0.30
             is_available = 1 if full_mask[action] > 0 else 0
             if is_available:
                 score += 0.15
@@ -646,6 +652,42 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             return False
         arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
         return arrival_s <= current_time <= min(arrival_s + window_s, mission.deadline_s)
+
+    def _dynamic_takeover_release_open(self, agent_id: str, mission: Mission, current_time: float) -> bool:
+        """Release dynamic tasks to a non-owner with an earlier near-term window."""
+        if mission is None or mission.is_observed or not getattr(mission, "is_dynamic", False):
+            return False
+        owner = self.task_owner.get(mission.id)
+        if owner is None or owner == agent_id:
+            return False
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        if current_time < arrival_s or current_time > mission.deadline_s:
+            return False
+
+        window_s = max(
+            float(self.v2_cfg.dynamic_broadcast_window_s or 0.0),
+            float(self.v2_cfg.release_before_deadline_s or 0.0),
+        )
+        if window_s <= 0:
+            return False
+
+        agent_next = self._next_feasible_window_start(agent_id, mission.id, current_time)
+        if agent_next is None or agent_next - current_time > window_s:
+            return False
+
+        owner_env = self.envs.get(owner)
+        owner_time = float(owner_env.current_time_s) if owner_env is not None else current_time
+        owner_next = self._next_feasible_window_start(owner, mission.id, owner_time)
+        handoff_margin_s = max(60.0, min(float(self.assignment_lock_window_s), 600.0))
+        if owner_next is not None and owner_next <= agent_next + handoff_margin_s:
+            return False
+
+        key = (int(mission.id), agent_id)
+        if key not in self._dynamic_takeover_release_keys:
+            self._dynamic_takeover_release_keys.add(key)
+            self._n_dynamic_takeover_release_events += 1
+            self._released_mission_ids.add(mission.id)
+        return True
 
     def _soft_owner_score_bonus(self, agent_id: str, mission: Mission) -> float:
         bonus = float(self.v2_cfg.candidate_owner_bonus or 0.0)

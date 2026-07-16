@@ -653,7 +653,7 @@ def main():
     parser.add_argument("--dynamic_slots", type=int, default=32)
     parser.add_argument("--flex_slots", type=int, default=32)
     parser.add_argument("--routine_candidate_owners", type=int, default=1)
-    parser.add_argument("--dynamic_candidate_owners", type=int, default=4)
+    parser.add_argument("--dynamic_candidate_owners", type=int, default=6)
     parser.add_argument("--urgent_candidate_owners", type=int, default=6)
     parser.add_argument("--stale_candidate_owners", type=int, default=6)
     parser.add_argument("--capacity_slack_ratio", type=float, default=0.05)

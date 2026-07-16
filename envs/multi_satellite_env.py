@@ -137,6 +137,8 @@ class MultiSatelliteEnv:
         self._n_idle_executable_rescues = 0
         self._n_dynamic_idle_rescue_opportunities = 0
         self._n_dynamic_preemption_opportunities = 0
+        self._n_dynamic_takeover_release_events = 0
+        self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
@@ -709,6 +711,14 @@ class MultiSatelliteEnv:
         self._n_owner_switches = 0
         self._n_replan_checks = 0
         self._n_stale_owner_events = 0
+        self._n_dynamic_idle_rescues = 0
+        self._n_dynamic_preemptions = 0
+        self._n_routine_idle_rescues = 0
+        self._n_idle_executable_rescues = 0
+        self._n_dynamic_idle_rescue_opportunities = 0
+        self._n_dynamic_preemption_opportunities = 0
+        self._n_dynamic_takeover_release_events = 0
+        self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
@@ -2803,6 +2813,7 @@ class MultiSatelliteEnv:
             "n_idle_executable_rescues": self._n_idle_executable_rescues,
             "n_dynamic_idle_rescue_opportunities": self._n_dynamic_idle_rescue_opportunities,
             "n_dynamic_preemption_opportunities": self._n_dynamic_preemption_opportunities,
+            "n_dynamic_takeover_release_events": self._n_dynamic_takeover_release_events,
             "n_released_tasks": len(self._released_mission_ids),
             "n_deadline_release_tasks": len(self._deadline_release_mission_ids),
             "n_rescued_tasks": len(self._rescued_mission_ids),
