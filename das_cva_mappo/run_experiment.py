@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.17.
+Run DAS-CVA-MAPPO V0.18.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.17 replaces the default
-hard idle penalty with a PPO idle-when-valid auxiliary loss.
+action-set-aware MAPPO policy over action entities. V0.18 adds DAS-native
+parallel rollout collection and parallel CPU evaluation.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ from utils.experiment_common import (
     _avg_metrics,
     _configure_torch_threads,
     _git_metadata,
+    _numpy_state_to_torch,
+    _torch_state_to_numpy,
     expand_satellite_configs,
     make_test_scenarios,
 )
@@ -52,7 +54,7 @@ from .config import DASConfig
 from .env_adapter import V2CandidateAdapter
 from .feature_builder import ActionSetFeatureBuilder
 from .rollout_buffer import ActionSetRolloutBuffer
-from .trainer import ActionSetMAPPOTrainer
+from .trainer import ActionSetMAPPOTrainer, CandidateAuxSamples
 
 
 def _parse_int_list(text: str) -> List[int]:
@@ -60,6 +62,17 @@ def _parse_int_list(text: str) -> List[int]:
     if not values:
         raise ValueError("列表参数不能为空")
     return values
+
+
+def _rollout_step_counts(total_steps: int, n_workers: int, split_across_workers: bool) -> List[int]:
+    total_steps = max(int(total_steps), 1)
+    n_workers = max(1, min(int(n_workers), total_steps))
+    if not split_across_workers or n_workers <= 1:
+        return [total_steps] * n_workers
+    step_counts = [total_steps // n_workers] * n_workers
+    for worker_idx in range(total_steps % n_workers):
+        step_counts[worker_idx] += 1
+    return [steps for steps in step_counts if steps > 0]
 
 
 def _build_v2_config(args) -> CVAMAPPOV2Config:
@@ -212,6 +225,50 @@ def _make_env(
     return env
 
 
+def _build_action_model(das_cfg: DASConfig, env) -> ActionSetActorCritic:
+    return ActionSetActorCritic(
+        state_dim=das_cfg.state_dim,
+        action_feature_dim=das_cfg.action_feature_dim,
+        global_state_dim=env.global_state_dim,
+        actor_hidden_dims=das_cfg.actor_hidden_dims,
+        action_hidden_dim=das_cfg.action_hidden_dim,
+        critic_hidden_dims=das_cfg.critic_hidden_dims,
+        matcher=das_cfg.matcher,
+        use_set_context=das_cfg.use_set_context,
+        use_action_type_gate=das_cfg.use_action_type_gate,
+        idle_valid_penalty=das_cfg.idle_valid_penalty,
+    )
+
+
+def _candidate_scorer_model_state(
+    candidate_scorer: Optional[TrainableCandidateValueScorer],
+) -> Optional[Dict[str, np.ndarray]]:
+    if candidate_scorer is None:
+        return None
+    return _torch_state_to_numpy(candidate_scorer.model.state_dict())
+
+
+def _build_worker_candidate_scorer(
+    v2_cfg: CVAMAPPOV2Config,
+    das_cfg: DASConfig,
+    state: Optional[Dict[str, np.ndarray]],
+    device: str = "cpu",
+) -> Optional[TrainableCandidateValueScorer]:
+    if state is None or das_cfg.candidate_scorer_mode == "v2_heuristic":
+        return None
+    scorer = TrainableCandidateValueScorer(
+        v2_cfg,
+        mode=das_cfg.candidate_scorer_mode,
+        mix=das_cfg.candidate_scorer_mix,
+        hidden_dim=das_cfg.candidate_scorer_hidden_dim,
+        lr=das_cfg.candidate_scorer_lr,
+        device=device,
+    )
+    scorer.model.load_state_dict(_numpy_state_to_torch(state))
+    scorer.model.eval()
+    return scorer
+
+
 def _reset_infos(env, routine, dynamic) -> Dict[str, Dict]:
     reset = env.reset(options={
         "routine_missions": copy.deepcopy(routine),
@@ -226,20 +283,76 @@ def _eval_step_limit(args, env) -> int:
     return int(env.horizon_s / 10.0) + 100
 
 
-def _eval_policy(
-    cfg,
-    args,
-    v2_cfg,
-    das_cfg,
-    model,
-    scenarios,
-    candidate_scorer: Optional[TrainableCandidateValueScorer] = None,
-    candidate_adapter=None,
-    show_progress=True,
-) -> Dict[str, float]:
-    device = torch.device(args.eval_device if args.eval_device != "same" else args.device)
-    if device != next(model.parameters()).device:
-        model = copy.deepcopy(model).to(device)
+def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> CandidateAuxSamples:
+    edge_rows: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+    negative_rows: List[np.ndarray] = []
+    negative_anchors: List[np.ndarray] = []
+    positive_offset = 0
+    n_conflict_edges = 0
+    conflict_penalty_sum = 0.0
+    load_penalty_sum = 0.0
+
+    for sample in samples:
+        n_conflict_edges += int(sample.n_conflict_edges)
+        conflict_penalty_sum += float(sample.conflict_penalty_sum)
+        load_penalty_sum += float(sample.load_penalty_sum)
+
+        edges = np.asarray(sample.edge_features, dtype=np.float32)
+        advantages = np.asarray(sample.advantages, dtype=np.float32).reshape(-1)
+        if edges.ndim != 2 or len(edges) == 0 or len(edges) != len(advantages):
+            continue
+
+        edge_rows.append(edges)
+        targets.append(advantages)
+
+        negatives = np.asarray(sample.negative_features, dtype=np.float32)
+        anchors = np.asarray(sample.negative_anchor_indices, dtype=np.int64).reshape(-1)
+        if negatives.ndim == 2 and len(negatives) == len(anchors) and len(negatives) > 0:
+            negative_rows.append(negatives)
+            negative_anchors.append(anchors + positive_offset)
+        positive_offset += len(edges)
+
+    if not edge_rows:
+        return ActionSetMAPPOTrainer._empty_candidate_aux_samples()
+
+    return CandidateAuxSamples(
+        edge_features=np.concatenate(edge_rows, axis=0).astype(np.float32),
+        advantages=np.concatenate(targets, axis=0).astype(np.float32),
+        negative_features=(
+            np.concatenate(negative_rows, axis=0).astype(np.float32)
+            if negative_rows else np.zeros((0, edge_rows[0].shape[1]), dtype=np.float32)
+        ),
+        negative_anchor_indices=(
+            np.concatenate(negative_anchors, axis=0).astype(np.int64)
+            if negative_anchors else np.zeros(0, dtype=np.int64)
+        ),
+        n_conflict_edges=int(n_conflict_edges),
+        conflict_penalty_sum=float(conflict_penalty_sum),
+        load_penalty_sum=float(load_penalty_sum),
+    )
+
+
+def _eval_worker(payload):
+    torch.set_num_threads(1)
+    cfg = payload["cfg"]
+    args = payload["args"]
+    v2_cfg = payload["v2_cfg"]
+    das_cfg = payload["das_cfg"]
+    routine, dynamic = payload["scenario"]
+    eval_device = torch.device(payload.get("eval_device", "cpu"))
+    candidate_adapter = _build_candidate_adapter(das_cfg)
+    candidate_scorer = _build_worker_candidate_scorer(
+        v2_cfg,
+        das_cfg,
+        payload.get("candidate_scorer_state"),
+        device=str(eval_device),
+    )
+
+    env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
+    env.set_eval_mode(True)
+    model = _build_action_model(das_cfg, env).to(eval_device)
+    model.load_state_dict(_numpy_state_to_torch(payload["model_state"]))
     feature_builder = ActionSetFeatureBuilder(
         state_dim=das_cfg.state_dim,
         action_feature_dim=das_cfg.action_feature_dim,
@@ -260,62 +373,123 @@ def _eval_policy(
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=0.0,
         idle_aux_coeff=0.0,
-        device=str(device),
+        device=str(eval_device),
     )
 
-    metrics = []
-    for routine, dynamic in tqdm(
-        scenarios,
-        desc="eval DAS-CVA-MAPPO",
-        unit="ep",
-        dynamic_ncols=True,
-        disable=not show_progress,
-    ):
-        env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
-        env.set_eval_mode(True)
-        infos = _reset_infos(env, routine, dynamic)
-        idle_actions = 0
-        idle_with_valid_actions = 0
-        idle_without_valid_actions = 0
-        valid_decision_points = 0
-        agent_actions = 0
-        for _ in range(_eval_step_limit(args, env)):
-            valid_by_agent = {}
-            for aid in env.agent_ids:
-                mask = np.asarray(infos[aid].get("action_mask", []), dtype=np.float32)
-                if mask.size == 0:
-                    valid_by_agent[aid] = False
-                    continue
-                idle = int(env.idle_action)
-                idle_valid = mask[idle] if 0 <= idle < len(mask) else 0.0
-                valid_by_agent[aid] = bool(float(np.sum(mask)) - float(idle_valid) > 0)
-            actions = trainer.select_eval_actions(
-                env,
-                infos,
-                deterministic=args.eval_deterministic,
+    infos = _reset_infos(env, routine, dynamic)
+    idle_actions = 0
+    idle_with_valid_actions = 0
+    idle_without_valid_actions = 0
+    valid_decision_points = 0
+    agent_actions = 0
+    n_steps = 0
+    max_steps = _eval_step_limit(args, env)
+    for _ in range(max_steps):
+        valid_by_agent = {}
+        for aid in env.agent_ids:
+            mask = np.asarray(infos[aid].get("action_mask", []), dtype=np.float32)
+            if mask.size == 0:
+                valid_by_agent[aid] = False
+                continue
+            idle = int(env.idle_action)
+            idle_valid = mask[idle] if 0 <= idle < len(mask) else 0.0
+            valid_by_agent[aid] = bool(float(np.sum(mask)) - float(idle_valid) > 0)
+        actions = trainer.select_eval_actions(
+            env,
+            infos,
+            deterministic=payload.get("eval_deterministic", False),
+        )
+        for aid, action in actions.items():
+            is_idle = int(action) == env.idle_action
+            has_valid = bool(valid_by_agent.get(aid, False))
+            valid_decision_points += int(has_valid)
+            if is_idle:
+                idle_actions += 1
+                if has_valid:
+                    idle_with_valid_actions += 1
+                else:
+                    idle_without_valid_actions += 1
+        agent_actions += len(actions)
+        step = env.step(actions)
+        infos = {aid: item[4] for aid, item in step.items()}
+        n_steps += 1
+        if env.is_done():
+            break
+    row = env.get_metrics()
+    current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
+    row["eval_steps"] = float(n_steps)
+    row["eval_end_time_s"] = float(np.mean(current_times)) if current_times else 0.0
+    row["eval_finished_early"] = 1.0 if n_steps < max_steps else 0.0
+    row["eval_idle_action_rate"] = idle_actions / max(agent_actions, 1)
+    row["eval_valid_decision_rate"] = valid_decision_points / max(agent_actions, 1)
+    row["eval_idle_when_valid_rate"] = idle_with_valid_actions / max(valid_decision_points, 1)
+    row["eval_idle_without_valid_rate"] = idle_without_valid_actions / max(agent_actions - valid_decision_points, 1)
+    return {"idx": payload["idx"], "metrics": row}
+
+
+def _parallel_eval(
+    cfg,
+    args,
+    v2_cfg,
+    das_cfg,
+    model,
+    scenarios,
+    candidate_scorer: Optional[TrainableCandidateValueScorer] = None,
+    show_progress=True,
+) -> Dict[str, float]:
+    from multiprocessing import get_context
+
+    if not scenarios:
+        return {}
+    n_workers = max(1, min(int(args.eval_workers or 1), len(scenarios)))
+    eval_device = args.eval_device if args.eval_device != "same" else args.device
+    if str(eval_device) != "cpu" and n_workers > 1:
+        print(
+            f"评估设备为 {eval_device}; 单卡 GPU 评估将 eval_workers 从 {n_workers} 降为 1, "
+            "避免多个进程抢占同一张 GPU。"
+        )
+        n_workers = 1
+
+    model_state = _torch_state_to_numpy(model.state_dict())
+    candidate_scorer_state = _candidate_scorer_model_state(candidate_scorer)
+    payloads = [
+        {
+            "idx": idx,
+            "cfg": copy.deepcopy(cfg),
+            "args": args,
+            "v2_cfg": copy.deepcopy(v2_cfg),
+            "das_cfg": copy.deepcopy(das_cfg),
+            "scenario": scenario,
+            "model_state": model_state,
+            "candidate_scorer_state": candidate_scorer_state,
+            "eval_device": eval_device,
+            "eval_deterministic": args.eval_deterministic,
+        }
+        for idx, scenario in enumerate(scenarios)
+    ]
+    if n_workers <= 1:
+        raw = [
+            _eval_worker(payload)
+            for payload in tqdm(
+                payloads,
+                desc="eval DAS-CVA-MAPPO",
+                unit="ep",
+                dynamic_ncols=True,
+                disable=not show_progress,
             )
-            for aid, action in actions.items():
-                is_idle = int(action) == env.idle_action
-                has_valid = bool(valid_by_agent.get(aid, False))
-                valid_decision_points += int(has_valid)
-                if is_idle:
-                    idle_actions += 1
-                    if has_valid:
-                        idle_with_valid_actions += 1
-                    else:
-                        idle_without_valid_actions += 1
-            agent_actions += len(actions)
-            step = env.step(actions)
-            infos = {aid: item[4] for aid, item in step.items()}
-            if env.is_done():
-                break
-        row = env.get_metrics()
-        row["eval_idle_action_rate"] = idle_actions / max(agent_actions, 1)
-        row["eval_valid_decision_rate"] = valid_decision_points / max(agent_actions, 1)
-        row["eval_idle_when_valid_rate"] = idle_with_valid_actions / max(valid_decision_points, 1)
-        row["eval_idle_without_valid_rate"] = idle_without_valid_actions / max(agent_actions - valid_decision_points, 1)
-        metrics.append(row)
-    return _avg_metrics(metrics)
+        ]
+    else:
+        with get_context("spawn").Pool(processes=n_workers) as pool:
+            raw = list(tqdm(
+                pool.imap_unordered(_eval_worker, payloads),
+                total=len(payloads),
+                desc="eval DAS-CVA-MAPPO",
+                unit="ep",
+                dynamic_ncols=True,
+                disable=not show_progress,
+            ))
+    raw = sorted(raw, key=lambda row: row["idx"])
+    return _avg_metrics([row["metrics"] for row in raw])
 
 
 def _write_train_log(out_dir: Path, rows: List[Dict[str, Any]]) -> None:
@@ -326,6 +500,65 @@ def _write_train_log(out_dir: Path, rows: List[Dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _collect_rollout_worker(payload):
+    seed = int(payload["seed"])
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.set_num_threads(1)
+
+    cfg = payload["cfg"]
+    args = payload["args"]
+    v2_cfg = payload["v2_cfg"]
+    das_cfg = payload["das_cfg"]
+    routine, dynamic = payload["scenario"]
+    n_steps = int(payload["rollout_steps"])
+    candidate_adapter = _build_candidate_adapter(das_cfg)
+    candidate_scorer = _build_worker_candidate_scorer(
+        v2_cfg,
+        das_cfg,
+        payload.get("candidate_scorer_state"),
+        device="cpu",
+    )
+
+    env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
+    feature_builder = ActionSetFeatureBuilder(
+        state_dim=das_cfg.state_dim,
+        action_feature_dim=das_cfg.action_feature_dim,
+        mode=das_cfg.action_feature_mode,
+        use_candidate_score=das_cfg.use_candidate_score_feature,
+        candidate_scorer=candidate_scorer if das_cfg.candidate_aux_update else None,
+        candidate_adapter=candidate_adapter,
+    )
+    model = _build_action_model(das_cfg, env).to("cpu")
+    model.load_state_dict(_numpy_state_to_torch(payload["model_state"]))
+    trainer = ActionSetMAPPOTrainer(
+        model,
+        feature_builder=feature_builder,
+        lr=cfg.ppo.learning_rate,
+        gamma=cfg.ppo.discount_factor,
+        gae_lambda=cfg.ppo.gae_lambda,
+        clip_ratio=cfg.ppo.clip_ratio,
+        entropy_coeff=cfg.ppo.entropy_coeff,
+        value_loss_coeff=cfg.ppo.value_loss_coeff,
+        ppo_epochs=cfg.ppo.ppo_epochs,
+        batch_size=cfg.ppo.batch_size,
+        candidate_dropout_prob=das_cfg.candidate_dropout_prob,
+        idle_aux_coeff=das_cfg.idle_aux_coeff,
+        device="cpu",
+    )
+    infos = _reset_infos(env, routine, dynamic)
+    buffer = ActionSetRolloutBuffer()
+    buffer.init_agents(env.agent_ids)
+    _, reward = trainer.collect_rollout(env, buffer, n_steps, infos)
+    return {
+        "idx": payload["idx"],
+        "buffer": buffer,
+        "last_global_state": env.get_global_state(),
+        "total_reward": float(reward),
+        "steps": len(buffer),
+    }
 
 
 def train_and_eval(
@@ -350,18 +583,7 @@ def train_and_eval(
         candidate_scorer=candidate_scorer if das_cfg.candidate_aux_update else None,
         candidate_adapter=candidate_adapter,
     )
-    model = ActionSetActorCritic(
-        state_dim=das_cfg.state_dim,
-        action_feature_dim=das_cfg.action_feature_dim,
-        global_state_dim=env.global_state_dim,
-        actor_hidden_dims=das_cfg.actor_hidden_dims,
-        action_hidden_dim=das_cfg.action_hidden_dim,
-        critic_hidden_dims=das_cfg.critic_hidden_dims,
-        matcher=das_cfg.matcher,
-        use_set_context=das_cfg.use_set_context,
-        use_action_type_gate=das_cfg.use_action_type_gate,
-        idle_valid_penalty=das_cfg.idle_valid_penalty,
-    ).to(device)
+    model = _build_action_model(das_cfg, env).to(device)
     trainer = ActionSetMAPPOTrainer(
         model,
         feature_builder=feature_builder,
@@ -380,6 +602,17 @@ def train_and_eval(
 
     rng = np.random.RandomState(args.seed + 500)
     logs: List[Dict[str, Any]] = []
+    step_counts = _rollout_step_counts(
+        cfg.meta.rollout_steps,
+        int(args.train_env_workers or 1),
+        args.split_rollout_steps_across_workers,
+    )
+    max_train_workers = len(step_counts) if args.train_iters > 0 else 1
+    train_pool = None
+    if max_train_workers > 1:
+        from multiprocessing import get_context
+
+        train_pool = get_context("spawn").Pool(processes=max_train_workers)
     iterator = tqdm(
         range(args.train_iters),
         desc="train DAS-CVA-MAPPO",
@@ -387,69 +620,121 @@ def train_and_eval(
         dynamic_ncols=True,
         disable=args.no_progress,
     )
-    for it in iterator:
-        if train_payload is not None:
-            routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
-        else:
-            routine, dynamic = mission_gen.generate_episode_missions(
-                n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
-                n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
-                n_insertions=cfg.mission.dynamic_insertions_per_day,
+    try:
+        for it in iterator:
+            if max_train_workers > 1:
+                model_state = _torch_state_to_numpy(model.state_dict())
+                scorer_state = _candidate_scorer_model_state(candidate_scorer)
+                payloads = []
+                for worker_idx, worker_steps in enumerate(step_counts):
+                    if train_payload is not None:
+                        routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
+                    else:
+                        routine, dynamic = mission_gen.generate_episode_missions(
+                            n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+                            n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+                            n_insertions=cfg.mission.dynamic_insertions_per_day,
+                        )
+                    payloads.append({
+                        "idx": worker_idx,
+                        "cfg": copy.deepcopy(cfg),
+                        "args": args,
+                        "v2_cfg": copy.deepcopy(v2_cfg),
+                        "das_cfg": copy.deepcopy(das_cfg),
+                        "scenario": (routine, dynamic),
+                        "model_state": model_state,
+                        "candidate_scorer_state": scorer_state,
+                        "rollout_steps": worker_steps,
+                        "seed": int(rng.randint(0, 2**31 - 1)),
+                    })
+                worker_results = train_pool.map(_collect_rollout_worker, payloads)
+                worker_results = sorted(worker_results, key=lambda row: row["idx"])
+                buffers = [row["buffer"] for row in worker_results]
+                last_global_states = [row["last_global_state"] for row in worker_results]
+                aux_samples = _merge_candidate_aux_samples([
+                    trainer.candidate_aux_samples(
+                        buffer,
+                        last_global_state,
+                        max_negatives_per_positive=das_cfg.candidate_hard_negative_samples,
+                        valid_negatives_only=das_cfg.candidate_hard_negative_valid_only,
+                        conflict_penalty=das_cfg.candidate_aux_conflict_penalty,
+                        load_penalty=das_cfg.candidate_aux_load_penalty,
+                    )
+                    for buffer, last_global_state in zip(buffers, last_global_states)
+                ])
+                metrics = trainer.update_many(buffers, last_global_states)
+                reward = sum(float(row.get("total_reward", 0.0)) for row in worker_results)
+                rollout_steps_done = sum(int(row.get("steps", 0)) for row in worker_results)
+            else:
+                if train_payload is not None:
+                    routine, dynamic = select_train_scenario(train_payload, it, args.train_iters, rng)
+                else:
+                    routine, dynamic = mission_gen.generate_episode_missions(
+                        n_routine=int(rng.choice(cfg.mission.routine_pool_sizes)),
+                        n_dynamic_per_insertion=int(rng.choice(cfg.mission.dynamic_pool_sizes)),
+                        n_insertions=cfg.mission.dynamic_insertions_per_day,
+                    )
+                infos = _reset_infos(env, routine, dynamic)
+                buffer = ActionSetRolloutBuffer()
+                buffer.init_agents(env.agent_ids)
+                _, reward = trainer.collect_rollout(env, buffer, cfg.meta.rollout_steps, infos)
+                last_global_state = env.get_global_state()
+                aux_samples = trainer.candidate_aux_samples(
+                    buffer,
+                    last_global_state,
+                    max_negatives_per_positive=das_cfg.candidate_hard_negative_samples,
+                    valid_negatives_only=das_cfg.candidate_hard_negative_valid_only,
+                    conflict_penalty=das_cfg.candidate_aux_conflict_penalty,
+                    load_penalty=das_cfg.candidate_aux_load_penalty,
+                )
+                metrics = trainer.update(buffer, last_global_state)
+                rollout_steps_done = len(buffer)
+
+            if candidate_scorer is not None and das_cfg.candidate_aux_update:
+                aux_stats = candidate_scorer.update_from_rollout(
+                    aux_samples.edge_features,
+                    aux_samples.advantages,
+                    negative_features=aux_samples.negative_features,
+                    negative_anchor_indices=aux_samples.negative_anchor_indices,
+                    epochs=das_cfg.candidate_aux_epochs,
+                    batch_size=das_cfg.candidate_aux_batch_size,
+                    rank_weight=das_cfg.candidate_aux_rank_weight,
+                    target_clip=das_cfg.candidate_aux_target_clip,
+                    min_edges=das_cfg.candidate_aux_min_edges,
+                    negative_margin=das_cfg.candidate_hard_negative_margin,
+                    negative_value_weight=das_cfg.candidate_hard_negative_value_weight,
+                )
+                metrics.update({
+                    "candidate_aux_edges": float(aux_stats.n_edges),
+                    "candidate_aux_positive_edges": float(aux_stats.n_positive_edges),
+                    "candidate_aux_negative_edges": float(aux_stats.n_negative_edges),
+                    "candidate_aux_value_loss": float(aux_stats.value_loss),
+                    "candidate_aux_rank_loss": float(aux_stats.rank_loss),
+                    "candidate_aux_total_loss": float(aux_stats.total_loss),
+                    "candidate_aux_conflict_edges": float(aux_samples.n_conflict_edges),
+                    "candidate_aux_conflict_penalty_sum": float(aux_samples.conflict_penalty_sum),
+                    "candidate_aux_load_penalty_sum": float(aux_samples.load_penalty_sum),
+                })
+            row = {
+                "iter": it,
+                "reward": float(reward),
+                "rollout_steps": int(rollout_steps_done),
+                "train_env_workers": int(max_train_workers),
+                **{k: float(v) for k, v in metrics.items()},
+            }
+            logs.append(row)
+            iterator.set_postfix(
+                reward=f"{reward:.2f}",
+                steps=rollout_steps_done,
+                ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
+                vloss=f"{metrics.get('value_loss', 0.0):.3f}",
             )
-        infos = _reset_infos(env, routine, dynamic)
-        buffer = ActionSetRolloutBuffer()
-        buffer.init_agents(env.agent_ids)
-        _, reward = trainer.collect_rollout(env, buffer, cfg.meta.rollout_steps, infos)
-        last_global_state = env.get_global_state()
-        aux_samples = trainer.candidate_aux_samples(
-            buffer,
-            last_global_state,
-            max_negatives_per_positive=das_cfg.candidate_hard_negative_samples,
-            valid_negatives_only=das_cfg.candidate_hard_negative_valid_only,
-            conflict_penalty=das_cfg.candidate_aux_conflict_penalty,
-            load_penalty=das_cfg.candidate_aux_load_penalty,
-        )
-        metrics = trainer.update(buffer, last_global_state)
-        if candidate_scorer is not None and das_cfg.candidate_aux_update:
-            aux_stats = candidate_scorer.update_from_rollout(
-                aux_samples.edge_features,
-                aux_samples.advantages,
-                negative_features=aux_samples.negative_features,
-                negative_anchor_indices=aux_samples.negative_anchor_indices,
-                epochs=das_cfg.candidate_aux_epochs,
-                batch_size=das_cfg.candidate_aux_batch_size,
-                rank_weight=das_cfg.candidate_aux_rank_weight,
-                target_clip=das_cfg.candidate_aux_target_clip,
-                min_edges=das_cfg.candidate_aux_min_edges,
-                negative_margin=das_cfg.candidate_hard_negative_margin,
-                negative_value_weight=das_cfg.candidate_hard_negative_value_weight,
-            )
-            metrics.update({
-                "candidate_aux_edges": float(aux_stats.n_edges),
-                "candidate_aux_positive_edges": float(aux_stats.n_positive_edges),
-                "candidate_aux_negative_edges": float(aux_stats.n_negative_edges),
-                "candidate_aux_value_loss": float(aux_stats.value_loss),
-                "candidate_aux_rank_loss": float(aux_stats.rank_loss),
-                "candidate_aux_total_loss": float(aux_stats.total_loss),
-                "candidate_aux_conflict_edges": float(aux_samples.n_conflict_edges),
-                "candidate_aux_conflict_penalty_sum": float(aux_samples.conflict_penalty_sum),
-                "candidate_aux_load_penalty_sum": float(aux_samples.load_penalty_sum),
-            })
-        row = {
-            "iter": it,
-            "reward": float(reward),
-            "rollout_steps": len(buffer),
-            **{k: float(v) for k, v in metrics.items()},
-        }
-        logs.append(row)
-        iterator.set_postfix(
-            reward=f"{reward:.2f}",
-            steps=len(buffer),
-            ploss=f"{metrics.get('policy_loss', 0.0):.3f}",
-            vloss=f"{metrics.get('value_loss', 0.0):.3f}",
-        )
+    finally:
+        if train_pool is not None:
+            train_pool.close()
+            train_pool.join()
     _write_train_log(out_dir, logs)
-    return _eval_policy(
+    return _parallel_eval(
         cfg=cfg,
         args=args,
         v2_cfg=v2_cfg,
@@ -457,7 +742,6 @@ def train_and_eval(
         model=model,
         scenarios=eval_scenarios,
         candidate_scorer=candidate_scorer,
-        candidate_adapter=candidate_adapter,
         show_progress=not args.no_progress,
     )
 
@@ -560,14 +844,92 @@ def _save_candidate_scorer(
     return path.name
 
 
+def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios) -> Dict[str, Any]:
+    step_counts: List[int] = []
+    train_workers = 0
+    if args.train_iters > 0:
+        step_counts = _rollout_step_counts(
+            cfg.meta.rollout_steps,
+            int(args.train_env_workers or 1),
+            args.split_rollout_steps_across_workers,
+        )
+        train_workers = len(step_counts)
+
+    requested_eval_workers = int(args.eval_workers or 1)
+    effective_eval_workers = max(1, min(requested_eval_workers, max(len(eval_scenarios), 1)))
+    eval_device = args.eval_device if args.eval_device != "same" else args.device
+    if str(eval_device) != "cpu" and effective_eval_workers > 1:
+        effective_eval_workers = 1
+
+    task_slots = int(v2_cfg.slots.total_slots)
+    transfer_slots = max(int(args.n_satellites) - 1, 0) if args.enable_inter_satellite_transfer else 0
+    return {
+        "train_source": "scenario_cache" if train_payload is not None else "generated",
+        "routine_pool_sizes": [int(x) for x in cfg.mission.routine_pool_sizes],
+        "dynamic_pool_sizes": [int(x) for x in cfg.mission.dynamic_pool_sizes],
+        "dynamic_insertions_per_day": int(cfg.mission.dynamic_insertions_per_day),
+        "eval_scenarios": int(len(eval_scenarios)),
+        "eval_max_steps": int(args.eval_max_steps or 0),
+        "requested_eval_workers": requested_eval_workers,
+        "effective_eval_workers": int(effective_eval_workers),
+        "eval_device": str(eval_device),
+        "max_action_dim": int(cfg.mission.max_action_dim),
+        "task_slots": task_slots,
+        "transfer_slots": transfer_slots,
+        "exposed_action_dim": int(task_slots + transfer_slots + 1),
+        "train_env_workers": int(train_workers),
+        "rollout_steps_arg": int(cfg.meta.rollout_steps),
+        "rollout_steps_per_worker": [int(x) for x in step_counts],
+        "rollout_steps_total_per_iter": int(sum(step_counts)),
+        "rollout_steps_semantics": (
+            "total_split_across_workers"
+            if args.split_rollout_steps_across_workers
+            else "per_worker"
+        ),
+    }
+
+
+def _print_runtime_plan(plan: Dict[str, Any]) -> None:
+    print(
+        "运行计划: "
+        f"train_source={plan['train_source']}, "
+        f"routine_pool={plan['routine_pool_sizes']}, "
+        f"dynamic_pool={plan['dynamic_pool_sizes']}x{plan['dynamic_insertions_per_day']}, "
+        f"eval_scenarios={plan['eval_scenarios']}"
+    )
+    print(
+        "采样计划: "
+        f"workers={plan['train_env_workers']}, "
+        f"rollout_steps_arg={plan['rollout_steps_arg']}, "
+        f"per_worker={plan['rollout_steps_per_worker']}, "
+        f"total_per_iter={plan['rollout_steps_total_per_iter']}, "
+        f"semantics={plan['rollout_steps_semantics']}"
+    )
+    print(
+        "评估计划: "
+        f"requested_workers={plan['requested_eval_workers']}, "
+        f"effective_workers={plan['effective_eval_workers']}, "
+        f"device={plan['eval_device']}, "
+        f"eval_max_steps={plan['eval_max_steps']}"
+    )
+    print(
+        "动作空间: "
+        f"max_action_dim={plan['max_action_dim']}, "
+        f"task_slots={plan['task_slots']}, "
+        f"transfer_slots={plan['transfer_slots']}, "
+        f"exposed_action_dim={plan['exposed_action_dim']}"
+    )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.17 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.18 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
     parser.add_argument("--n_satellites", type=int, default=12)
     parser.add_argument("--train_iters", type=int, default=30)
     parser.add_argument("--eval_episodes", type=int, default=8)
+    parser.add_argument("--eval_workers", type=int, default=1)
     parser.add_argument("--eval_device", type=str, default="same")
     parser.add_argument("--eval_deterministic", action="store_true", default=False)
     parser.add_argument("--eval_max_steps", type=int, default=0)
@@ -583,8 +945,20 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_17")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_18")
     parser.add_argument("--rollout_steps", type=int, default=256)
+    parser.add_argument("--train_env_workers", type=int, default=1)
+    parser.add_argument(
+        "--split_rollout_steps_across_workers",
+        dest="split_rollout_steps_across_workers",
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument(
+        "--rollout_steps_per_worker",
+        dest="split_rollout_steps_across_workers",
+        action="store_false",
+    )
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
     parser.add_argument("--learning_rate", type=float, default=None)
@@ -687,6 +1061,8 @@ def main() -> None:
     v2_cfg = _build_v2_config(args)
     das_cfg = _build_das_config(args)
     candidate_adapter = _build_candidate_adapter(das_cfg)
+    runtime_plan = _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios)
+    _print_runtime_plan(runtime_plan)
 
     out_dir = unique_dir(args.out_dir, safe_name(args.run_name))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -695,7 +1071,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.17"
+    method_name = "DAS-CVA-MAPPO-v0.18"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -720,6 +1096,7 @@ def main() -> None:
         "elapsed_s": elapsed,
         "args": vars(args),
         "scenario_cache_summary": cache_summary,
+        "runtime_plan": runtime_plan,
         "das_config": {
             "version": das_cfg.version,
             "matcher": das_cfg.matcher,

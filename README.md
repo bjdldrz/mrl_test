@@ -9,9 +9,9 @@ version:
   policy, PPO buffer snapshots, a learnable CVA candidate edge scorer, and
   rollout-advantage auxiliary scorer updates with hard-negative candidate
   sampling plus conflict/load target shaping. Compatibility-layer access is
-  isolated behind a DAS candidate adapter, with V0.17 set-transformer action
-  matching, action-type gating, idle auxiliary loss, and typed candidate
-  exposure defaults.
+  isolated behind a DAS candidate adapter, with V0.18 set-transformer action
+  matching, action-type gating, idle auxiliary loss, DAS-native worker
+  support, and typed candidate exposure defaults.
 - `cva_mappo_v2/`: compatibility layer for candidate generation and the
   scheduling environment used by current DAS iterations.
 - `envs/`: single- and multi-satellite scheduling environments.
@@ -35,11 +35,11 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.17
+## DAS V0.18
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
-loss:
+loss. Rollout collection and CPU evaluation can run across worker processes:
 
 ```bash
 python3 -m das_cva_mappo.run_experiment \
@@ -82,20 +82,25 @@ python3 -m das_cva_mappo.run_experiment \
   --candidate_adapter_mode v2_compat \
   --candidate_dropout_prob 0.05 \
   --rollout_steps 512 \
+  --train_env_workers 16 \
+  --split_rollout_steps_across_workers \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --eval_max_steps 8000 \
   --eval_device cpu \
+  --eval_workers 24 \
+  --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_17 \
+  --run_name das_v0_18 \
   --device cuda:0
 ```
 
-The DAS runner does not currently accept `--train_env_workers` or
-`--eval_workers`; those worker flags are only available in the compatibility
-runner. To evaluate on GPU, change `--eval_device cpu` to
-`--eval_device cuda:0`.
+By default `--rollout_steps` is split across `--train_env_workers`, so the
+total rollout budget per iteration stays at 512 in the command above. Use
+`--rollout_steps_per_worker` only when each worker should collect the full
+rollout budget. If `--eval_device` is a CUDA device, DAS automatically uses one
+eval worker to avoid multiple processes competing for the same GPU.
 
 Primary DAS ablation knobs:
 
@@ -127,6 +132,10 @@ Primary DAS ablation knobs:
 - `--stale_candidate_owners`
 - `--slot_selection_mode mixed|typed`
 - `--ownership_mask_mode soft|hard`
+- `--train_env_workers`
+- `--split_rollout_steps_across_workers`
+- `--rollout_steps_per_worker`
+- `--eval_workers`
 
 Auxiliary scorer updates apply to `learned` and `hybrid` scorer modes. Runs
 with `--candidate_scorer_mode v2_heuristic` automatically record the auxiliary

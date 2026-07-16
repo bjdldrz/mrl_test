@@ -1,5 +1,31 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.18.0
+
+Status: implemented.
+
+Scope:
+
+- Adds native `das_cva_mappo.run_experiment` support for
+  `--train_env_workers`, `--split_rollout_steps_across_workers`,
+  `--rollout_steps_per_worker`, and `--eval_workers`.
+- Runs rollout workers on CPU with model and candidate-scorer snapshots, then
+  aggregates `ActionSetRolloutBuffer` objects in the main process for one PPO
+  update.
+- Merges candidate auxiliary samples across worker rollouts before updating the
+  DAS candidate scorer.
+- Adds parallel CPU evaluation; CUDA evaluation automatically falls back to one
+  worker to avoid multi-process single-GPU contention.
+- Records the effective train/eval worker plan in `manifest.json`.
+- Updates the README command to the V0.18 worker-enabled DAS command.
+
+Expected effect:
+
+- Recover the worker-based runtime controls used in earlier experiments while
+  keeping DAS as the main experimental method.
+- Preserve centralized PPO and candidate-scorer updates in the main process.
+- Make rollout-step semantics explicit for ablations and speed comparisons.
+
 ## DAS-CVA-MAPPO V0.17.0
 
 Status: implemented.
