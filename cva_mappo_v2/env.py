@@ -359,11 +359,11 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     append_item(slot_type, score, action)
                     slot_type_counts[slot_type] += 1
 
-            # Put dynamic/flex candidates before routine candidates in typed
-            # exposure.  The fixed-slot actor otherwise learns a strong low
-            # index routine bias and can ignore later dynamic slots even when
-            # dynamic actions are currently valid.
+            # Put dynamic candidates before routine candidates in typed
+            # exposure. Routine still receives its own quota before flex
+            # fallback so flex slots do not starve routine throughput.
             take(dynamic, self.v2_cfg.slots.dynamic_slots, "dynamic")
+            take(routine, self.v2_cfg.slots.routine_slots, "routine")
             # Flex slots first use urgent/stale/dynamic tasks. If that pool is
             # exhausted, use the best remaining task candidates instead of
             # leaving the flex quota empty.
@@ -376,7 +376,6 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     continue
                 append_item("flex", score, action)
                 slot_type_counts["flex"] += 1
-            take(routine, self.v2_cfg.slots.routine_slots, "routine")
 
         while len(selected) < self.v2_cfg.slots.total_slots:
             selected.append(None)

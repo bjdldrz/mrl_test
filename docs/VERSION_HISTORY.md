@@ -1,5 +1,28 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.10.0
+
+Status: implemented.
+
+Scope:
+
+- Keeps dynamic slots before routine slots, but lets routine slots claim their
+  quota before flex fallback. This prevents flex from consuming most routine
+  candidates after V0.9.
+- Adds eval-time dynamic preemption: a routine action can be replaced by a
+  currently executable dynamic task when the dynamic rescue value clears a
+  margin.
+- Adds `n_dynamic_idle_rescues` and `n_dynamic_preemptions` metrics so dynamic
+  rescue behavior is auditable in experiment output.
+- Adds dynamic age pressure to rescue value to reduce response delay for
+  already-arrived dynamic tasks.
+
+Expected effect:
+
+- Preserve V0.9 dynamic completion gains while recovering routine throughput.
+- Reduce `avg_dynamic_response_s`.
+- Make dynamic rescue side effects easier to diagnose.
+
 ## DAS-CVA-MAPPO V0.9.0
 
 Status: implemented.

@@ -131,6 +131,8 @@ class MultiSatelliteEnv:
         self._n_owner_switches = 0
         self._n_replan_checks = 0
         self._n_stale_owner_events = 0
+        self._n_dynamic_idle_rescues = 0
+        self._n_dynamic_preemptions = 0
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
@@ -2237,9 +2239,42 @@ class MultiSatelliteEnv:
                 break
 
         if self.eval_mode:
+            self._preempt_routine_with_dynamic_rescues(resolved, claimed, feasible, raw_idle)
             self._assign_idle_dynamic_rescues(resolved, claimed, feasible, raw_idle)
 
         return resolved
+
+    def _preempt_routine_with_dynamic_rescues(
+        self,
+        resolved: Dict[str, int],
+        claimed: set,
+        feasible: Dict[str, set],
+        raw_idle: int,
+    ) -> None:
+        """Let high-value current dynamic tasks preempt routine eval actions."""
+        margin = 0.25
+        for aid in self.agent_ids:
+            current_action = int(resolved.get(aid, raw_idle))
+            if current_action == raw_idle or self._is_raw_transfer_action(aid, current_action):
+                continue
+            if not (0 <= current_action < self.max_action_dim):
+                continue
+            env = self.envs[aid]
+            current_mission = env.missions[current_action]
+            if current_mission is None or getattr(current_mission, "is_dynamic", False):
+                continue
+            current_value = self._obs_value(aid, current_action, feasible)
+            rescue = self._best_dynamic_rescue_action(aid, claimed - {current_action}, feasible)
+            if rescue is None:
+                continue
+            rescue_value = self._dynamic_rescue_value(aid, rescue, feasible)
+            if rescue_value is None:
+                continue
+            if current_value is None or rescue_value >= current_value + margin:
+                claimed.discard(current_action)
+                resolved[aid] = rescue
+                claimed.add(rescue)
+                self._n_dynamic_preemptions += 1
 
     def _assign_idle_dynamic_rescues(
         self,
@@ -2257,6 +2292,7 @@ class MultiSatelliteEnv:
                 continue
             resolved[aid] = action
             claimed.add(action)
+            self._n_dynamic_idle_rescues += 1
 
     def _best_dynamic_rescue_action(
         self,
@@ -2266,23 +2302,36 @@ class MultiSatelliteEnv:
     ) -> Optional[int]:
         best_action = None
         best_value = float("-inf")
-        env = self.envs[agent_id]
         for action in feasible.get(agent_id, ()):
             if action in claimed:
                 continue
-            mission = env.missions[action]
-            if mission is None or mission.is_observed or not getattr(mission, "is_dynamic", False):
-                continue
-            value = self._obs_value(agent_id, action, feasible)
+            value = self._dynamic_rescue_value(agent_id, action, feasible)
             if value is None:
                 continue
-            slack_s = max(float(mission.deadline_s) - float(env.current_time_s), 0.0)
-            urgency = 1.0 - float(np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0))
-            value += 0.5 + urgency
             if value > best_value:
                 best_action = int(action)
                 best_value = float(value)
         return best_action
+
+    def _dynamic_rescue_value(
+        self,
+        agent_id: str,
+        action: int,
+        feasible: Dict[str, set],
+    ) -> Optional[float]:
+        env = self.envs[agent_id]
+        mission = env.missions[action]
+        if mission is None or mission.is_observed or not getattr(mission, "is_dynamic", False):
+            return None
+        value = self._obs_value(agent_id, action, feasible)
+        if value is None:
+            return None
+        slack_s = max(float(mission.deadline_s) - float(env.current_time_s), 0.0)
+        urgency = 1.0 - float(np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0))
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        age_s = max(float(env.current_time_s) - arrival_s, 0.0)
+        age_pressure = float(np.clip(age_s / max(self.horizon_s, 1.0), 0.0, 1.0))
+        return value + 0.5 + urgency + 0.5 * age_pressure
 
     def _observed_mission_ids(self) -> set:
         observed = set()
@@ -2697,6 +2746,8 @@ class MultiSatelliteEnv:
             "owner_churn_rate": owner_churn_rate,
             "stale_owner_rate": stale_owner_rate,
             "n_stale_owner_events": self._n_stale_owner_events,
+            "n_dynamic_idle_rescues": self._n_dynamic_idle_rescues,
+            "n_dynamic_preemptions": self._n_dynamic_preemptions,
             "n_released_tasks": len(self._released_mission_ids),
             "n_deadline_release_tasks": len(self._deadline_release_mission_ids),
             "n_rescued_tasks": len(self._rescued_mission_ids),
