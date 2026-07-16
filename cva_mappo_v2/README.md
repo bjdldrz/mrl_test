@@ -68,7 +68,7 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
-  --slot_selection_mode mixed \
+  --slot_selection_mode typed \
   --ownership_mask_mode soft \
   --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
@@ -107,18 +107,19 @@ policy, only truncates very long evaluation rollouts.
 
 ## CVA-Guided Mixed-TopK
 
-The current default is `--slot_selection_mode mixed --ownership_mask_mode soft`.
-This is the actual CVA-guided Mixed-TopK path:
+The current default is `--slot_selection_mode typed --ownership_mask_mode soft`.
+The typed path keeps routine/dynamic/flex quotas active for DAS-centered runs.
+`--slot_selection_mode mixed` remains available as the shared Top-K ablation:
 
 - current executable tasks are kept visible, matching the strongest Mixed-TopK
   reference behavior;
-- all candidate tasks are ranked in one shared Top-K list instead of being
-  truncated by fixed routine/dynamic/flex quotas;
+- in mixed mode, all candidate tasks are ranked in one shared Top-K list
+  instead of being truncated by fixed routine/dynamic/flex quotas;
 - CVA owner assignment adds a ranking bonus through `--candidate_owner_bonus`;
 - future non-owner tasks are still filtered out, so slots are not filled by
   irrelevant future tasks;
-- `--slot_selection_mode typed` restores the fixed routine/dynamic/flex slot
-  layout for ablation;
+- `--slot_selection_mode typed` uses the fixed routine/dynamic/flex slot
+  layout and is now the default;
 - `--ownership_mask_mode hard --candidate_owner_bonus 0` restores the earlier
   hard-owner variant for ablation.
 

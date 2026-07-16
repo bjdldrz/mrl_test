@@ -36,7 +36,7 @@ class CVAMAPPOV2Config:
     owner_switch_margin: float = 0.08
     ownership_mask_mode: str = "soft"
     candidate_owner_bonus: float = 0.06
-    slot_selection_mode: str = "mixed"
+    slot_selection_mode: str = "typed"
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0

@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.6.
+Run DAS-CVA-MAPPO V0.7.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities.  V0.6 routes compatibility
-layer reads through a DAS candidate adapter boundary.
+action-set-aware MAPPO policy over action entities.  V0.7 adds actionable idle
+advancement and typed candidate exposure defaults in the compatibility layer.
 """
 
 from __future__ import annotations
@@ -530,7 +530,7 @@ def _save_candidate_scorer(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.6 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.7 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -552,7 +552,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_6")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_7")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--ppo_epochs", type=int, default=2)
     parser.add_argument("--ppo_batch_size", type=int, default=256)
@@ -577,7 +577,7 @@ def main() -> None:
     parser.add_argument("--owner_switch_margin", type=float, default=0.08)
     parser.add_argument("--ownership_mask_mode", choices=["soft", "hard"], default="soft")
     parser.add_argument("--candidate_owner_bonus", type=float, default=0.06)
-    parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="mixed")
+    parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="typed")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--global_state_mode", choices=["mean", "concat"], default="mean")
@@ -661,7 +661,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.6"
+    method_name = "DAS-CVA-MAPPO-v0.7"
     results = {
         method_name: train_and_eval(
             cfg,

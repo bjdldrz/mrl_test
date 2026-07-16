@@ -286,26 +286,10 @@ class SatelliteSchedulingEnv(gym.Env):
 
         # 2) 执行动作
         if action == self.IDLE_ACTION:
-            # 空闲: 智能推进到下一个有意义的事件时刻
-            # (下一个 VTW 开始、动态任务到达、或兜底 60 秒)
-            next_event_t = self.current_time_s + 60.0  # 兜底
-            storage_release_t = self._next_storage_release_time()
-            if self.storage_limited and not self._has_storage_capacity(self.current_time_s):
-                if storage_release_t is not None:
-                    next_event_t = storage_release_t
-            else:
-                # 检查最近的 VTW 开始时刻
-                for m in self.missions:
-                    if m is not None and not m.is_observed:
-                        for vtw in self.mission_vtw.get(m.id, []):
-                            if vtw.start_time > self.current_time_s:
-                                next_event_t = min(next_event_t, vtw.start_time)
-                                break
-                # 检查最近的动态任务到达时刻
-                if self._dynamic_queue:
-                    next_event_t = min(next_event_t, self._dynamic_queue[0][0])
-                if storage_release_t is not None:
-                    next_event_t = min(next_event_t, storage_release_t)
+            # 空闲: 推进到下一次真正可能执行观测的事件时刻。
+            # 旧逻辑会跳到任意 VTW 起点, 即使任务未到达、deadline/持续时间/
+            # 姿态转移/存储约束已经使该窗口不可执行, 会制造大量 only-idle 状态。
+            next_event_t = self._next_idle_event_time()
             reward = self.rw_cfg.penalty_idle
             self.current_time_s = max(self.current_time_s + 1.0, next_event_t)
         elif 0 <= action < self.max_action_dim:
@@ -341,6 +325,88 @@ class SatelliteSchedulingEnv(gym.Env):
         info["schedule_log"] = self.schedule_log
 
         return obs, reward, terminated, truncated, info
+
+    def _next_idle_event_time(self) -> float:
+        """Return the next useful time after an idle action.
+
+        The returned event is the earliest known time where either a currently
+        loaded mission can actually start an observation, a dynamic batch
+        arrives, or storage may be released.  A short fallback keeps progress
+        monotonic when no future executable event is known.
+        """
+        current = float(self.current_time_s)
+        candidates = []
+
+        if self._dynamic_queue:
+            arrival_t = float(self._dynamic_queue[0][0])
+            if arrival_t > current:
+                candidates.append(min(arrival_t, self.horizon_s))
+
+        storage_release_t = self._next_storage_release_time(current)
+        if storage_release_t is not None and storage_release_t > current:
+            candidates.append(min(float(storage_release_t), self.horizon_s))
+
+        if not (self.storage_limited and not self._has_storage_capacity(current)):
+            for mission in self.missions:
+                obs_start = self._earliest_feasible_observation_start(mission, current)
+                if obs_start is not None and obs_start > current:
+                    candidates.append(min(float(obs_start), self.horizon_s))
+
+        if candidates:
+            return min(candidates)
+        return min(current + 60.0, self.horizon_s)
+
+    def _earliest_feasible_observation_start(
+        self,
+        mission: Optional[Mission],
+        from_time_s: Optional[float] = None,
+    ) -> Optional[float]:
+        """Earliest future start that can satisfy local observation constraints."""
+        if mission is None or mission.is_observed:
+            return None
+        current = self.current_time_s if from_time_s is None else float(from_time_s)
+        earliest_from = max(current, float(mission.earliest_time_s))
+        if earliest_from > mission.deadline_s:
+            return None
+
+        last_obs_end = self.schedule_log[-1].obs_end_s if self.schedule_log else None
+        best_start = None
+        for vtw in self.mission_vtw.get(mission.id, []):
+            latest_start = min(
+                float(vtw.end_time),
+                float(mission.deadline_s),
+                float(self.horizon_s),
+            ) - float(mission.duration_s)
+            if latest_start < earliest_from:
+                continue
+
+            obs_start = max(float(vtw.start_time), earliest_from)
+            if last_obs_end is not None:
+                transition = self.propagator.compute_transition_time(
+                    self._last_off_nadir_deg,
+                    vtw.off_nadir_deg,
+                )
+                obs_start = max(obs_start, float(last_obs_end) + float(transition))
+
+            if not self._has_storage_capacity(obs_start):
+                release_t = self._next_storage_release_time(obs_start)
+                if release_t is None:
+                    continue
+                obs_start = max(obs_start, float(release_t))
+
+            if obs_start > latest_start:
+                continue
+            if self._conflicts_with_schedule(obs_start, obs_start + mission.duration_s):
+                continue
+            if best_start is None or obs_start < best_start:
+                best_start = obs_start
+        return best_start
+
+    def _conflicts_with_schedule(self, obs_start: float, obs_end: float) -> bool:
+        for record in self.schedule_log:
+            if not (obs_end <= record.obs_start_s or obs_start >= record.obs_end_s):
+                return True
+        return False
 
     # ===================================================================
     # 动作掩码 (论文 Eq.13-14)
@@ -398,12 +464,7 @@ class SatelliteSchedulingEnv(gym.Env):
             obs_end = obs_start + m.duration_s
 
             # 判据(3): 与已调度任务时间窗不重叠 (Constraint 10)
-            conflict = False
-            for record in self.schedule_log:
-                if not (obs_end <= record.obs_start_s or obs_start >= record.obs_end_s):
-                    conflict = True
-                    break
-            if conflict:
+            if self._conflicts_with_schedule(obs_start, obs_end):
                 continue
 
             mask[i] = 1.0
@@ -846,15 +907,8 @@ class SatelliteSchedulingEnv(gym.Env):
         for m in self.missions:
             if m is None or m.is_observed:
                 continue
-            if m.deadline_s <= self.current_time_s:
-                continue  # 已过截止时间, 不可行
-            if m.earliest_time_s > self.current_time_s:
-                return False  # 尚有未到达的动态任务
-            # 检查是否还有可用的 VTW
-            vtws = self.mission_vtw.get(m.id, [])
-            for vtw in vtws:
-                if vtw.end_time > self.current_time_s:
-                    return False  # 仍有可用窗口
+            if self._earliest_feasible_observation_start(m, self.current_time_s) is not None:
+                return False
         # 还要检查动态任务队列
         if self._dynamic_queue:
             return False

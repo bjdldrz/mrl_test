@@ -679,8 +679,8 @@ def main():
                         help="soft=CVA-guided Mixed-TopK; hard=原 hard-owner 屏蔽")
     parser.add_argument("--candidate_owner_bonus", type=float, default=0.06,
                         help="soft 模式下候选 owner 的排序加分; 0 表示不使用 owner 软引导")
-    parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="mixed",
-                        help="mixed=真正 Mixed-TopK; typed=固定 routine/dynamic/flex 槽位配额")
+    parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="typed",
+                        help="typed=固定 routine/dynamic/flex 槽位配额; mixed=共享 Top-K 候选池")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--torch_num_threads", type=int, default=None)

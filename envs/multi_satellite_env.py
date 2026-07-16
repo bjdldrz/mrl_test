@@ -1332,9 +1332,15 @@ class MultiSatelliteEnv:
             self.assignment_replan_interval_s > 0
             and (not self.assignment_replan_triggers or "periodic" in self.assignment_replan_triggers)
         )
+        event_cooldown_s = self.assignment_replan_interval_s
+        if self.assignment_replan_triggers:
+            event_cooldown_s = min(
+                self.assignment_replan_interval_s,
+                max(float(self.assignment_lock_window_s), 60.0),
+            )
         event_cooldown = (
-            self.assignment_replan_interval_s > 0
-            and elapsed_since_replan < self.assignment_replan_interval_s
+            event_cooldown_s > 0
+            and elapsed_since_replan < event_cooldown_s
         )
         reasons = []
 

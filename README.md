@@ -9,7 +9,8 @@ version:
   policy, PPO buffer snapshots, a learnable CVA candidate edge scorer, and
   rollout-advantage auxiliary scorer updates with hard-negative candidate
   sampling plus conflict/load target shaping. Compatibility-layer access is
-  isolated behind a DAS candidate adapter.
+  isolated behind a DAS candidate adapter, with V0.7 event-aware idle
+  advancement and typed candidate exposure defaults.
 - `cva_mappo_v2/`: compatibility layer for candidate generation and the
   scheduling environment used by current DAS iterations.
 - `envs/`: single- and multi-satellite scheduling environments.
@@ -24,7 +25,7 @@ Historical single-satellite MRL-DMS training code, old PPO/MAML code, tracked
 experiment outputs, and obsolete experiment reports are intentionally removed
 from this branch.
 
-## DAS V0.6
+## DAS V0.7
 
 Run the current DAS action-set policy with hybrid CVA edge scoring and rollout
 advantage auxiliary scorer updates:
@@ -45,7 +46,7 @@ python -m das_cva_mappo.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
-  --slot_selection_mode mixed \
+  --slot_selection_mode typed \
   --ownership_mask_mode soft \
   --matcher additive \
   --action_feature_mode full \
@@ -65,7 +66,7 @@ python -m das_cva_mappo.run_experiment \
   --ppo_batch_size 512 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_6 \
+  --run_name das_v0_7 \
   --device cpu
 ```
 
@@ -106,13 +107,28 @@ Generate reusable scenarios and VTW cache:
 ```bash
 python precompute_scenarios.py \
   --acled_path ./DynamicMission/DynamicMission.shp \
-  --n_satellites 12 \
+  --n_satellites 6 \
   --n_train_scenarios 200 \
-  --n_eval_scenarios 20 \
-  --n_routine 1200 \
-  --n_dynamic 300 \
+  --n_eval_scenarios 10 \
+  --n_routine 300 \
+  --n_dynamic 100 \
   --n_ground_stations 4 \
   --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 12 \
+  --out_dir runs/scenario_cache/das_cva_stress_seed42
+```
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 6 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 10 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --curriculum_stages 300:75,600:150 \
   --vtw_time_step_s 60 \
   --vtw_workers 12 \
   --out_dir runs/scenario_cache/das_cva_stress_seed42
@@ -139,7 +155,7 @@ python -m cva_mappo_v2.run_experiment \
   --routine_slots 64 \
   --dynamic_slots 32 \
   --flex_slots 32 \
-  --slot_selection_mode mixed \
+  --slot_selection_mode typed \
   --ownership_mask_mode soft \
   --candidate_owner_bonus 0.06 \
   --dynamic_broadcast_window_s 1800 \
@@ -159,6 +175,45 @@ python -m cva_mappo_v2.run_experiment \
   --device cpu
 ```
 
+```bash
+python -m cva_mappo_v2.run_experiment \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --scenario_cache_dir runs/scenario_cache/das_cva_stress_seed42 \
+  --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
+  --n_satellites 6 \
+  --train_iters 100 \
+  --eval_episodes 10 \
+  --n_routine 600 \
+  --n_dynamic 150 \
+  --n_ground_stations 4 \
+  --downlink_time_s 300 \
+  --satellite_storage_capacity 30 \
+  --enable_inter_satellite_transfer \
+  --inter_satellite_transfer_time_s 300 \
+  --routine_slots 64 \
+  --dynamic_slots 32 \
+  --flex_slots 32 \
+  --slot_selection_mode typed \
+  --ownership_mask_mode soft \
+  --candidate_owner_bonus 0.06 \
+  --dynamic_broadcast_window_s 1800 \
+  --owner_switch_margin 0.08 \
+  --rollout_steps 512 \
+  --ppo_epochs 4 \
+  --ppo_batch_size 512 \
+  --train_env_workers 8 \
+  --split_rollout_steps_across_workers \
+  --torch_num_threads 1 \
+  --eval_episodes 2 \
+  --eval_max_steps 8000 \
+  --eval_device cpu \
+  --eval_workers 16 \
+  --vtw_time_step_s 60 \
+  --out_dir runs/cva_mappo_v2 \
+  --run_name cva_mappo_v2_compat \
+  --no_viz \
+  --device cuda:0
+```
 Use `--device cuda:0` on a CUDA machine. On local Mac CPU runs, keep
 `--device cpu`.
 

@@ -202,6 +202,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         for mission_id, owner in self.task_owner.items():
             if owner is not None and not self._has_future_feasible_window(owner, mission_id):
                 stale.add(mission_id)
+        self._released_mission_ids.update(stale)
         self._v2_step_cache["stale_task_ids"] = stale
         return stale
 

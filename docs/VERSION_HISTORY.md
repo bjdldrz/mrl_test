@@ -1,5 +1,44 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.7.0
+
+Status: implemented.
+
+Scope:
+
+- Changes idle advancement in `SatelliteEnv` to jump to the next truly
+  actionable observation time instead of every raw VTW boundary.
+- Uses observation duration, task arrival/deadline, attitude transition,
+  storage capacity, and existing schedule conflicts when selecting the next
+  idle event.
+- Updates episode completion checks to ignore tasks that have no future
+  feasible observation start.
+- Shortens event-triggered assignment repair cooldown by using the assignment
+  lock window for dynamic/stale/deadline events while keeping periodic replan
+  cadence separate.
+- Switches the default compatibility-layer candidate exposure from `mixed` to
+  `typed`, so routine/dynamic/flex slot quotas are active unless an ablation
+  explicitly selects `--slot_selection_mode mixed`.
+- Records stale-owner tasks as released in CVA-MAPPO v2 diagnostics when they
+  are exposed for rescue.
+
+Expected effect:
+
+- Reduce only-idle evaluation states.
+- Improve `eval_avg_valid_action_count`, `avg_valid_slots`, and dynamic/flex
+  candidate visibility.
+- Make stale-owner rescue diagnostics reflect the actual soft-release behavior.
+
+Run:
+
+```bash
+python -m das_cva_mappo.run_experiment
+```
+
+New default:
+
+- `--slot_selection_mode typed`
+
 ## DAS-CVA-MAPPO V0.6.0
 
 Status: implemented in `das_cva_mappo/`.
