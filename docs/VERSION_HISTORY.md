@@ -1,5 +1,32 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.21.0
+
+Status: implemented.
+
+Scope:
+
+- Adds bounded future-task macro execution. A candidate task slot can be valid
+  when it is not executable at the current instant but has an earliest feasible
+  observation start within `--future_task_max_wait_s`.
+- Before executing such an action, the selected satellite advances to the
+  earliest feasible start and then uses the original observation executor, so
+  VTW, maneuver, storage, downlink, deadline, and conflict checks still apply.
+- Adds `--no_future_task_execution` for ablation and keeps
+  `--executable_slot_reserve_ratio` for current-action slot reservation.
+- Candidate diagnostics now split valid slots into current and future macro
+  validity with `avg_current_valid_slots` and `avg_future_valid_slots`.
+- Adds `abl_no_future_task_execution` to the staged ablation runner.
+
+Expected effect:
+
+- Raise `eval_valid_decision_rate` and `avg_valid_slots` when most candidate
+  slots are future-window tasks.
+- Preserve the value of future context while allowing the policy to commit to a
+  specific near-future executable task instead of being forced to idle.
+- Make it possible to compare pure candidate reordering against true future
+  execution semantics.
+
 ## DAS-CVA-MAPPO V0.20.0
 
 Status: implemented.

@@ -467,7 +467,10 @@ class MultiSatelliteEnv:
         exposed_idle = self.idle_action
         mask = np.zeros(self.candidate_action_top_k + transfer_count + 1, dtype=np.float32)
         for idx, raw_action in enumerate(mapping):
-            if raw_action is not None and full_mask[raw_action] > 0:
+            if raw_action is not None and (
+                full_mask[raw_action] > 0
+                or self._future_task_action_valid(agent_id, int(raw_action), full_mask)
+            ):
                 mask[idx] = 1.0
         for offset, target_id in enumerate(self._transfer_target_list(agent_id)):
             raw_action = self._raw_transfer_action(agent_id, target_id)
@@ -669,6 +672,68 @@ class MultiSatelliteEnv:
                 raw_actions[aid] = self._raw_idle_action()
         return raw_actions
 
+    def _future_task_execution_enabled(self) -> bool:
+        return False
+
+    def _future_task_max_wait_s(self) -> float:
+        return 0.0
+
+    def _future_task_ready_time(
+        self,
+        agent_id: str,
+        action: int,
+        full_mask: Optional[np.ndarray] = None,
+    ) -> Optional[float]:
+        if not self._future_task_execution_enabled():
+            return None
+        if action < 0 or action >= self.max_action_dim:
+            return None
+        env = self.envs[agent_id]
+        if full_mask is not None and action < len(full_mask) and full_mask[action] > 0:
+            return float(env.current_time_s)
+        mission = env.missions[action]
+        if mission is None or mission.is_observed or self._mission_observed_anywhere(mission.id):
+            return None
+        next_start = env._earliest_feasible_observation_start(mission, env.current_time_s)
+        if next_start is None:
+            return None
+        wait_s = max(float(next_start) - float(env.current_time_s), 0.0)
+        if wait_s <= 1e-6:
+            return None
+        max_wait = float(self._future_task_max_wait_s())
+        if max_wait > 0.0 and wait_s > max_wait:
+            return None
+        if next_start + mission.duration_s > min(mission.deadline_s, self.horizon_s):
+            return None
+        return float(next_start)
+
+    def _future_task_action_valid(
+        self,
+        agent_id: str,
+        action: int,
+        full_mask: Optional[np.ndarray] = None,
+    ) -> bool:
+        return self._future_task_ready_time(agent_id, action, full_mask=full_mask) is not None
+
+    def _prepare_future_task_action(self, agent_id: str, action: int) -> Dict[str, float]:
+        if action < 0 or action >= self.max_action_dim:
+            return {}
+        full_mask = self._full_action_mask(agent_id)
+        if action < len(full_mask) and full_mask[action] > 0:
+            return {}
+        next_start = self._future_task_ready_time(agent_id, action, full_mask=full_mask)
+        if next_start is None:
+            return {}
+        env = self.envs[agent_id]
+        wait_s = max(float(next_start) - float(env.current_time_s), 0.0)
+        if wait_s <= 1e-6:
+            return {}
+        env.current_time_s = float(next_start)
+        return {
+            "future_task_execution": 1.0,
+            "future_task_wait_s": float(wait_s),
+        }
+
     def reset(
         self,
         *,
@@ -776,6 +841,7 @@ class MultiSatelliteEnv:
         prev_schedule_lens = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
         prev_ground_available = list(self._ground_station_available_s)
         pending_transfer_actions: Dict[str, int] = {}
+        future_action_info: Dict[str, Dict[str, float]] = {}
         for agent_id in self.agent_ids:
             env = self.envs[agent_id]
             action = resolved_actions[agent_id]
@@ -790,7 +856,10 @@ class MultiSatelliteEnv:
                     {"pending_inter_satellite_transfer": True},
                 )
             else:
+                future_action_info[agent_id] = self._prepare_future_task_action(agent_id, action)
                 obs, reward, term, trunc, info = env.step(action)
+                if future_action_info[agent_id]:
+                    info = {**info, **future_action_info[agent_id]}
             results[agent_id] = (obs, reward, term, trunc, info)
         if self.n_ground_stations > 0 and self.downlink_time_s > 0:
             self._rebatch_new_downlinks(prev_schedule_lens, prev_ground_available, results)
@@ -2204,6 +2273,9 @@ class MultiSatelliteEnv:
             for aid in self.agent_ids
             if actions.get(aid, raw_idle) != raw_idle
         }
+        for aid, action in desired.items():
+            if 0 <= action < self.max_action_dim and self._future_task_action_valid(aid, int(action)):
+                feasible.setdefault(aid, set()).add(int(action))
         for aid, action in list(desired.items()):
             if self._is_raw_transfer_action(aid, action):
                 resolved[aid] = action
@@ -2467,20 +2539,32 @@ class MultiSatelliteEnv:
         m = env.missions[action]
         if m is None or m.is_observed:
             return None
-        # 当前可用 VTW 的 off-nadir (观测质量)
+        # 当前可用 VTW 的 off-nadir (观测质量); future macro actions use the
+        # off-nadir of their earliest feasible start.
         off_nadir = None
+        obs_time = float(env.current_time_s)
         for vtw in env.mission_vtw.get(m.id, []):
             if vtw.start_time <= env.current_time_s <= vtw.end_time - m.duration_s:
                 off_nadir = vtw.off_nadir_deg
                 break
         if off_nadir is None:
+            ready_t = self._future_task_ready_time(agent_id, action)
+            if ready_t is not None:
+                obs_time = float(ready_t)
+                for vtw in env.mission_vtw.get(m.id, []):
+                    if vtw.start_time <= obs_time <= vtw.end_time - m.duration_s:
+                        off_nadir = vtw.off_nadir_deg
+                        break
+        if off_nadir is None:
             return None
         max_roll = max(env.sat_config.max_roll_deg, 1e-6)
         quality = 1.0 - min(off_nadir / max_roll, 1.0)        # ∈[0,1], 越大越好
+        wait_penalty = max(obs_time - float(env.current_time_s), 0.0) / max(self.horizon_s, 1.0)
         priority = m.priority / 10.0
         load = len(env.schedule_log)
         return (self.coord_w_priority * priority
                 + self.coord_w_quality * quality
+                - 0.25 * wait_penalty
                 - self.coord_w_load * load)
 
     def _next_best_action(self, agent_id: str, claimed: set,

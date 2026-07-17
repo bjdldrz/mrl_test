@@ -56,6 +56,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_valid_sum = 0
         self._slot_filled_sum = 0
         self._slot_exposure_count = 0
+        self._slot_current_valid_sum = 0
+        self._slot_future_valid_sum = 0
         self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
@@ -81,6 +83,8 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_valid_sum = 0
         self._slot_filled_sum = 0
         self._slot_exposure_count = 0
+        self._slot_current_valid_sum = 0
+        self._slot_future_valid_sum = 0
         self._slot_type_valid_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
@@ -98,6 +102,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
     def _clear_v2_step_cache(self) -> None:
         self._v2_step_cache = {}
+
+    def _future_task_execution_enabled(self) -> bool:
+        return bool(getattr(self.v2_cfg, "allow_future_task_execution", False))
+
+    def _future_task_max_wait_s(self) -> float:
+        return float(getattr(self.v2_cfg, "future_task_max_wait_s", 0.0) or 0.0)
 
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
@@ -481,13 +491,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 continue
             current_time = float(env.current_time_s)
             row["currently_executable"] = 1.0 if full_mask[action] > 0 else 0.0
-            next_start = current_time if row["currently_executable"] > 0 else env._earliest_feasible_observation_start(
-                mission,
-                current_time,
+            next_start = (
+                current_time
+                if row["currently_executable"] > 0
+                else self._future_task_ready_time(agent_id, int(action), full_mask=full_mask)
             )
             if next_start is not None:
                 wait_s = max(float(next_start) - current_time, 0.0)
-                row["future_executable"] = 1.0 if wait_s > 1e-6 else row["currently_executable"]
+                row["future_executable"] = 1.0 if wait_s > 1e-6 else 0.0
                 row["wait_norm"] = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
                 row["next_start_norm"] = float(np.clip(float(next_start) / max(env.horizon_s, 1.0), 0.0, 1.0))
             slack_s = max(float(mission.deadline_s) - max(current_time, float(mission.earliest_time_s)), 0.0)
@@ -510,10 +521,28 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             valid = (
                 action is not None
                 and 0 <= action < len(full_mask)
+                and (
+                    full_mask[action] > 0
+                    or self._future_task_action_valid(agent_id, int(action), full_mask)
+                )
+            )
+            current_valid = (
+                action is not None
+                and 0 <= action < len(full_mask)
                 and full_mask[action] > 0
+            )
+            future_valid = (
+                action is not None
+                and 0 <= action < len(full_mask)
+                and full_mask[action] <= 0
+                and self._future_task_action_valid(agent_id, int(action), full_mask)
             )
             if valid:
                 self._slot_valid_sum += 1
+            if current_valid:
+                self._slot_current_valid_sum += 1
+            if future_valid:
+                self._slot_future_valid_sum += 1
             if slot_type in self._slot_type_valid_sum and action is not None:
                 self._slot_type_filled_sum[slot_type] += 1
                 if valid:
@@ -931,10 +960,14 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         filled_invalid = max(invalid_total - empty_invalid, 0)
         metrics.update({
             "slot_valid_ratio": self._slot_valid_sum / denom,
+            "slot_current_valid_ratio": self._slot_current_valid_sum / denom,
+            "slot_future_valid_ratio": self._slot_future_valid_sum / denom,
             "slot_filled_ratio": self._slot_filled_sum / denom,
             "slot_invalid_ratio": invalid_total / denom,
             "slot_filled_invalid_ratio": filled_invalid / denom,
             "avg_valid_slots": self._slot_valid_sum / exposures,
+            "avg_current_valid_slots": self._slot_current_valid_sum / exposures,
+            "avg_future_valid_slots": self._slot_future_valid_sum / exposures,
             "avg_filled_slots": self._slot_filled_sum / exposures,
             "avg_invalid_slots": invalid_total / exposures,
             "avg_filled_invalid_slots": filled_invalid / exposures,
