@@ -109,6 +109,9 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     def _future_task_max_wait_s(self) -> float:
         return float(getattr(self.v2_cfg, "future_task_max_wait_s", 0.0) or 0.0)
 
+    def _future_task_requires_no_current_valid(self) -> bool:
+        return bool(getattr(self.v2_cfg, "future_task_requires_no_current_valid", True))
+
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
     # ------------------------------------------------------------------

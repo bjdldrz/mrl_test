@@ -1,5 +1,31 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.22.0
+
+Status: implemented.
+
+Scope:
+
+- Restricts future-task macro execution to only-idle states by default. Future
+  task slots are considered executable only when the satellite has no current
+  non-idle executable task or transfer action.
+- Lowers the default `--future_task_max_wait_s` from 7200 to 600 seconds to
+  prevent long jumps over intermediate VTWs, dynamic arrivals, and resource
+  events.
+- Adds `--future_task_allow_with_current_valid` for ablation of the V0.21
+  fully-open future macro behavior.
+- Adds `abl_stage2_no_future_task_execution`,
+  `abl_stage2_future_macro_with_current_valid`, and
+  `abl_future_macro_with_current_valid` to the staged ablation runner.
+
+Expected effect:
+
+- Preserve V0.21's ability to make future-window tasks selectable in only-idle
+  states while avoiding premature commitment when an immediate task or transfer
+  can be executed.
+- Reduce the severe throughput collapse observed when future macro actions were
+  available alongside current executable actions.
+
 ## DAS-CVA-MAPPO V0.21.0
 
 Status: implemented.

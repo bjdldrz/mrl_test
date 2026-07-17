@@ -678,6 +678,15 @@ class MultiSatelliteEnv:
     def _future_task_max_wait_s(self) -> float:
         return 0.0
 
+    def _future_task_requires_no_current_valid(self) -> bool:
+        return False
+
+    @staticmethod
+    def _has_current_non_idle_action(full_mask: Optional[np.ndarray]) -> bool:
+        if full_mask is None or len(full_mask) == 0:
+            return False
+        return max(float(np.sum(full_mask)) - 1.0, 0.0) > 0.0
+
     def _future_task_ready_time(
         self,
         agent_id: str,
@@ -691,6 +700,11 @@ class MultiSatelliteEnv:
         env = self.envs[agent_id]
         if full_mask is not None and action < len(full_mask) and full_mask[action] > 0:
             return float(env.current_time_s)
+        if (
+            self._future_task_requires_no_current_valid()
+            and self._has_current_non_idle_action(full_mask)
+        ):
+            return None
         mission = env.missions[action]
         if mission is None or mission.is_observed or self._mission_observed_anywhere(mission.id):
             return None
@@ -2259,10 +2273,12 @@ class MultiSatelliteEnv:
         # 预计算每颗卫星当前可行的(非 idle)动作集合.
         # 此刻各 env 状态尚未改变(动态任务在 env.step 内才插入), 掩码与策略所见一致.
         feasible: Dict[str, set] = {}
+        full_masks: Dict[str, np.ndarray] = {}
         for aid in self.agent_ids:
             mask = self.envs[aid]._build_action_mask()
             if self.episode_assignment:
                 mask = self._apply_ownership_mask(aid, mask)
+            full_masks[aid] = mask
             feasible[aid] = set(np.nonzero(mask[:self.max_action_dim])[0].tolist())
 
         resolved = {aid: raw_idle for aid in self.agent_ids}
@@ -2274,7 +2290,10 @@ class MultiSatelliteEnv:
             if actions.get(aid, raw_idle) != raw_idle
         }
         for aid, action in desired.items():
-            if 0 <= action < self.max_action_dim and self._future_task_action_valid(aid, int(action)):
+            if (
+                0 <= action < self.max_action_dim
+                and self._future_task_action_valid(aid, int(action), full_masks.get(aid))
+            ):
                 feasible.setdefault(aid, set()).add(int(action))
         for aid, action in list(desired.items()):
             if self._is_raw_transfer_action(aid, action):

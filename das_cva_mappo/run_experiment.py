@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.21.
+Run DAS-CVA-MAPPO V0.22.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.21 adds bounded
-future-task macro execution for future-window candidates.
+action-set-aware MAPPO policy over action entities. V0.22 restricts future-task
+macro execution to only-idle states by default.
 """
 
 from __future__ import annotations
@@ -99,6 +99,7 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         slot_selection_mode=args.slot_selection_mode,
         executable_slot_reserve_ratio=args.executable_slot_reserve_ratio,
         allow_future_task_execution=not args.no_future_task_execution,
+        future_task_requires_no_current_valid=not args.future_task_allow_with_current_valid,
         future_task_max_wait_s=args.future_task_max_wait_s,
         replan_interval_s=args.assignment_replan_interval_s,
         replan_horizon_s=args.assignment_replan_horizon_s,
@@ -932,7 +933,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.21 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.22 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -955,7 +956,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_21")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_22")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1002,7 +1003,8 @@ def main() -> None:
     parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="typed")
     parser.add_argument("--executable_slot_reserve_ratio", type=float, default=0.5)
     parser.add_argument("--no_future_task_execution", action="store_true")
-    parser.add_argument("--future_task_max_wait_s", type=float, default=7200.0)
+    parser.add_argument("--future_task_allow_with_current_valid", action="store_true")
+    parser.add_argument("--future_task_max_wait_s", type=float, default=600.0)
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--global_state_mode", choices=["mean", "concat"], default="mean")
@@ -1091,7 +1093,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.21"
+    method_name = "DAS-CVA-MAPPO-v0.22"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1170,6 +1172,7 @@ def main() -> None:
             "candidate_owner_bonus": v2_cfg.candidate_owner_bonus,
             "executable_slot_reserve_ratio": v2_cfg.executable_slot_reserve_ratio,
             "allow_future_task_execution": v2_cfg.allow_future_task_execution,
+            "future_task_requires_no_current_valid": v2_cfg.future_task_requires_no_current_valid,
             "future_task_max_wait_s": v2_cfg.future_task_max_wait_s,
             "candidate_wait_penalty": v2_cfg.w_wait,
             "candidate_storage_penalty": v2_cfg.w_storage_pressure,

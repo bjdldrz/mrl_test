@@ -6,8 +6,10 @@ The suite runs Stage 1-4 sequentially with a shared stress configuration:
   train_iters=50, eval_episodes=10, eval_workers=24, train_env_workers=16,
   training device=cuda:0.
 
-Ablations are applied on top of the Stage 4 configuration so the table compares
-one removed/changed component at a time against the strongest staged setting.
+Most ablations are applied on top of the Stage 4 configuration so the table
+compares one removed/changed component at a time against the strongest staged
+setting. Targeted Stage 2 ablations are included for changes that should be
+validated before hybrid scorer/storage-pressure effects enter the comparison.
 """
 
 from __future__ import annotations
@@ -117,6 +119,32 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
     ]
 
 
+def stage2_common() -> list[str]:
+    return [
+        *kv("--routine_slots", 48),
+        *kv("--dynamic_slots", 48),
+        *kv("--flex_slots", 32),
+        *kv("--routine_candidate_owners", 1),
+        *kv("--dynamic_candidate_owners", 8),
+        *kv("--urgent_candidate_owners", 8),
+        *kv("--stale_candidate_owners", 8),
+        *kv("--candidate_owner_bonus", "0.08"),
+        *kv("--assignment_replan_interval_s", 900),
+        *kv("--assignment_replan_horizon_s", 21600),
+        *kv("--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline"),
+        *kv("--release_before_deadline_s", 7200),
+        *kv("--dynamic_broadcast_window_s", 7200),
+        *kv("--dynamic_takeover_margin_s", 120),
+        *kv("--candidate_wait_penalty", "0.10"),
+        *kv("--candidate_storage_penalty", "0.08"),
+        *kv("--candidate_dynamic_urgency_bonus", "0.16"),
+        *kv("--allocator_wait_penalty", "0.14"),
+        *kv("--allocator_stale_rescue_bonus", "0.35"),
+        *kv("--allocator_dynamic_urgency_bonus", "0.16"),
+        *kv("--candidate_scorer_mode", "v2_heuristic"),
+    ]
+
+
 def stage_specs() -> list[dict[str, Any]]:
     return [
         {
@@ -149,27 +177,7 @@ def stage_specs() -> list[dict[str, Any]]:
             "group": "stage",
             "base_stage": "stage2",
             "args": [
-                *kv("--routine_slots", 48),
-                *kv("--dynamic_slots", 48),
-                *kv("--flex_slots", 32),
-                *kv("--routine_candidate_owners", 1),
-                *kv("--dynamic_candidate_owners", 8),
-                *kv("--urgent_candidate_owners", 8),
-                *kv("--stale_candidate_owners", 8),
-                *kv("--candidate_owner_bonus", "0.08"),
-                *kv("--assignment_replan_interval_s", 900),
-                *kv("--assignment_replan_horizon_s", 21600),
-                *kv("--assignment_replan_trigger", "periodic,dynamic,stale_owner,deadline"),
-                *kv("--release_before_deadline_s", 7200),
-                *kv("--dynamic_broadcast_window_s", 7200),
-                *kv("--dynamic_takeover_margin_s", 120),
-                *kv("--candidate_wait_penalty", "0.10"),
-                *kv("--candidate_storage_penalty", "0.08"),
-                *kv("--candidate_dynamic_urgency_bonus", "0.16"),
-                *kv("--allocator_wait_penalty", "0.14"),
-                *kv("--allocator_stale_rescue_bonus", "0.35"),
-                *kv("--allocator_dynamic_urgency_bonus", "0.16"),
-                *kv("--candidate_scorer_mode", "v2_heuristic"),
+                *stage2_common(),
             ],
         },
         {
@@ -234,9 +242,38 @@ def hybrid_scorer_args(candidate_aux_load_penalty: str) -> list[str]:
 
 
 def ablation_specs() -> list[dict[str, Any]]:
+    stage2_base = [*stage2_common()]
     base = [*stage4_common(candidate_storage_penalty="0.16")]
     hybrid = [*hybrid_scorer_args(candidate_aux_load_penalty="0.20")]
     return [
+        {
+            "name": "abl_stage2_no_future_task_execution",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--no_future_task_execution",
+            ],
+        },
+        {
+            "name": "abl_stage2_future_macro_with_current_valid",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--future_task_allow_with_current_valid",
+            ],
+        },
+        {
+            "name": "abl_future_macro_with_current_valid",
+            "group": "ablation",
+            "base_stage": "stage4",
+            "args": [
+                *base,
+                "--future_task_allow_with_current_valid",
+                *hybrid,
+            ],
+        },
         {
             "name": "abl_no_future_task_execution",
             "group": "ablation",
@@ -508,7 +545,7 @@ def run_suite(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run DAS Stage 1-4 plus Stage-4 ablations and summarize metrics."
+        description="Run DAS staged experiments plus targeted ablations and summarize metrics."
     )
     parser.add_argument("--acled_path", default="./DynamicMission/DynamicMission.shp")
     parser.add_argument("--scenario_cache_dir", default="runs/scenario_cache/das_cva_stress_seed42")
@@ -527,7 +564,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout_steps", type=int, default=512)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument("--executable_slot_reserve_ratio", type=float, default=0.5)
-    parser.add_argument("--future_task_max_wait_s", type=float, default=7200.0)
+    parser.add_argument("--future_task_max_wait_s", type=float, default=600.0)
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--ppo_batch_size", type=int, default=512)
     parser.add_argument("--eval_max_steps", type=int, default=8000)

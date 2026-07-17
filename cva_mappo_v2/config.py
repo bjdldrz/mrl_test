@@ -39,7 +39,8 @@ class CVAMAPPOV2Config:
     slot_selection_mode: str = "typed"
     executable_slot_reserve_ratio: float = 0.5
     allow_future_task_execution: bool = True
-    future_task_max_wait_s: float = 7200.0
+    future_task_requires_no_current_valid: bool = True
+    future_task_max_wait_s: float = 600.0
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
