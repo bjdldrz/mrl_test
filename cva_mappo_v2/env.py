@@ -109,8 +109,19 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     def _future_task_max_wait_s(self) -> float:
         return float(getattr(self.v2_cfg, "future_task_max_wait_s", 0.0) or 0.0)
 
+    def _future_task_max_wait_for_mission(self, mission) -> float:
+        default_wait = self._future_task_max_wait_s()
+        if mission is not None and not getattr(mission, "is_dynamic", False):
+            routine_wait = float(getattr(self.v2_cfg, "future_routine_max_wait_s", default_wait) or 0.0)
+            if routine_wait > 0.0:
+                return routine_wait
+        return default_wait
+
     def _future_task_requires_no_current_valid(self) -> bool:
-        return bool(getattr(self.v2_cfg, "future_task_requires_no_current_valid", True))
+        return bool(getattr(self.v2_cfg, "future_task_requires_no_current_valid", False))
+
+    def _routine_future_dynamic_guard_s(self) -> float:
+        return float(getattr(self.v2_cfg, "routine_future_dynamic_guard_s", 0.0) or 0.0)
 
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
@@ -744,6 +755,16 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             ):
                 continue
 
+            is_available = 1 if full_mask[action] > 0 else 0
+            future_ready = None
+            if not is_available:
+                future_ready = self._future_task_ready_time(agent_id, int(action), full_mask=full_mask)
+                if (
+                    future_ready is None
+                    and bool(getattr(self.v2_cfg, "drop_ineligible_future_candidates", False))
+                ):
+                    continue
+
             score = self._candidate_action_score_from_context(
                 agent_id=agent_id,
                 mission=mission,
@@ -757,11 +778,15 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             score += self._soft_owner_score_bonus(agent_id, mission)
             if self._dynamic_takeover_release_open(agent_id, mission, current_time):
                 score += 0.30
-            is_available = 1 if full_mask[action] > 0 else 0
             if is_available:
                 score += 0.15
                 if mission.is_dynamic:
                     score += 0.35
+            elif future_ready is not None:
+                if mission.is_dynamic:
+                    score += float(getattr(self.v2_cfg, "dynamic_future_bonus", 0.0) or 0.0)
+                elif self._near_dynamic_pressure(agent_id, full_mask, current_time):
+                    score -= float(getattr(self.v2_cfg, "routine_future_dynamic_penalty", 0.0) or 0.0)
             item = (is_available, float(score), int(action))
             if not mission.is_dynamic:
                 routine.append(item)

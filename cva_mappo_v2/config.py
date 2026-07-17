@@ -39,8 +39,13 @@ class CVAMAPPOV2Config:
     slot_selection_mode: str = "typed"
     executable_slot_reserve_ratio: float = 0.5
     allow_future_task_execution: bool = True
-    future_task_requires_no_current_valid: bool = True
+    future_task_requires_no_current_valid: bool = False
     future_task_max_wait_s: float = 600.0
+    future_routine_max_wait_s: float = 180.0
+    routine_future_dynamic_guard_s: float = 1800.0
+    routine_future_dynamic_penalty: float = 0.35
+    dynamic_future_bonus: float = 0.25
+    drop_ineligible_future_candidates: bool = True
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
@@ -96,6 +101,8 @@ class CVAMAPPOV2Config:
             raise ValueError("executable_slot_reserve_ratio 必须在 [0, 1]")
         if self.future_task_max_wait_s < 0:
             raise ValueError("future_task_max_wait_s 必须大于等于 0")
+        if self.future_routine_max_wait_s < 0:
+            raise ValueError("future_routine_max_wait_s 必须大于等于 0")
         for name in [
             "w_wait",
             "w_storage_pressure",
@@ -104,6 +111,9 @@ class CVAMAPPOV2Config:
             "allocator_stale_rescue_bonus",
             "allocator_dynamic_urgency_bonus",
             "dynamic_takeover_margin_s",
+            "routine_future_dynamic_guard_s",
+            "routine_future_dynamic_penalty",
+            "dynamic_future_bonus",
         ]:
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 必须大于等于 0")

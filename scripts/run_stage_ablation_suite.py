@@ -54,6 +54,10 @@ SUMMARY_COLUMNS = [
     "avg_future_valid_slots",
     "avg_filled_slots",
     "avg_filled_invalid_slots",
+    "n_future_task_executions",
+    "n_future_dynamic_task_executions",
+    "n_future_routine_task_executions",
+    "avg_future_task_wait_s",
     "stale_owner_rate",
     "owner_churn_rate",
     "load_balance_cv",
@@ -98,6 +102,10 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--slot_selection_mode", "typed"),
         *kv("--executable_slot_reserve_ratio", args.executable_slot_reserve_ratio),
         *kv("--future_task_max_wait_s", args.future_task_max_wait_s),
+        *kv("--future_routine_max_wait_s", args.future_routine_max_wait_s),
+        *kv("--routine_future_dynamic_guard_s", args.routine_future_dynamic_guard_s),
+        *kv("--routine_future_dynamic_penalty", args.routine_future_dynamic_penalty),
+        *kv("--dynamic_future_bonus", args.dynamic_future_bonus),
         *kv("--ownership_mask_mode", "soft"),
         *kv("--matcher", "set_transformer"),
         *kv("--idle_aux_coeff", "0.05"),
@@ -145,6 +153,24 @@ def stage2_common() -> list[str]:
     ]
 
 
+def stage2_dynamic_priority_common() -> list[str]:
+    return [
+        *stage2_common(),
+        *kv("--routine_slots", 32),
+        *kv("--dynamic_slots", 64),
+        *kv("--flex_slots", 32),
+        *kv("--dynamic_candidate_owners", 12),
+        *kv("--urgent_candidate_owners", 12),
+        *kv("--stale_candidate_owners", 12),
+        *kv("--release_before_deadline_s", 10800),
+        *kv("--dynamic_broadcast_window_s", 10800),
+        *kv("--candidate_wait_penalty", "0.14"),
+        *kv("--candidate_dynamic_urgency_bonus", "0.30"),
+        *kv("--allocator_wait_penalty", "0.18"),
+        *kv("--allocator_dynamic_urgency_bonus", "0.30"),
+    ]
+
+
 def stage_specs() -> list[dict[str, Any]]:
     return [
         {
@@ -178,6 +204,14 @@ def stage_specs() -> list[dict[str, Any]]:
             "base_stage": "stage2",
             "args": [
                 *stage2_common(),
+            ],
+        },
+        {
+            "name": "stage2_dynamic_priority_recovery",
+            "group": "stage",
+            "base_stage": "stage2_dynamic",
+            "args": [
+                *stage2_dynamic_priority_common(),
             ],
         },
         {
@@ -243,6 +277,7 @@ def hybrid_scorer_args(candidate_aux_load_penalty: str) -> list[str]:
 
 def ablation_specs() -> list[dict[str, Any]]:
     stage2_base = [*stage2_common()]
+    stage2_dynamic_base = [*stage2_dynamic_priority_common()]
     base = [*stage4_common(candidate_storage_penalty="0.16")]
     hybrid = [*hybrid_scorer_args(candidate_aux_load_penalty="0.20")]
     return [
@@ -262,6 +297,34 @@ def ablation_specs() -> list[dict[str, Any]]:
             "args": [
                 *stage2_base,
                 "--future_task_allow_with_current_valid",
+            ],
+        },
+        {
+            "name": "abl_stage2_dynamic_no_future_task_execution",
+            "group": "ablation",
+            "base_stage": "stage2_dynamic",
+            "args": [
+                *stage2_dynamic_base,
+                "--no_future_task_execution",
+            ],
+        },
+        {
+            "name": "abl_stage2_dynamic_open_routine_future",
+            "group": "ablation",
+            "base_stage": "stage2_dynamic",
+            "args": [
+                *stage2_dynamic_base,
+                *kv("--future_routine_max_wait_s", 600),
+                *kv("--routine_future_dynamic_guard_s", 0),
+            ],
+        },
+        {
+            "name": "abl_stage2_dynamic_restricted_future_macro",
+            "group": "ablation",
+            "base_stage": "stage2_dynamic",
+            "args": [
+                *stage2_dynamic_base,
+                "--future_task_requires_no_current_valid",
             ],
         },
         {
@@ -565,6 +628,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument("--executable_slot_reserve_ratio", type=float, default=0.5)
     parser.add_argument("--future_task_max_wait_s", type=float, default=600.0)
+    parser.add_argument("--future_routine_max_wait_s", type=float, default=180.0)
+    parser.add_argument("--routine_future_dynamic_guard_s", type=float, default=1800.0)
+    parser.add_argument("--routine_future_dynamic_penalty", type=float, default=0.35)
+    parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--ppo_batch_size", type=int, default=512)
     parser.add_argument("--eval_max_steps", type=int, default=8000)

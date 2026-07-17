@@ -1,5 +1,37 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.23.0
+
+Status: implemented.
+
+Scope:
+
+- Restores bounded future-task macro execution as the default behavior instead
+  of V0.22's only-idle restriction. The V0.22 behavior is retained behind
+  `--future_task_requires_no_current_valid`.
+- Adds a separate `--future_routine_max_wait_s` cap so routine future macro
+  actions cannot use the full dynamic future window by default.
+- Adds `--routine_future_dynamic_guard_s` and
+  `--routine_future_dynamic_penalty` to block or down-rank routine future
+  actions when arrived dynamic tasks are executable or near-term feasible for
+  the same satellite.
+- Adds `--dynamic_future_bonus` and drops ineligible future-only candidates from
+  action slots by default to reduce invalid routine context flooding.
+- Records actual future macro usage with `n_future_task_executions`,
+  `n_future_dynamic_task_executions`, `n_future_routine_task_executions`, and
+  `avg_future_task_wait_s`.
+- Adds `stage2_dynamic_priority_recovery` and matching Stage-2 dynamic-priority
+  ablations to the staged experiment runner.
+
+Expected effect:
+
+- Improve dynamic completion relative to the open V0.22 ablation while keeping
+  short-wait future macro benefits that improved total reward and routine
+  throughput.
+- Make dynamic-task results more suitable for a paper setting by reporting both
+  raw completion and feasible-normalized completion under the fixed scenario
+  feasibility ceiling.
+
 ## DAS-CVA-MAPPO V0.22.0
 
 Status: implemented.

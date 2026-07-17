@@ -138,6 +138,10 @@ class MultiSatelliteEnv:
         self._n_dynamic_idle_rescue_opportunities = 0
         self._n_dynamic_preemption_opportunities = 0
         self._n_dynamic_takeover_release_events = 0
+        self._n_future_task_executions = 0
+        self._n_future_dynamic_task_executions = 0
+        self._n_future_routine_task_executions = 0
+        self._future_task_wait_sum_s = 0.0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
@@ -678,14 +682,71 @@ class MultiSatelliteEnv:
     def _future_task_max_wait_s(self) -> float:
         return 0.0
 
+    def _future_task_max_wait_for_mission(self, mission: Optional[Mission]) -> float:
+        return float(self._future_task_max_wait_s())
+
     def _future_task_requires_no_current_valid(self) -> bool:
         return False
+
+    def _routine_future_dynamic_guard_s(self) -> float:
+        return 0.0
 
     @staticmethod
     def _has_current_non_idle_action(full_mask: Optional[np.ndarray]) -> bool:
         if full_mask is None or len(full_mask) == 0:
             return False
         return max(float(np.sum(full_mask)) - 1.0, 0.0) > 0.0
+
+    def _near_dynamic_pressure(
+        self,
+        agent_id: str,
+        full_mask: Optional[np.ndarray],
+        current_time: Optional[float] = None,
+        exclude_action: Optional[int] = None,
+    ) -> bool:
+        guard_s = float(self._routine_future_dynamic_guard_s())
+        if guard_s <= 0.0:
+            return False
+        env = self.envs[agent_id]
+        now = float(env.current_time_s if current_time is None else current_time)
+        latest_start = min(now + guard_s, float(self.horizon_s))
+        for action, mission in enumerate(env.missions[:self.max_action_dim]):
+            if exclude_action is not None and int(action) == int(exclude_action):
+                continue
+            if (
+                mission is None
+                or mission.is_observed
+                or not getattr(mission, "is_dynamic", False)
+                or self._mission_observed_anywhere(mission.id)
+            ):
+                continue
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if arrival_s > now or now > float(mission.deadline_s):
+                continue
+            if full_mask is not None and action < len(full_mask) and full_mask[action] > 0:
+                return True
+            self._ensure_mission_vtw(agent_id, mission)
+            next_start = env._earliest_feasible_observation_start(mission, now)
+            if next_start is None or float(next_start) > latest_start:
+                continue
+            if float(next_start) + float(mission.duration_s) <= min(float(mission.deadline_s), float(self.horizon_s)):
+                return True
+        return False
+
+    def _routine_future_blocked_by_dynamic_pressure(
+        self,
+        agent_id: str,
+        action: int,
+        mission: Mission,
+        full_mask: Optional[np.ndarray],
+    ) -> bool:
+        if mission is None or getattr(mission, "is_dynamic", False):
+            return False
+        return self._near_dynamic_pressure(
+            agent_id=agent_id,
+            full_mask=full_mask,
+            exclude_action=action,
+        )
 
     def _future_task_ready_time(
         self,
@@ -714,8 +775,10 @@ class MultiSatelliteEnv:
         wait_s = max(float(next_start) - float(env.current_time_s), 0.0)
         if wait_s <= 1e-6:
             return None
-        max_wait = float(self._future_task_max_wait_s())
+        max_wait = float(self._future_task_max_wait_for_mission(mission))
         if max_wait > 0.0 and wait_s > max_wait:
+            return None
+        if self._routine_future_blocked_by_dynamic_pressure(agent_id, action, mission, full_mask):
             return None
         if next_start + mission.duration_s > min(mission.deadline_s, self.horizon_s):
             return None
@@ -742,6 +805,13 @@ class MultiSatelliteEnv:
         wait_s = max(float(next_start) - float(env.current_time_s), 0.0)
         if wait_s <= 1e-6:
             return {}
+        mission = env.missions[action]
+        self._n_future_task_executions += 1
+        self._future_task_wait_sum_s += float(wait_s)
+        if mission is not None and getattr(mission, "is_dynamic", False):
+            self._n_future_dynamic_task_executions += 1
+        else:
+            self._n_future_routine_task_executions += 1
         env.current_time_s = float(next_start)
         return {
             "future_task_execution": 1.0,
@@ -797,6 +867,10 @@ class MultiSatelliteEnv:
         self._n_dynamic_idle_rescue_opportunities = 0
         self._n_dynamic_preemption_opportunities = 0
         self._n_dynamic_takeover_release_events = 0
+        self._n_future_task_executions = 0
+        self._n_future_dynamic_task_executions = 0
+        self._n_future_routine_task_executions = 0
+        self._future_task_wait_sum_s = 0.0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
@@ -2917,6 +2991,12 @@ class MultiSatelliteEnv:
             "n_dynamic_idle_rescue_opportunities": self._n_dynamic_idle_rescue_opportunities,
             "n_dynamic_preemption_opportunities": self._n_dynamic_preemption_opportunities,
             "n_dynamic_takeover_release_events": self._n_dynamic_takeover_release_events,
+            "n_future_task_executions": self._n_future_task_executions,
+            "n_future_dynamic_task_executions": self._n_future_dynamic_task_executions,
+            "n_future_routine_task_executions": self._n_future_routine_task_executions,
+            "avg_future_task_wait_s": (
+                self._future_task_wait_sum_s / max(self._n_future_task_executions, 1)
+            ),
             "n_released_tasks": len(self._released_mission_ids),
             "n_deadline_release_tasks": len(self._deadline_release_mission_ids),
             "n_rescued_tasks": len(self._rescued_mission_ids),
