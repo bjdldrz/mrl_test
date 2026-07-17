@@ -123,6 +123,12 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
     def _routine_future_dynamic_guard_s(self) -> float:
         return float(getattr(self.v2_cfg, "routine_future_dynamic_guard_s", 0.0) or 0.0)
 
+    def _dynamic_response_target_s(self) -> float:
+        return float(getattr(self.v2_cfg, "dynamic_response_target_s", self.horizon_s) or self.horizon_s)
+
+    def _dynamic_rescue_response_bonus(self) -> float:
+        return float(getattr(self.v2_cfg, "dynamic_rescue_response_bonus", 0.0) or 0.0)
+
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
     # ------------------------------------------------------------------

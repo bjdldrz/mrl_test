@@ -68,12 +68,18 @@ class CVAMAPPOV2Config:
     w_wait: float = 0.08
     w_storage_pressure: float = 0.08
     w_dynamic_urgency: float = 0.12
+    w_dynamic_response: float = 0.24
+    w_dynamic_wait: float = 0.20
+    dynamic_response_target_s: float = 3600.0
 
     # Allocator repair weights. These bias ownership toward agents with earlier
     # feasible windows, especially for stale owners and urgent dynamic tasks.
     allocator_wait_penalty: float = 0.10
     allocator_stale_rescue_bonus: float = 0.25
     allocator_dynamic_urgency_bonus: float = 0.10
+    allocator_dynamic_response_bonus: float = 0.24
+    allocator_dynamic_wait_penalty: float = 0.20
+    dynamic_rescue_response_bonus: float = 1.0
     dynamic_takeover_margin_s: float = 300.0
 
     def validate(self) -> None:
@@ -107,9 +113,15 @@ class CVAMAPPOV2Config:
             "w_wait",
             "w_storage_pressure",
             "w_dynamic_urgency",
+            "w_dynamic_response",
+            "w_dynamic_wait",
+            "dynamic_response_target_s",
             "allocator_wait_penalty",
             "allocator_stale_rescue_bonus",
             "allocator_dynamic_urgency_bonus",
+            "allocator_dynamic_response_bonus",
+            "allocator_dynamic_wait_penalty",
+            "dynamic_rescue_response_bonus",
             "dynamic_takeover_margin_s",
             "routine_future_dynamic_guard_s",
             "routine_future_dynamic_penalty",

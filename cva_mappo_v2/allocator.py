@@ -157,7 +157,11 @@ class CapacityAwareTaskAllocator:
             adjusted += getattr(self.cfg, "allocator_stale_rescue_bonus", 0.0) * (1.0 - wait_norm)
         if mission.is_dynamic:
             urgency = float(getattr(score, "deadline_pressure", 0.0))
+            response_pressure = float(getattr(score, "dynamic_response_pressure", 0.0))
+            dynamic_wait_pressure = float(getattr(score, "dynamic_wait_pressure", 0.0))
             adjusted += getattr(self.cfg, "allocator_dynamic_urgency_bonus", 0.0) * urgency
+            adjusted += getattr(self.cfg, "allocator_dynamic_response_bonus", 0.0) * response_pressure
+            adjusted -= getattr(self.cfg, "allocator_dynamic_wait_penalty", 0.0) * dynamic_wait_pressure
         return adjusted
 
     def _choose_candidates(

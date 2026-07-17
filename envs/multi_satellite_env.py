@@ -691,6 +691,12 @@ class MultiSatelliteEnv:
     def _routine_future_dynamic_guard_s(self) -> float:
         return 0.0
 
+    def _dynamic_response_target_s(self) -> float:
+        return float(self.horizon_s)
+
+    def _dynamic_rescue_response_bonus(self) -> float:
+        return 0.0
+
     @staticmethod
     def _has_current_non_idle_action(full_mask: Optional[np.ndarray]) -> bool:
         if full_mask is None or len(full_mask) == 0:
@@ -2537,8 +2543,9 @@ class MultiSatelliteEnv:
         urgency = 1.0 - float(np.clip(slack_s / max(self.horizon_s, 1.0), 0.0, 1.0))
         arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
         age_s = max(float(env.current_time_s) - arrival_s, 0.0)
-        age_pressure = float(np.clip(age_s / max(self.horizon_s, 1.0), 0.0, 1.0))
-        return value + 0.5 + urgency + 0.5 * age_pressure
+        target_s = max(float(self._dynamic_response_target_s()), 1.0)
+        age_pressure = float(np.clip(age_s / target_s, 0.0, 1.0))
+        return value + 0.5 + urgency + self._dynamic_rescue_response_bonus() * age_pressure
 
     def _executable_rescue_value(
         self,

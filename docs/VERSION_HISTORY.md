@@ -1,5 +1,36 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.24.0
+
+Status: implemented.
+
+Scope:
+
+- Adds dynamic response pressure to candidate scoring. Arrived dynamic tasks
+  gain priority as their age approaches `--dynamic_response_target_s`.
+- Adds dynamic wait pressure so future dynamic candidates are penalized by wait
+  time relative to the response target instead of the full 24-hour horizon.
+- Adds response-aware allocator repair weights and eval-time dynamic rescue
+  scoring through `--allocator_dynamic_response_bonus`,
+  `--allocator_dynamic_wait_penalty`, and
+  `--dynamic_rescue_response_bonus`.
+- Extends DAS trainable candidate-scorer edge features with dynamic response and
+  dynamic wait pressure.
+- Changes the staged experiment runner from hard-coded CPU evaluation to
+  `--eval_device same` by default, so CUDA training runs also evaluate on CUDA
+  unless explicitly overridden.
+- Adds `abl_stage2_no_dynamic_response_pressure` to isolate the response-time
+  optimization.
+
+Expected effect:
+
+- Reduce `avg_dynamic_response_s` while preserving the V0.23 dynamic completion
+  recovery.
+- Make GPU evaluation the default path for future sweeps. The runner still
+  reports effective evaluation workers, and single-GPU CUDA evaluation is
+  serialized by `run_experiment.py` to avoid multiple processes contending for
+  the same GPU.
+
 ## DAS-CVA-MAPPO V0.23.0
 
 Status: implemented.

@@ -21,6 +21,8 @@ class CandidateScore:
     load_pressure: float
     visible: bool
     wait_s: float = 0.0
+    dynamic_response_pressure: float = 0.0
+    dynamic_wait_pressure: float = 0.0
 
 
 class CandidateValueScorer:
@@ -69,11 +71,19 @@ class CandidateValueScorer:
             owner_stability = 0.75
 
         wait_penalty = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+        response_target_s = max(float(getattr(self.cfg, "dynamic_response_target_s", 3600.0) or 3600.0), 1.0)
+        dynamic_response_pressure = 0.0
+        dynamic_wait_pressure = 0.0
+        if mission.is_dynamic:
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            age_s = max(float(current_time_s) - arrival_s, 0.0)
+            dynamic_response_pressure = float(np.clip(age_s / response_target_s, 0.0, 1.0))
+            dynamic_wait_pressure = float(np.clip(wait_s / response_target_s, 0.0, 1.0))
         storage_pressure = 0.0
         if getattr(env, "storage_limited", False) and hasattr(env, "_onboard_image_count"):
             capacity = max(int(getattr(env, "satellite_storage_capacity", 0) or 0), 1)
             storage_pressure = float(np.clip(env._onboard_image_count(current_time_s) / capacity, 0.0, 1.0))
-        dynamic_urgency = dynamic * deadline_pressure
+        dynamic_urgency = dynamic * max(deadline_pressure, dynamic_response_pressure)
         cfg = self.cfg
         score = (
             cfg.w_quality * quality
@@ -81,11 +91,13 @@ class CandidateValueScorer:
             + cfg.w_deadline * deadline_pressure
             + cfg.w_dynamic * dynamic
             + getattr(cfg, "w_dynamic_urgency", 0.0) * dynamic_urgency
+            + getattr(cfg, "w_dynamic_response", 0.0) * dynamic_response_pressure
             + cfg.w_scarcity * scarcity
             + cfg.w_future_opportunity_loss * future_loss
             + cfg.w_owner_stability * owner_stability
             - cfg.w_load * load_pressure
             - getattr(cfg, "w_wait", 0.05) * wait_penalty
+            - getattr(cfg, "w_dynamic_wait", 0.0) * dynamic_wait_pressure
             - getattr(cfg, "w_storage_pressure", 0.0) * storage_pressure
         )
         return CandidateScore(
@@ -99,6 +111,8 @@ class CandidateValueScorer:
             load_pressure=float(load_pressure),
             visible=True,
             wait_s=float(wait_s),
+            dynamic_response_pressure=float(dynamic_response_pressure),
+            dynamic_wait_pressure=float(dynamic_wait_pressure),
         )
 
     def _pair_features(self, env, mission: Mission, current_time_s: float, allow_future: bool):

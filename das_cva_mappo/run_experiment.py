@@ -1,11 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.23.
+Run DAS-CVA-MAPPO V0.24.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.23 restores bounded
-future-task macro execution by default and adds dynamic-priority guards for
-routine future actions.
+action-set-aware MAPPO policy over action entities. V0.24 adds dynamic response
+pressure to candidate scoring, allocation, and eval-time rescue decisions.
 """
 
 from __future__ import annotations
@@ -120,9 +119,15 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         w_wait=args.candidate_wait_penalty,
         w_storage_pressure=args.candidate_storage_penalty,
         w_dynamic_urgency=args.candidate_dynamic_urgency_bonus,
+        w_dynamic_response=args.candidate_dynamic_response_bonus,
+        w_dynamic_wait=args.candidate_dynamic_wait_penalty,
+        dynamic_response_target_s=args.dynamic_response_target_s,
         allocator_wait_penalty=args.allocator_wait_penalty,
         allocator_stale_rescue_bonus=args.allocator_stale_rescue_bonus,
         allocator_dynamic_urgency_bonus=args.allocator_dynamic_urgency_bonus,
+        allocator_dynamic_response_bonus=args.allocator_dynamic_response_bonus,
+        allocator_dynamic_wait_penalty=args.allocator_dynamic_wait_penalty,
+        dynamic_rescue_response_bonus=args.dynamic_rescue_response_bonus,
         triggers=triggers,
     )
     cfg.validate()
@@ -942,7 +947,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.23 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.24 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -965,7 +970,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_23")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_24")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -999,9 +1004,15 @@ def main() -> None:
     parser.add_argument("--candidate_wait_penalty", type=float, default=0.08)
     parser.add_argument("--candidate_storage_penalty", type=float, default=0.08)
     parser.add_argument("--candidate_dynamic_urgency_bonus", type=float, default=0.12)
+    parser.add_argument("--candidate_dynamic_response_bonus", type=float, default=0.24)
+    parser.add_argument("--candidate_dynamic_wait_penalty", type=float, default=0.20)
+    parser.add_argument("--dynamic_response_target_s", type=float, default=3600.0)
     parser.add_argument("--allocator_wait_penalty", type=float, default=0.10)
     parser.add_argument("--allocator_stale_rescue_bonus", type=float, default=0.25)
     parser.add_argument("--allocator_dynamic_urgency_bonus", type=float, default=0.10)
+    parser.add_argument("--allocator_dynamic_response_bonus", type=float, default=0.24)
+    parser.add_argument("--allocator_dynamic_wait_penalty", type=float, default=0.20)
+    parser.add_argument("--dynamic_rescue_response_bonus", type=float, default=1.0)
     parser.add_argument("--assignment_replan_interval_s", type=float, default=3600.0)
     parser.add_argument("--assignment_replan_horizon_s", type=float, default=21600.0)
     parser.add_argument("--assignment_replan_trigger", type=str, default="periodic,dynamic,stale_owner,deadline")
@@ -1108,7 +1119,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.23"
+    method_name = "DAS-CVA-MAPPO-v0.24"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1197,9 +1208,15 @@ def main() -> None:
             "candidate_wait_penalty": v2_cfg.w_wait,
             "candidate_storage_penalty": v2_cfg.w_storage_pressure,
             "candidate_dynamic_urgency_bonus": v2_cfg.w_dynamic_urgency,
+            "candidate_dynamic_response_bonus": v2_cfg.w_dynamic_response,
+            "candidate_dynamic_wait_penalty": v2_cfg.w_dynamic_wait,
+            "dynamic_response_target_s": v2_cfg.dynamic_response_target_s,
             "allocator_wait_penalty": v2_cfg.allocator_wait_penalty,
             "allocator_stale_rescue_bonus": v2_cfg.allocator_stale_rescue_bonus,
             "allocator_dynamic_urgency_bonus": v2_cfg.allocator_dynamic_urgency_bonus,
+            "allocator_dynamic_response_bonus": v2_cfg.allocator_dynamic_response_bonus,
+            "allocator_dynamic_wait_penalty": v2_cfg.allocator_dynamic_wait_penalty,
+            "dynamic_rescue_response_bonus": v2_cfg.dynamic_rescue_response_bonus,
         },
         "git": _git_metadata(),
         "results": results,

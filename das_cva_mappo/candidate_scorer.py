@@ -14,7 +14,7 @@ from cva_mappo_v2.scorer import CandidateScore, CandidateValueScorer
 from .env_adapter import V2CandidateAdapter
 
 
-EDGE_FEATURE_DIM = 18
+EDGE_FEATURE_DIM = 20
 
 
 @dataclass
@@ -150,6 +150,8 @@ class TrainableCandidateValueScorer:
             load_pressure=heuristic_score.load_pressure,
             visible=heuristic_score.visible,
             wait_s=float(getattr(heuristic_score, "wait_s", 0.0)),
+            dynamic_response_pressure=float(getattr(heuristic_score, "dynamic_response_pressure", 0.0)),
+            dynamic_wait_pressure=float(getattr(heuristic_score, "dynamic_wait_pressure", 0.0)),
         )
 
     def edge_features(
@@ -179,6 +181,8 @@ class TrainableCandidateValueScorer:
             capacity = max(int(getattr(env, "satellite_storage_capacity", 0) or 0), 1)
             storage_pressure = float(np.clip(env._onboard_image_count(current_time_s) / capacity, 0.0, 1.0))
         downlink_enabled = 1.0 if getattr(env, "n_ground_stations", 0) > 0 and getattr(env, "downlink_time_s", 0.0) > 0 else 0.0
+        dynamic_response_pressure = float(getattr(heuristic_score, "dynamic_response_pressure", 0.0))
+        dynamic_wait_pressure = float(getattr(heuristic_score, "dynamic_wait_pressure", 0.0))
         return np.array([
             heuristic_score.quality,
             priority,
@@ -198,6 +202,8 @@ class TrainableCandidateValueScorer:
             storage_pressure,
             downlink_enabled,
             1.0 if allow_future else 0.0,
+            dynamic_response_pressure,
+            dynamic_wait_pressure,
         ], dtype=np.float32)
 
     def warm_start(
