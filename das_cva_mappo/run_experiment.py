@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.24.
+Run DAS-CVA-MAPPO V0.25.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.24 adds dynamic response
-pressure to candidate scoring, allocation, and eval-time rescue decisions.
+action-set-aware MAPPO policy over action entities. V0.25 adds single-process
+batched CUDA evaluation across multiple eval environments.
 """
 
 from __future__ import annotations
@@ -308,6 +308,61 @@ def _eval_step_limit(args, env) -> int:
     return int(env.horizon_s / 10.0) + 100
 
 
+def _eval_counter() -> Dict[str, int]:
+    return {
+        "idle_actions": 0,
+        "idle_with_valid_actions": 0,
+        "idle_without_valid_actions": 0,
+        "valid_decision_points": 0,
+        "agent_actions": 0,
+    }
+
+
+def _eval_valid_by_agent(env, infos: Dict[str, Dict]) -> Dict[str, bool]:
+    valid_by_agent: Dict[str, bool] = {}
+    for aid in env.agent_ids:
+        mask = np.asarray(infos[aid].get("action_mask", []), dtype=np.float32)
+        if mask.size == 0:
+            valid_by_agent[aid] = False
+            continue
+        idle = int(env.idle_action)
+        idle_valid = mask[idle] if 0 <= idle < len(mask) else 0.0
+        valid_by_agent[aid] = bool(float(np.sum(mask)) - float(idle_valid) > 0)
+    return valid_by_agent
+
+
+def _update_eval_counter(env, actions: Dict[str, int], valid_by_agent: Dict[str, bool], counter: Dict[str, int]) -> None:
+    for aid, action in actions.items():
+        is_idle = int(action) == env.idle_action
+        has_valid = bool(valid_by_agent.get(aid, False))
+        counter["valid_decision_points"] += int(has_valid)
+        if is_idle:
+            counter["idle_actions"] += 1
+            if has_valid:
+                counter["idle_with_valid_actions"] += 1
+            else:
+                counter["idle_without_valid_actions"] += 1
+    counter["agent_actions"] += len(actions)
+
+
+def _finalize_eval_metrics(env, n_steps: int, max_steps: int, counter: Dict[str, int]) -> Dict[str, float]:
+    row = env.get_metrics()
+    current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
+    agent_actions = int(counter.get("agent_actions", 0))
+    valid_decision_points = int(counter.get("valid_decision_points", 0))
+    idle_actions = int(counter.get("idle_actions", 0))
+    idle_with_valid_actions = int(counter.get("idle_with_valid_actions", 0))
+    idle_without_valid_actions = int(counter.get("idle_without_valid_actions", 0))
+    row["eval_steps"] = float(n_steps)
+    row["eval_end_time_s"] = float(np.mean(current_times)) if current_times else 0.0
+    row["eval_finished_early"] = 1.0 if n_steps < max_steps else 0.0
+    row["eval_idle_action_rate"] = idle_actions / max(agent_actions, 1)
+    row["eval_valid_decision_rate"] = valid_decision_points / max(agent_actions, 1)
+    row["eval_idle_when_valid_rate"] = idle_with_valid_actions / max(valid_decision_points, 1)
+    row["eval_idle_without_valid_rate"] = idle_without_valid_actions / max(agent_actions - valid_decision_points, 1)
+    return row
+
+
 def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> CandidateAuxSamples:
     edge_rows: List[np.ndarray] = []
     targets: List[np.ndarray] = []
@@ -402,54 +457,184 @@ def _eval_worker(payload):
     )
 
     infos = _reset_infos(env, routine, dynamic)
-    idle_actions = 0
-    idle_with_valid_actions = 0
-    idle_without_valid_actions = 0
-    valid_decision_points = 0
-    agent_actions = 0
+    counter = _eval_counter()
     n_steps = 0
     max_steps = _eval_step_limit(args, env)
     for _ in range(max_steps):
-        valid_by_agent = {}
-        for aid in env.agent_ids:
-            mask = np.asarray(infos[aid].get("action_mask", []), dtype=np.float32)
-            if mask.size == 0:
-                valid_by_agent[aid] = False
-                continue
-            idle = int(env.idle_action)
-            idle_valid = mask[idle] if 0 <= idle < len(mask) else 0.0
-            valid_by_agent[aid] = bool(float(np.sum(mask)) - float(idle_valid) > 0)
+        valid_by_agent = _eval_valid_by_agent(env, infos)
         actions = trainer.select_eval_actions(
             env,
             infos,
             deterministic=payload.get("eval_deterministic", False),
         )
-        for aid, action in actions.items():
-            is_idle = int(action) == env.idle_action
-            has_valid = bool(valid_by_agent.get(aid, False))
-            valid_decision_points += int(has_valid)
-            if is_idle:
-                idle_actions += 1
-                if has_valid:
-                    idle_with_valid_actions += 1
-                else:
-                    idle_without_valid_actions += 1
-        agent_actions += len(actions)
+        _update_eval_counter(env, actions, valid_by_agent, counter)
         step = env.step(actions)
         infos = {aid: item[4] for aid, item in step.items()}
         n_steps += 1
         if env.is_done():
             break
-    row = env.get_metrics()
-    current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
-    row["eval_steps"] = float(n_steps)
-    row["eval_end_time_s"] = float(np.mean(current_times)) if current_times else 0.0
-    row["eval_finished_early"] = 1.0 if n_steps < max_steps else 0.0
-    row["eval_idle_action_rate"] = idle_actions / max(agent_actions, 1)
-    row["eval_valid_decision_rate"] = valid_decision_points / max(agent_actions, 1)
-    row["eval_idle_when_valid_rate"] = idle_with_valid_actions / max(valid_decision_points, 1)
-    row["eval_idle_without_valid_rate"] = idle_without_valid_actions / max(agent_actions - valid_decision_points, 1)
+    row = _finalize_eval_metrics(env, n_steps, max_steps, counter)
     return {"idx": payload["idx"], "metrics": row}
+
+
+def _make_eval_runtime(
+    cfg,
+    args,
+    v2_cfg,
+    scenario,
+    idx: int,
+    candidate_scorer: Optional[TrainableCandidateValueScorer],
+) -> Dict[str, Any]:
+    routine, dynamic = scenario
+    env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
+    env.set_eval_mode(True)
+    infos = _reset_infos(env, routine, dynamic)
+    return {
+        "idx": int(idx),
+        "env": env,
+        "infos": infos,
+        "counter": _eval_counter(),
+        "n_steps": 0,
+        "max_steps": _eval_step_limit(args, env),
+    }
+
+
+def _select_batched_eval_actions(
+    model,
+    feature_builder: ActionSetFeatureBuilder,
+    runtimes: List[Dict[str, Any]],
+    device: torch.device,
+    deterministic: bool = False,
+) -> List[Tuple[Dict[str, Any], Dict[str, int], Dict[str, bool]]]:
+    rows = []
+    for runtime in runtimes:
+        env = runtime["env"]
+        infos = runtime["infos"]
+        valid_by_agent = _eval_valid_by_agent(env, infos)
+        batch = feature_builder.build_many(env, infos)
+        for aid in env.agent_ids:
+            item = batch[aid]
+            rows.append((
+                runtime,
+                aid,
+                valid_by_agent,
+                item.state,
+                item.action_features,
+                item.action_mask,
+            ))
+
+    if not rows:
+        return []
+
+    states = np.stack([row[3] for row in rows], axis=0)
+    action_features = np.stack([row[4] for row in rows], axis=0)
+    masks = np.stack([row[5] for row in rows], axis=0)
+    with torch.no_grad():
+        action_t, _, _ = model.actor.get_action(
+            torch.FloatTensor(states).to(device),
+            torch.FloatTensor(action_features).to(device),
+            torch.FloatTensor(masks).to(device),
+            deterministic=deterministic,
+        )
+    actions_np = action_t.cpu().numpy()
+
+    action_by_runtime: Dict[int, Tuple[Dict[str, Any], Dict[str, int], Dict[str, bool]]] = {}
+    for row, action in zip(rows, actions_np):
+        runtime, aid, valid_by_agent = row[0], row[1], row[2]
+        key = id(runtime)
+        if key not in action_by_runtime:
+            action_by_runtime[key] = (runtime, {}, valid_by_agent)
+        action_by_runtime[key][1][aid] = int(action)
+    return list(action_by_runtime.values())
+
+
+def _batched_eval_single_process(
+    cfg,
+    args,
+    v2_cfg,
+    das_cfg,
+    model_state: Dict[str, np.ndarray],
+    scenarios,
+    candidate_scorer_state: Optional[Dict[str, np.ndarray]],
+    eval_device: str,
+    batch_envs: int,
+    show_progress: bool = True,
+) -> List[Dict[str, Any]]:
+    device = torch.device(eval_device)
+    candidate_adapter = _build_candidate_adapter(das_cfg)
+    candidate_scorer = _build_worker_candidate_scorer(
+        v2_cfg,
+        das_cfg,
+        candidate_scorer_state,
+        device=str(device),
+    )
+    runtimes: List[Dict[str, Any]] = []
+    pending = list(enumerate(scenarios))
+    initial_count = min(max(int(batch_envs), 1), len(pending))
+    for _ in range(initial_count):
+        idx, scenario = pending.pop(0)
+        runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer))
+
+    if not runtimes:
+        return []
+
+    model = _build_action_model(das_cfg, runtimes[0]["env"]).to(device)
+    model.load_state_dict(_numpy_state_to_torch(model_state))
+    model.eval()
+    feature_builder = ActionSetFeatureBuilder(
+        state_dim=das_cfg.state_dim,
+        action_feature_dim=das_cfg.action_feature_dim,
+        mode=das_cfg.action_feature_mode,
+        use_candidate_score=das_cfg.use_candidate_score_feature,
+        candidate_adapter=candidate_adapter,
+    )
+
+    raw: List[Dict[str, Any]] = []
+    pbar = tqdm(
+        total=len(scenarios),
+        desc="eval DAS-CVA-MAPPO batch",
+        unit="ep",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    try:
+        while runtimes:
+            selected = _select_batched_eval_actions(
+                model,
+                feature_builder,
+                runtimes,
+                device=device,
+                deterministic=args.eval_deterministic,
+            )
+            finished: List[Dict[str, Any]] = []
+            for runtime, actions, valid_by_agent in selected:
+                env = runtime["env"]
+                _update_eval_counter(env, actions, valid_by_agent, runtime["counter"])
+                step = env.step(actions)
+                runtime["infos"] = {aid: item[4] for aid, item in step.items()}
+                runtime["n_steps"] += 1
+                if env.is_done() or runtime["n_steps"] >= runtime["max_steps"]:
+                    row = _finalize_eval_metrics(
+                        env,
+                        runtime["n_steps"],
+                        runtime["max_steps"],
+                        runtime["counter"],
+                    )
+                    raw.append({"idx": runtime["idx"], "metrics": row})
+                    finished.append(runtime)
+                    pbar.update(1)
+
+            if finished:
+                finished_ids = {id(runtime) for runtime in finished}
+                runtimes = [runtime for runtime in runtimes if id(runtime) not in finished_ids]
+                while pending and len(runtimes) < max(int(batch_envs), 1):
+                    idx, scenario = pending.pop(0)
+                    runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer))
+            elif not selected:
+                break
+    finally:
+        pbar.close()
+    return raw
 
 
 def _parallel_eval(
@@ -468,15 +653,30 @@ def _parallel_eval(
         return {}
     n_workers = max(1, min(int(args.eval_workers or 1), len(scenarios)))
     eval_device = args.eval_device if args.eval_device != "same" else args.device
-    if str(eval_device) != "cpu" and n_workers > 1:
-        print(
-            f"评估设备为 {eval_device}; 单卡 GPU 评估将 eval_workers 从 {n_workers} 降为 1, "
-            "避免多个进程抢占同一张 GPU。"
-        )
-        n_workers = 1
 
     model_state = _torch_state_to_numpy(model.state_dict())
     candidate_scorer_state = _candidate_scorer_model_state(candidate_scorer)
+    if str(eval_device) != "cpu":
+        if n_workers > 1 and not args.no_progress:
+            print(
+                f"评估设备为 {eval_device}; 使用单进程 batched eval 并发 {n_workers} 个环境, "
+                "避免多个进程抢占同一张 GPU。"
+            )
+        raw = _batched_eval_single_process(
+            cfg=cfg,
+            args=args,
+            v2_cfg=v2_cfg,
+            das_cfg=das_cfg,
+            model_state=model_state,
+            scenarios=scenarios,
+            candidate_scorer_state=candidate_scorer_state,
+            eval_device=eval_device,
+            batch_envs=n_workers,
+            show_progress=show_progress,
+        )
+        raw = sorted(raw, key=lambda row: row["idx"])
+        return _avg_metrics([row["metrics"] for row in raw])
+
     payloads = [
         {
             "idx": idx,
@@ -883,8 +1083,7 @@ def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios) -> Dict[str,
     requested_eval_workers = int(args.eval_workers or 1)
     effective_eval_workers = max(1, min(requested_eval_workers, max(len(eval_scenarios), 1)))
     eval_device = args.eval_device if args.eval_device != "same" else args.device
-    if str(eval_device) != "cpu" and effective_eval_workers > 1:
-        effective_eval_workers = 1
+    eval_execution_mode = "multiprocess" if str(eval_device) == "cpu" else "batched_single_process"
 
     task_slots = int(v2_cfg.slots.total_slots)
     transfer_slots = max(int(args.n_satellites) - 1, 0) if args.enable_inter_satellite_transfer else 0
@@ -898,6 +1097,7 @@ def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios) -> Dict[str,
         "requested_eval_workers": requested_eval_workers,
         "effective_eval_workers": int(effective_eval_workers),
         "eval_device": str(eval_device),
+        "eval_execution_mode": eval_execution_mode,
         "max_action_dim": int(cfg.mission.max_action_dim),
         "task_slots": task_slots,
         "transfer_slots": transfer_slots,
@@ -935,6 +1135,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
         f"requested_workers={plan['requested_eval_workers']}, "
         f"effective_workers={plan['effective_eval_workers']}, "
         f"device={plan['eval_device']}, "
+        f"mode={plan['eval_execution_mode']}, "
         f"eval_max_steps={plan['eval_max_steps']}"
     )
     print(
@@ -947,7 +1148,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.24 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.25 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -970,7 +1171,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_24")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_25")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1119,7 +1320,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.24"
+    method_name = "DAS-CVA-MAPPO-v0.25"
     results = {
         method_name: train_and_eval(
             cfg,

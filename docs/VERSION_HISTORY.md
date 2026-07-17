@@ -1,5 +1,25 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.25.0
+
+Status: implemented.
+
+Scope:
+
+- Adds single-process batched CUDA/MPS evaluation. When `--eval_device` is not
+  CPU, `--eval_workers` now controls how many evaluation environments are kept
+  active in the same process and batched into one policy forward pass.
+- Keeps CPU evaluation on the existing multiprocessing path.
+- Updates the runtime plan to report `mode=batched_single_process` for CUDA/MPS
+  evaluation instead of reducing `effective_workers` to 1.
+
+Expected effect:
+
+- Enable commands such as `--eval_device cuda:0 --eval_workers 8` without
+  spawning 8 GPU-contending processes.
+- Reduce evaluation wall time on GPU while preserving the same eval metrics and
+  per-episode aggregation semantics.
+
 ## DAS-CVA-MAPPO V0.24.0
 
 Status: implemented.
