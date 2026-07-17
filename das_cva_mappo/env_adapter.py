@@ -33,6 +33,9 @@ class V2CandidateAdapter:
     def slot_scores(self, info: dict) -> list:
         return list(info.get("slot_scores") or [])
 
+    def slot_timing(self, info: dict) -> list:
+        return list(info.get("slot_timing") or [])
+
     def n_task_candidate_owners(self, env, info: dict) -> int:
         return int(info.get("n_task_candidate_owners", len(getattr(env, "task_candidate_owners", {}))))
 

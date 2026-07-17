@@ -1,5 +1,31 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.20.0
+
+Status: implemented.
+
+Scope:
+
+- Adds executable-aware typed candidate exposure via
+  `--executable_slot_reserve_ratio`. A configurable fraction of task slots is
+  filled from currently executable actions before future-only context tasks can
+  occupy the remaining action set.
+- Adds per-slot timing metadata to the v2 candidate interface:
+  `currently_executable`, `future_executable`, `wait_norm`,
+  `next_start_norm`, and `time_to_deadline_norm`.
+- Feeds timing metadata into DAS action features so the actor can distinguish
+  actions that are executable now from tasks that are only future context.
+- Adds `abl_no_executable_slot_reserve` to the staged ablation runner.
+
+Expected effect:
+
+- Increase `avg_valid_slots` and `eval_valid_decision_rate` without removing
+  future-window context from the action set.
+- Reduce the number of filled-but-invalid slots caused by future-only tasks
+  occupying typed candidate capacity.
+- Give the policy an explicit temporal representation for waiting decisions
+  instead of forcing it to infer future executability from VTW fields alone.
+
 ## DAS-CVA-MAPPO V0.19.0
 
 Status: implemented.

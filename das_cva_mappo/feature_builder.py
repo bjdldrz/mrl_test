@@ -112,6 +112,7 @@ class ActionSetFeatureBuilder:
         slots = self.candidate_adapter.candidate_slots(info)
         slot_types = self.candidate_adapter.slot_types(info)
         slot_scores = self.candidate_adapter.slot_scores(info)
+        slot_timing = self.candidate_adapter.slot_timing(info)
         task_limit = min(len(slots), getattr(env, "candidate_action_top_k", len(slots)), out.shape[0])
         for exposed_action in range(task_limit):
             raw_action = slots[exposed_action]
@@ -126,18 +127,19 @@ class ActionSetFeatureBuilder:
             mission = sub_env.missions[int(raw_action)]
             if mission is None:
                 continue
+            timing = slot_timing[exposed_action] if exposed_action < len(slot_timing) else {}
             task_id_out[exposed_action] = int(mission.id)
             mission_feats, wait_norm, slack_norm = self._mission_features(sub_env, mission)
             out[exposed_action, 9:16] = mission_feats
             out[exposed_action, 16] = slack_norm
-            out[exposed_action, 17] = wait_norm
+            out[exposed_action, 17] = float(timing.get("wait_norm", wait_norm))
             owners = self.candidate_adapter.candidate_owners(env, mission.id)
             out[exposed_action, 18] = 1.0 if agent_id in owners else 0.0
             out[exposed_action, 19] = 1.0 if getattr(mission, "is_dynamic", False) else 0.0
             out[exposed_action, 20] = exposed_action / max(task_limit - 1, 1)
             out[exposed_action, 21] = float(getattr(mission, "priority", 0.0)) / 10.0
-            out[exposed_action, 22] = 1.0 if getattr(mission, "is_observed", False) else 0.0
-            out[exposed_action, 23] = float(raw_action) / max(env.max_action_dim - 1, 1)
+            out[exposed_action, 22] = float(timing.get("currently_executable", mask[exposed_action] > 0))
+            out[exposed_action, 23] = float(timing.get("future_executable", 0.0))
             edge_feature = self._candidate_edge_feature(env, agent_id, sub_env, mission)
             if edge_feature is not None:
                 edge_out[exposed_action] = edge_feature

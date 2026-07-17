@@ -50,6 +50,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self.task_candidate_owners: Dict[int, List[str]] = {}
         self._slot_types: Dict[str, List[str]] = {}
         self._slot_scores: Dict[str, List[float]] = {}
+        self._slot_timing: Dict[str, List[dict]] = {}
         self._candidate_score_table: Dict[int, Dict[str, CandidateScore]] = {}
         self._v2_step_cache = {}
         self._slot_valid_sum = 0
@@ -75,6 +76,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self.task_candidate_owners = {}
         self._slot_types = {}
         self._slot_scores = {}
+        self._slot_timing = {}
         self._candidate_score_table = {}
         self._slot_valid_sum = 0
         self._slot_filled_sum = 0
@@ -372,6 +374,30 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                     continue
                 append_item(slot_type, score, action)
         else:
+            executable_reserve = int(
+                round(self.v2_cfg.slots.total_slots * float(self.v2_cfg.executable_slot_reserve_ratio))
+            )
+            if executable_reserve > 0:
+                current_items = []
+                for item, slot_type in (
+                    [(item, "dynamic") for item in dynamic]
+                    + [(item, "flex") for item in flex]
+                    + [(item, "routine") for item in routine]
+                ):
+                    is_available, score, action = item
+                    if not is_available or action in used:
+                        continue
+                    current_items.append((score, action, slot_type))
+                current_items.sort(key=lambda x: x[0], reverse=True)
+                for score, action, slot_type in current_items:
+                    if len(selected) >= executable_reserve:
+                        break
+                    if action in used:
+                        continue
+                    append_item(slot_type, score, action)
+                    if slot_type in slot_type_counts:
+                        slot_type_counts[slot_type] += 1
+
             def take(group_items, n, slot_type):
                 for _, score, action in group_items:
                     if slot_type_counts[slot_type] >= n:
@@ -420,6 +446,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
         self._slot_types[agent_id] = slot_types
         self._slot_scores[agent_id] = slot_scores
+        self._slot_timing[agent_id] = self._slot_timing_features(agent_id, selected, full_mask)
         for slot_type in ("routine", "dynamic", "flex"):
             if self.v2_cfg.slot_selection_mode == "mixed":
                 capacity = self.v2_cfg.slots.total_slots
@@ -428,6 +455,45 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             self._slot_type_capacity_sum[slot_type] += capacity
         self._record_slot_diagnostics(agent_id, selected, full_mask, slot_types)
         return selected[:self.v2_cfg.slots.total_slots]
+
+    def _slot_timing_features(
+        self,
+        agent_id: str,
+        selected: List[Optional[int]],
+        full_mask: np.ndarray,
+    ) -> List[dict]:
+        env = self.envs[agent_id]
+        timing = []
+        for action in selected[:self.v2_cfg.slots.total_slots]:
+            row = {
+                "currently_executable": 0.0,
+                "future_executable": 0.0,
+                "wait_norm": 1.0,
+                "next_start_norm": 0.0,
+                "time_to_deadline_norm": 0.0,
+            }
+            if action is None or action < 0 or action >= self.max_action_dim:
+                timing.append(row)
+                continue
+            mission = env.missions[action]
+            if mission is None or mission.is_observed:
+                timing.append(row)
+                continue
+            current_time = float(env.current_time_s)
+            row["currently_executable"] = 1.0 if full_mask[action] > 0 else 0.0
+            next_start = current_time if row["currently_executable"] > 0 else env._earliest_feasible_observation_start(
+                mission,
+                current_time,
+            )
+            if next_start is not None:
+                wait_s = max(float(next_start) - current_time, 0.0)
+                row["future_executable"] = 1.0 if wait_s > 1e-6 else row["currently_executable"]
+                row["wait_norm"] = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+                row["next_start_norm"] = float(np.clip(float(next_start) / max(env.horizon_s, 1.0), 0.0, 1.0))
+            slack_s = max(float(mission.deadline_s) - max(current_time, float(mission.earliest_time_s)), 0.0)
+            row["time_to_deadline_norm"] = float(np.clip(slack_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+            timing.append(row)
+        return timing
 
     def _record_slot_diagnostics(
         self,
@@ -851,6 +917,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 **info,
                 "slot_types": list(self._slot_types.get(agent_id, [])),
                 "slot_scores": list(self._slot_scores.get(agent_id, [])),
+                "slot_timing": list(self._slot_timing.get(agent_id, [])),
                 "n_task_candidate_owners": len(self.task_candidate_owners),
             }
         return obs, info

@@ -92,6 +92,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         "--enable_inter_satellite_transfer",
         *kv("--inter_satellite_transfer_time_s", args.inter_satellite_transfer_time_s),
         *kv("--slot_selection_mode", "typed"),
+        *kv("--executable_slot_reserve_ratio", args.executable_slot_reserve_ratio),
         *kv("--ownership_mask_mode", "soft"),
         *kv("--matcher", "set_transformer"),
         *kv("--idle_aux_coeff", "0.05"),
@@ -233,6 +234,16 @@ def ablation_specs() -> list[dict[str, Any]]:
     base = [*stage4_common(candidate_storage_penalty="0.16")]
     hybrid = [*hybrid_scorer_args(candidate_aux_load_penalty="0.20")]
     return [
+        {
+            "name": "abl_no_executable_slot_reserve",
+            "group": "ablation",
+            "base_stage": "stage4",
+            "args": [
+                *base,
+                *kv("--executable_slot_reserve_ratio", "0.00"),
+                *hybrid,
+            ],
+        },
         {
             "name": "abl_no_storage_pressure",
             "group": "ablation",
@@ -502,6 +513,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inter_satellite_transfer_time_s", type=float, default=300.0)
     parser.add_argument("--rollout_steps", type=int, default=512)
     parser.add_argument("--train_env_workers", type=int, default=16)
+    parser.add_argument("--executable_slot_reserve_ratio", type=float, default=0.5)
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--ppo_batch_size", type=int, default=512)
     parser.add_argument("--eval_max_steps", type=int, default=8000)

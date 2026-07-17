@@ -37,6 +37,7 @@ class CVAMAPPOV2Config:
     ownership_mask_mode: str = "soft"
     candidate_owner_bonus: float = 0.06
     slot_selection_mode: str = "typed"
+    executable_slot_reserve_ratio: float = 0.5
 
     # Event-triggered candidate repair.
     replan_interval_s: float = 3600.0
@@ -88,6 +89,8 @@ class CVAMAPPOV2Config:
             raise ValueError("candidate_owner_bonus 必须大于等于 0")
         if self.slot_selection_mode not in {"mixed", "typed"}:
             raise ValueError("slot_selection_mode 必须是 mixed 或 typed")
+        if not 0.0 <= float(self.executable_slot_reserve_ratio) <= 1.0:
+            raise ValueError("executable_slot_reserve_ratio 必须在 [0, 1]")
         for name in [
             "w_wait",
             "w_storage_pressure",
