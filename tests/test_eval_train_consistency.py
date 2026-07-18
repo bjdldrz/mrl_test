@@ -56,7 +56,16 @@ def test_stage_suite_exposes_diagnostic_repair_flag_only() -> None:
     assert '["--eval_use_repair"] if args.eval_use_repair else []' in text
 
 
+def test_stage_suite_exposes_eval_profile_flag() -> None:
+    text = (ROOT / "scripts" / "run_stage_ablation_suite.py").read_text(
+        encoding="utf-8"
+    )
+    assert "--eval_profile" in text
+    assert '["--eval_profile"] if args.eval_profile else []' in text
+
+
 if __name__ == "__main__":
     test_das_eval_mode_defaults_to_train_path()
     test_compat_runner_eval_mode_defaults_to_train_path()
     test_stage_suite_exposes_diagnostic_repair_flag_only()
+    test_stage_suite_exposes_eval_profile_flag()

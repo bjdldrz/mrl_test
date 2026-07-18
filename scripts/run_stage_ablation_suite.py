@@ -49,6 +49,24 @@ SUMMARY_COLUMNS = [
     "eval_valid_decision_rate",
     "eval_idle_action_rate",
     "eval_idle_when_valid_rate",
+    "eval_wall_time_s",
+    "eval_total_steps",
+    "eval_steps_per_wall_s",
+    "eval_setup_time_s",
+    "eval_reset_time_s",
+    "eval_valid_mask_time_s",
+    "eval_feature_build_time_s",
+    "eval_actor_forward_time_s",
+    "eval_counter_time_s",
+    "eval_env_step_time_s",
+    "eval_finalize_time_s",
+    "eval_timed_to_wall_ratio",
+    "eval_feature_build_share",
+    "eval_actor_forward_share",
+    "eval_env_step_share",
+    "eval_actor_batches",
+    "eval_feature_batches",
+    "eval_env_step_calls",
     "avg_valid_slots",
     "avg_current_valid_slots",
     "avg_future_valid_slots",
@@ -127,6 +145,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--eval_device", args.eval_device),
         *kv("--eval_workers", args.eval_workers),
         *(["--eval_use_repair"] if args.eval_use_repair else []),
+        *(["--eval_profile"] if args.eval_profile else []),
         *kv("--torch_num_threads", args.torch_num_threads),
         *kv("--vtw_time_step_s", args.vtw_time_step_s),
         *kv("--out_dir", suite_dir),
@@ -667,6 +686,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--eval_device", default="same")
     parser.add_argument("--eval_use_repair", action="store_true")
+    parser.add_argument("--eval_profile", action="store_true")
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

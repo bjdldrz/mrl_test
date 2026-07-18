@@ -1,5 +1,26 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.27.0
+
+Status: implemented.
+
+Scope:
+
+- Adds optional `--eval_profile` instrumentation for DAS evaluation.
+- Records evaluation wall time, total evaluated steps, steps per wall second,
+  and timed sections for setup, reset, valid-mask checks, feature building,
+  actor forward, counter updates, environment stepping, and finalization.
+- Exposes the profiling flag and the key timing columns in
+  `scripts/run_stage_ablation_suite.py` summaries.
+
+Expected effect:
+
+- Makes it possible to verify whether slow evaluation is dominated by
+  candidate/feature construction, actor forward, or Python environment stepping
+  from one `summary.csv` table.
+- Leaves default metrics and train/eval environment behavior unchanged unless
+  `--eval_profile` is explicitly enabled.
+
 ## DAS-CVA-MAPPO V0.26.0
 
 Status: implemented.

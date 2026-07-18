@@ -1,10 +1,11 @@
 """
-Run DAS-CVA-MAPPO V0.26.
+Run DAS-CVA-MAPPO V0.27.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
 action-set-aware MAPPO policy over action entities. V0.26 makes the default
-evaluation environment use the same action-resolution path as training.
+evaluation environment use the same action-resolution path as training. V0.27
+adds optional evaluation profiling so slow evaluation runs can be diagnosed.
 """
 
 from __future__ import annotations
@@ -345,6 +346,97 @@ def _update_eval_counter(env, actions: Dict[str, int], valid_by_agent: Dict[str,
     counter["agent_actions"] += len(actions)
 
 
+EVAL_PROFILE_SECTIONS = (
+    "setup",
+    "reset",
+    "valid_mask",
+    "feature_build",
+    "actor_forward",
+    "counter",
+    "env_step",
+    "finalize",
+)
+
+
+def _new_eval_profile() -> Dict[str, float]:
+    return {
+        **{f"{section}_time_s": 0.0 for section in EVAL_PROFILE_SECTIONS},
+        "actor_batches": 0.0,
+        "feature_batches": 0.0,
+        "env_step_calls": 0.0,
+    }
+
+
+def _profile_add(profile: Optional[Dict[str, float]], section: str, elapsed_s: float) -> None:
+    if profile is None:
+        return
+    profile[f"{section}_time_s"] = profile.get(f"{section}_time_s", 0.0) + float(elapsed_s)
+
+
+def _profile_start(profile: Optional[Dict[str, float]]) -> float:
+    return time.perf_counter() if profile is not None else 0.0
+
+
+def _profile_stop(profile: Optional[Dict[str, float]], section: str, started_s: float) -> None:
+    if profile is None:
+        return
+    _profile_add(profile, section, time.perf_counter() - started_s)
+
+
+def _profile_incr(profile: Optional[Dict[str, float]], key: str, amount: float = 1.0) -> None:
+    if profile is None:
+        return
+    profile[key] = profile.get(key, 0.0) + float(amount)
+
+
+def _sync_eval_device(device: torch.device) -> None:
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+    elif device.type == "mps" and hasattr(torch, "mps"):
+        try:
+            torch.mps.synchronize()
+        except Exception:
+            pass
+
+
+def _merge_eval_profiles(profiles: List[Optional[Dict[str, float]]]) -> Dict[str, float]:
+    merged = _new_eval_profile()
+    for profile in profiles:
+        if not profile:
+            continue
+        for key, value in profile.items():
+            merged[key] = merged.get(key, 0.0) + float(value)
+    return merged
+
+
+def _eval_profile_metrics(
+    profile: Dict[str, float],
+    wall_time_s: float,
+    total_steps: float,
+    n_episodes: int,
+) -> Dict[str, float]:
+    wall_time_s = max(float(wall_time_s), 0.0)
+    total_steps = float(total_steps)
+    timed_time_s = sum(float(profile.get(f"{section}_time_s", 0.0)) for section in EVAL_PROFILE_SECTIONS)
+    metrics: Dict[str, float] = {
+        "eval_profile_enabled": 1.0,
+        "eval_wall_time_s": wall_time_s,
+        "eval_total_steps": total_steps,
+        "eval_profile_episodes": float(n_episodes),
+        "eval_steps_per_wall_s": total_steps / max(wall_time_s, 1e-9),
+        "eval_profile_timed_time_s": timed_time_s,
+        "eval_timed_to_wall_ratio": timed_time_s / max(wall_time_s, 1e-9),
+        "eval_actor_batches": float(profile.get("actor_batches", 0.0)),
+        "eval_feature_batches": float(profile.get("feature_batches", 0.0)),
+        "eval_env_step_calls": float(profile.get("env_step_calls", 0.0)),
+    }
+    for section in EVAL_PROFILE_SECTIONS:
+        value = float(profile.get(f"{section}_time_s", 0.0))
+        metrics[f"eval_{section}_time_s"] = value
+        metrics[f"eval_{section}_share"] = value / max(timed_time_s, 1e-9)
+    return metrics
+
+
 def _finalize_eval_metrics(env, n_steps: int, max_steps: int, counter: Dict[str, int]) -> Dict[str, float]:
     row = env.get_metrics()
     current_times = [sub_env.current_time_s for sub_env in env.envs.values()]
@@ -415,6 +507,8 @@ def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> Candidat
 
 def _eval_worker(payload):
     torch.set_num_threads(1)
+    profile = _new_eval_profile() if payload.get("eval_profile", False) else None
+    setup_started = _profile_start(profile)
     cfg = payload["cfg"]
     args = payload["args"]
     v2_cfg = payload["v2_cfg"]
@@ -455,26 +549,50 @@ def _eval_worker(payload):
         idle_aux_coeff=0.0,
         device=str(eval_device),
     )
+    _profile_stop(profile, "setup", setup_started)
 
+    reset_started = _profile_start(profile)
     infos = _reset_infos(env, routine, dynamic)
+    _profile_stop(profile, "reset", reset_started)
     counter = _eval_counter()
     n_steps = 0
     max_steps = _eval_step_limit(args, env)
     for _ in range(max_steps):
+        valid_started = _profile_start(profile)
         valid_by_agent = _eval_valid_by_agent(env, infos)
-        actions = trainer.select_eval_actions(
+        _profile_stop(profile, "valid_mask", valid_started)
+
+        feature_started = _profile_start(profile)
+        batch = feature_builder.build_many(env, infos)
+        _profile_stop(profile, "feature_build", feature_started)
+        _profile_incr(profile, "feature_batches")
+
+        actor_started = _profile_start(profile)
+        actions, _, _ = trainer.sample_actions(
             env,
-            infos,
+            batch,
+            training=False,
             deterministic=payload.get("eval_deterministic", False),
         )
+        _profile_stop(profile, "actor_forward", actor_started)
+        _profile_incr(profile, "actor_batches")
+
+        counter_started = _profile_start(profile)
         _update_eval_counter(env, actions, valid_by_agent, counter)
+        _profile_stop(profile, "counter", counter_started)
+
+        step_started = _profile_start(profile)
         step = env.step(actions)
         infos = {aid: item[4] for aid, item in step.items()}
+        _profile_stop(profile, "env_step", step_started)
+        _profile_incr(profile, "env_step_calls")
         n_steps += 1
         if env.is_done():
             break
+    finalize_started = _profile_start(profile)
     row = _finalize_eval_metrics(env, n_steps, max_steps, counter)
-    return {"idx": payload["idx"], "metrics": row}
+    _profile_stop(profile, "finalize", finalize_started)
+    return {"idx": payload["idx"], "metrics": row, "profile": profile}
 
 
 def _make_eval_runtime(
@@ -484,11 +602,14 @@ def _make_eval_runtime(
     scenario,
     idx: int,
     candidate_scorer: Optional[TrainableCandidateValueScorer],
+    profile: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     routine, dynamic = scenario
     env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
     env.set_eval_mode(bool(getattr(args, "eval_use_repair", False)))
+    reset_started = _profile_start(profile)
     infos = _reset_infos(env, routine, dynamic)
+    _profile_stop(profile, "reset", reset_started)
     return {
         "idx": int(idx),
         "env": env,
@@ -505,13 +626,20 @@ def _select_batched_eval_actions(
     runtimes: List[Dict[str, Any]],
     device: torch.device,
     deterministic: bool = False,
+    profile: Optional[Dict[str, float]] = None,
 ) -> List[Tuple[Dict[str, Any], Dict[str, int], Dict[str, bool]]]:
     rows = []
     for runtime in runtimes:
         env = runtime["env"]
         infos = runtime["infos"]
+        valid_started = _profile_start(profile)
         valid_by_agent = _eval_valid_by_agent(env, infos)
+        _profile_stop(profile, "valid_mask", valid_started)
+
+        feature_started = _profile_start(profile)
         batch = feature_builder.build_many(env, infos)
+        _profile_stop(profile, "feature_build", feature_started)
+        _profile_incr(profile, "feature_batches")
         for aid in env.agent_ids:
             item = batch[aid]
             rows.append((
@@ -529,6 +657,9 @@ def _select_batched_eval_actions(
     states = np.stack([row[3] for row in rows], axis=0)
     action_features = np.stack([row[4] for row in rows], axis=0)
     masks = np.stack([row[5] for row in rows], axis=0)
+    if profile is not None:
+        _sync_eval_device(device)
+    actor_started = _profile_start(profile)
     with torch.no_grad():
         action_t, _, _ = model.actor.get_action(
             torch.FloatTensor(states).to(device),
@@ -536,6 +667,10 @@ def _select_batched_eval_actions(
             torch.FloatTensor(masks).to(device),
             deterministic=deterministic,
         )
+    if profile is not None:
+        _sync_eval_device(device)
+    _profile_stop(profile, "actor_forward", actor_started)
+    _profile_incr(profile, "actor_batches")
     actions_np = action_t.cpu().numpy()
 
     action_by_runtime: Dict[int, Tuple[Dict[str, Any], Dict[str, int], Dict[str, bool]]] = {}
@@ -559,8 +694,10 @@ def _batched_eval_single_process(
     eval_device: str,
     batch_envs: int,
     show_progress: bool = True,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, float]]]:
     device = torch.device(eval_device)
+    profile = _new_eval_profile() if getattr(args, "eval_profile", False) else None
+    setup_started = _profile_start(profile)
     candidate_adapter = _build_candidate_adapter(das_cfg)
     candidate_scorer = _build_worker_candidate_scorer(
         v2_cfg,
@@ -568,16 +705,18 @@ def _batched_eval_single_process(
         candidate_scorer_state,
         device=str(device),
     )
+    _profile_stop(profile, "setup", setup_started)
     runtimes: List[Dict[str, Any]] = []
     pending = list(enumerate(scenarios))
     initial_count = min(max(int(batch_envs), 1), len(pending))
     for _ in range(initial_count):
         idx, scenario = pending.pop(0)
-        runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer))
+        runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer, profile))
 
     if not runtimes:
-        return []
+        return [], profile
 
+    setup_started = _profile_start(profile)
     model = _build_action_model(das_cfg, runtimes[0]["env"]).to(device)
     model.load_state_dict(_numpy_state_to_torch(model_state))
     model.eval()
@@ -588,6 +727,7 @@ def _batched_eval_single_process(
         use_candidate_score=das_cfg.use_candidate_score_feature,
         candidate_adapter=candidate_adapter,
     )
+    _profile_stop(profile, "setup", setup_started)
 
     raw: List[Dict[str, Any]] = []
     pbar = tqdm(
@@ -605,21 +745,30 @@ def _batched_eval_single_process(
                 runtimes,
                 device=device,
                 deterministic=args.eval_deterministic,
+                profile=profile,
             )
             finished: List[Dict[str, Any]] = []
             for runtime, actions, valid_by_agent in selected:
                 env = runtime["env"]
+                counter_started = _profile_start(profile)
                 _update_eval_counter(env, actions, valid_by_agent, runtime["counter"])
+                _profile_stop(profile, "counter", counter_started)
+
+                step_started = _profile_start(profile)
                 step = env.step(actions)
                 runtime["infos"] = {aid: item[4] for aid, item in step.items()}
+                _profile_stop(profile, "env_step", step_started)
+                _profile_incr(profile, "env_step_calls")
                 runtime["n_steps"] += 1
                 if env.is_done() or runtime["n_steps"] >= runtime["max_steps"]:
+                    finalize_started = _profile_start(profile)
                     row = _finalize_eval_metrics(
                         env,
                         runtime["n_steps"],
                         runtime["max_steps"],
                         runtime["counter"],
                     )
+                    _profile_stop(profile, "finalize", finalize_started)
                     raw.append({"idx": runtime["idx"], "metrics": row})
                     finished.append(runtime)
                     pbar.update(1)
@@ -629,12 +778,12 @@ def _batched_eval_single_process(
                 runtimes = [runtime for runtime in runtimes if id(runtime) not in finished_ids]
                 while pending and len(runtimes) < max(int(batch_envs), 1):
                     idx, scenario = pending.pop(0)
-                    runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer))
+                    runtimes.append(_make_eval_runtime(cfg, args, v2_cfg, scenario, idx, candidate_scorer, profile))
             elif not selected:
                 break
     finally:
         pbar.close()
-    return raw
+    return raw, profile
 
 
 def _parallel_eval(
@@ -653,6 +802,7 @@ def _parallel_eval(
         return {}
     n_workers = max(1, min(int(args.eval_workers or 1), len(scenarios)))
     eval_device = args.eval_device if args.eval_device != "same" else args.device
+    eval_started = time.perf_counter()
 
     model_state = _torch_state_to_numpy(model.state_dict())
     candidate_scorer_state = _candidate_scorer_model_state(candidate_scorer)
@@ -662,7 +812,7 @@ def _parallel_eval(
                 f"评估设备为 {eval_device}; 使用单进程 batched eval 并发 {n_workers} 个环境, "
                 "避免多个进程抢占同一张 GPU。"
             )
-        raw = _batched_eval_single_process(
+        raw, profile = _batched_eval_single_process(
             cfg=cfg,
             args=args,
             v2_cfg=v2_cfg,
@@ -675,7 +825,16 @@ def _parallel_eval(
             show_progress=show_progress,
         )
         raw = sorted(raw, key=lambda row: row["idx"])
-        return _avg_metrics([row["metrics"] for row in raw])
+        metrics = _avg_metrics([row["metrics"] for row in raw])
+        if getattr(args, "eval_profile", False):
+            total_steps = sum(float(row["metrics"].get("eval_steps", 0.0)) for row in raw)
+            metrics.update(_eval_profile_metrics(
+                profile or _new_eval_profile(),
+                time.perf_counter() - eval_started,
+                total_steps,
+                len(raw),
+            ))
+        return metrics
 
     payloads = [
         {
@@ -689,6 +848,7 @@ def _parallel_eval(
             "candidate_scorer_state": candidate_scorer_state,
             "eval_device": eval_device,
             "eval_deterministic": args.eval_deterministic,
+            "eval_profile": bool(getattr(args, "eval_profile", False)),
         }
         for idx, scenario in enumerate(scenarios)
     ]
@@ -714,7 +874,17 @@ def _parallel_eval(
                 disable=not show_progress,
             ))
     raw = sorted(raw, key=lambda row: row["idx"])
-    return _avg_metrics([row["metrics"] for row in raw])
+    metrics = _avg_metrics([row["metrics"] for row in raw])
+    if getattr(args, "eval_profile", False):
+        total_steps = sum(float(row["metrics"].get("eval_steps", 0.0)) for row in raw)
+        profile = _merge_eval_profiles([row.get("profile") for row in raw])
+        metrics.update(_eval_profile_metrics(
+            profile,
+            time.perf_counter() - eval_started,
+            total_steps,
+            len(raw),
+        ))
+    return metrics
 
 
 def _write_train_log(out_dir: Path, rows: List[Dict[str, Any]]) -> None:
@@ -1099,6 +1269,7 @@ def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios) -> Dict[str,
         "eval_device": str(eval_device),
         "eval_execution_mode": eval_execution_mode,
         "eval_use_repair": bool(getattr(args, "eval_use_repair", False)),
+        "eval_profile": bool(getattr(args, "eval_profile", False)),
         "max_action_dim": int(cfg.mission.max_action_dim),
         "task_slots": task_slots,
         "transfer_slots": transfer_slots,
@@ -1138,6 +1309,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
         f"device={plan['eval_device']}, "
         f"mode={plan['eval_execution_mode']}, "
         f"repair={plan['eval_use_repair']}, "
+        f"profile={plan['eval_profile']}, "
         f"eval_max_steps={plan['eval_max_steps']}"
     )
     print(
@@ -1150,7 +1322,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.26 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.27 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1161,6 +1333,7 @@ def main() -> None:
     parser.add_argument("--eval_device", type=str, default="same")
     parser.add_argument("--eval_deterministic", action="store_true", default=False)
     parser.add_argument("--eval_use_repair", action="store_true")
+    parser.add_argument("--eval_profile", action="store_true")
     parser.add_argument("--eval_max_steps", type=int, default=0)
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
@@ -1174,7 +1347,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_26")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_27")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1323,7 +1496,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.26"
+    method_name = "DAS-CVA-MAPPO-v0.27"
     results = {
         method_name: train_and_eval(
             cfg,
