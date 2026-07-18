@@ -1,5 +1,32 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.28.0
+
+Status: implemented.
+
+Scope:
+
+- Optimizes multi-agent environment stepping after profiling showed
+  `env.step()` dominated evaluation wall time.
+- Adds an all-idle fast path in conflict resolution for the default
+  train/eval-consistent mode, avoiding unnecessary full action-mask and auction
+  work when every policy action is idle.
+- Lets `MultiSatelliteEnv` call low-level `SatelliteSchedulingEnv.step()` with
+  `build_observation=False` and `check_done=False`, then rebuilds final
+  multi-agent observations and done flags once at the end of the step.
+- Caches the latest multi-agent done result so the caller's immediate
+  `is_done()` check does not repeat a full mission-feasibility scan.
+- Reports `n_fast_idle_resolve_steps`, `fast_idle_resolve_rate`, and
+  `n_low_level_fast_steps` in metrics and suite summaries.
+
+Expected effect:
+
+- Reduces repeated Python work inside evaluation-heavy runs without changing
+  the final observations, action masks, rewards, or default train/eval
+  environment semantics.
+- Should help most when `eval_idle_action_rate` is high, which is the current
+  profiled regime.
+
 ## DAS-CVA-MAPPO V0.27.0
 
 Status: implemented.

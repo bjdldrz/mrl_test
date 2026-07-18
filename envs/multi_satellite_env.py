@@ -142,11 +142,16 @@ class MultiSatelliteEnv:
         self._n_future_dynamic_task_executions = 0
         self._n_future_routine_task_executions = 0
         self._future_task_wait_sum_s = 0.0
+        self._n_multi_steps = 0
+        self._n_fast_idle_resolve_steps = 0
+        self._n_low_level_fast_steps = 0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
+        self._last_done_by_agent: Dict[str, Tuple[bool, bool]] = {}
+        self._is_done_cache: Optional[bool] = None
         self.assignment_manager_mode = self._validate_assignment_manager_mode(assignment_manager_mode)
         self._assignment_manager = self._init_assignment_manager()
         # 截止前释放窗口: owner 尚未完成时, 非 owner 可在任务临近 deadline 时接手,
@@ -798,10 +803,16 @@ class MultiSatelliteEnv:
     ) -> bool:
         return self._future_task_ready_time(agent_id, action, full_mask=full_mask) is not None
 
-    def _prepare_future_task_action(self, agent_id: str, action: int) -> Dict[str, float]:
+    def _prepare_future_task_action(
+        self,
+        agent_id: str,
+        action: int,
+        full_mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
         if action < 0 or action >= self.max_action_dim:
             return {}
-        full_mask = self._full_action_mask(agent_id)
+        if full_mask is None:
+            full_mask = self._full_action_mask(agent_id)
         if action < len(full_mask) and full_mask[action] > 0:
             return {}
         next_start = self._future_task_ready_time(agent_id, action, full_mask=full_mask)
@@ -877,11 +888,16 @@ class MultiSatelliteEnv:
         self._n_future_dynamic_task_executions = 0
         self._n_future_routine_task_executions = 0
         self._future_task_wait_sum_s = 0.0
+        self._n_multi_steps = 0
+        self._n_fast_idle_resolve_steps = 0
+        self._n_low_level_fast_steps = 0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
         self._rescued_mission_ids = set()
         self._deadline_rescue_mission_ids = set()
+        self._last_done_by_agent = {}
+        self._is_done_cache = None
         self._candidate_action_maps = {aid: [] for aid in self.agent_ids}
         self._candidate_slot_valid_sum = 0.0
         self._candidate_slot_filled_sum = 0.0
@@ -911,15 +927,28 @@ class MultiSatelliteEnv:
         包含冲突检测：如果多颗卫星选择同一任务，
         只允许第一颗执行，其余强制 idle（避免双重奖励）。
         """
+        self._n_multi_steps += 1
+        self._is_done_cache = None
         raw_actions = self._decode_actions(actions)
         results = {}
-        prev_load = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
-        prev_observed = self._completed_mission_ids() if self.coordinate else set()
+        reward_shaping_enabled = (
+            self.coordinate
+            and (
+                self.team_reward_mix > 0
+                or self.load_balance_reward_coeff != 0
+                or self.team_completion_bonus != 0
+            )
+        )
+        prev_load = (
+            {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
+            if reward_shaping_enabled else {}
+        )
+        prev_observed = self._completed_mission_ids() if reward_shaping_enabled else set()
 
         # 1) 冲突解决 (优化路线图 A1+A2/A3+B6): 负载感知的贪心拍卖 + 败者改派.
         #    协同模式下用边际价值竞价择优指派, 抢输者改派次优任务;
         #    无协同 baseline 下原样返回各卫星动作 (不去冲突 → 可能重复观测).
-        resolved_actions = self._resolve_actions(raw_actions)
+        resolved_actions, resolve_masks = self._resolve_actions_with_masks(raw_actions)
         action_owner_before = {}
         if self.coordinate and self.episode_assignment:
             for agent_id, action in resolved_actions.items():
@@ -934,6 +963,13 @@ class MultiSatelliteEnv:
         # 2) 每颗卫星执行（已去冲突的）动作
         prev_schedule_lens = {aid: len(self.envs[aid].schedule_log) for aid in self.agent_ids}
         prev_ground_available = list(self._ground_station_available_s)
+        prev_dynamic_slots = (
+            {
+                aid: int(getattr(env, "_next_dynamic_slot", self.max_action_dim))
+                for aid, env in self.envs.items()
+            }
+            if self.coordinate and self.episode_assignment else {}
+        )
         pending_transfer_actions: Dict[str, int] = {}
         future_action_info: Dict[str, Dict[str, float]] = {}
         for agent_id in self.agent_ids:
@@ -943,15 +979,24 @@ class MultiSatelliteEnv:
                 env._insert_arrived_dynamic_missions()
                 pending_transfer_actions[agent_id] = action
                 obs, reward, term, trunc, info = (
-                    env._build_observation(),
+                    np.zeros(0, dtype=np.float32),
                     0.0,
-                    env._all_missions_done() or env.current_time_s >= env.horizon_s,
                     False,
+                    bool(env.current_time_s >= env.horizon_s),
                     {"pending_inter_satellite_transfer": True},
                 )
             else:
-                future_action_info[agent_id] = self._prepare_future_task_action(agent_id, action)
-                obs, reward, term, trunc, info = env.step(action)
+                future_action_info[agent_id] = self._prepare_future_task_action(
+                    agent_id,
+                    action,
+                    full_mask=resolve_masks.get(agent_id),
+                )
+                obs, reward, term, trunc, info = env.step(
+                    action,
+                    build_observation=False,
+                    check_done=False,
+                )
+                self._n_low_level_fast_steps += 1
                 if future_action_info[agent_id]:
                     info = {**info, **future_action_info[agent_id]}
             results[agent_id] = (obs, reward, term, trunc, info)
@@ -968,30 +1013,33 @@ class MultiSatelliteEnv:
         # 3.5) 动态任务到达后做增量指派 (在当前负载基础上继续均衡)
         new_missions = []
         if self.coordinate and self.episode_assignment:
-            new_missions = [
-                m for m in self._all_known_missions()
-                if m.id not in self.task_owner
-            ]
+            new_missions = self._newly_inserted_unowned_missions(prev_dynamic_slots)
             if new_missions:
                 self._refresh_assignment_load()
                 self._assign_tasks(new_missions)
             self._maybe_reassign_tasks(dynamic_event=bool(new_missions))
 
         # 3.8) 多智能体奖励塑形 (仅协同模式): 团队奖励 + 负载均衡 + 团队完成 bonus.
-        if self.coordinate:
+        if reward_shaping_enabled:
             results = self._shape_multi_agent_rewards(results, prev_load, prev_observed)
 
         # 4) 用同步后的状态重新构建观测和掩码 (协同模式叠加所有权掩码)
+        done_by_agent: Dict[str, Tuple[bool, bool]] = {}
         for agent_id, env in self.envs.items():
             obs, info = self._expose_obs_info(agent_id)
             old_result = results[agent_id]
+            truncated = bool(env.current_time_s >= env.horizon_s)
+            terminated = bool(env._all_missions_done())
+            done_by_agent[agent_id] = (terminated, truncated)
             results[agent_id] = (
                 obs,
                 old_result[1],
-                old_result[2],
-                old_result[3],
+                terminated,
+                truncated,
                 {**old_result[4], **info},
             )
+        self._last_done_by_agent = done_by_agent
+        self._is_done_cache = all(term or trunc for term, trunc in done_by_agent.values())
 
         return results
 
@@ -1389,6 +1437,25 @@ class MultiSatelliteEnv:
 
     def _all_known_missions(self) -> List[Any]:
         return list(self._all_known_missions_by_id().values())
+
+    def _newly_inserted_unowned_missions(self, prev_dynamic_slots: Dict[str, int]) -> List[Any]:
+        """Return dynamic missions inserted during the current multi-agent step."""
+        if not prev_dynamic_slots:
+            return []
+        missions_by_id: Dict[int, Any] = {}
+        for aid, env in self.envs.items():
+            start = int(prev_dynamic_slots.get(aid, getattr(env, "_next_dynamic_slot", 0)))
+            end = int(getattr(env, "_next_dynamic_slot", start))
+            if end <= start:
+                continue
+            for mission in env.missions[start:min(end, self.max_action_dim)]:
+                if (
+                    mission is not None
+                    and not mission.is_observed
+                    and mission.id not in self.task_owner
+                ):
+                    missions_by_id[int(mission.id)] = mission
+        return list(missions_by_id.values())
 
     def _mission_from_any_env(self, mission_id: int):
         return self._all_known_missions_by_id().get(int(mission_id))
@@ -1850,6 +1917,9 @@ class MultiSatelliteEnv:
 
     def _has_stale_owner(self) -> bool:
         """是否存在 owner 已无未来可行窗口的未完成任务。"""
+        stale_task_ids = getattr(self, "_stale_task_ids", None)
+        if callable(stale_task_ids):
+            return bool(stale_task_ids())
         for mission in self._all_known_missions():
             if mission is None or mission.is_observed:
                 continue
@@ -2334,6 +2404,13 @@ class MultiSatelliteEnv:
         return False
 
     def _resolve_actions(self, actions: Dict[str, int]) -> Dict[str, int]:
+        resolved, _ = self._resolve_actions_with_masks(actions)
+        return resolved
+
+    def _resolve_actions_with_masks(
+        self,
+        actions: Dict[str, int],
+    ) -> Tuple[Dict[str, int], Dict[str, np.ndarray]]:
         """
         协同冲突解决。
 
@@ -2348,7 +2425,14 @@ class MultiSatelliteEnv:
         """
         raw_idle = self._raw_idle_action()
         if not self.coordinate:
-            return dict(actions)
+            return dict(actions), {}
+
+        if (
+            not self.eval_mode
+            and all(actions.get(aid, raw_idle) == raw_idle for aid in self.agent_ids)
+        ):
+            self._n_fast_idle_resolve_steps += 1
+            return {aid: raw_idle for aid in self.agent_ids}, {}
 
         # 预计算每颗卫星当前可行的(非 idle)动作集合.
         # 此刻各 env 状态尚未改变(动态任务在 env.step 内才插入), 掩码与策略所见一致.
@@ -2427,7 +2511,7 @@ class MultiSatelliteEnv:
             self._preempt_routine_with_dynamic_rescues(resolved, claimed, feasible, raw_idle)
             self._assign_idle_executable_rescues(resolved, claimed, feasible, raw_idle)
 
-        return resolved
+        return resolved, full_masks
 
     def _preempt_routine_with_dynamic_rescues(
         self,
@@ -3009,6 +3093,12 @@ class MultiSatelliteEnv:
             "n_rescued_tasks": len(self._rescued_mission_ids),
             "n_deadline_rescue_tasks": len(self._deadline_rescue_mission_ids),
             "deadline_rescue_rate": deadline_rescue_rate,
+            "n_multi_steps": self._n_multi_steps,
+            "n_fast_idle_resolve_steps": self._n_fast_idle_resolve_steps,
+            "fast_idle_resolve_rate": (
+                self._n_fast_idle_resolve_steps / max(self._n_multi_steps, 1)
+            ),
+            "n_low_level_fast_steps": self._n_low_level_fast_steps,
         }
         if self._candidate_actions_enabled():
             denom = max(self._candidate_slot_exposure_count * self.candidate_action_top_k, 1)
@@ -3032,9 +3122,13 @@ class MultiSatelliteEnv:
 
     def is_done(self) -> bool:
         """检查是否所有卫星的 episode 都结束"""
+        if self._is_done_cache is not None:
+            return bool(self._is_done_cache)
         for env in self.envs.values():
             if env.current_time_s < env.horizon_s and not env._all_missions_done():
+                self._is_done_cache = False
                 return False
+        self._is_done_cache = True
         return True
 
     @property

@@ -265,7 +265,12 @@ class SatelliteSchedulingEnv(gym.Env):
         info = {"action_mask": self._build_action_mask()}
         return obs, info
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+    def step(
+        self,
+        action: int,
+        build_observation: bool = True,
+        check_done: bool = True,
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
         执行一步调度决策。
 
@@ -315,14 +320,17 @@ class SatelliteSchedulingEnv(gym.Env):
         if self.current_time_s >= self.horizon_s:
             truncated = True  # 规划周期结束
 
-        if self._all_missions_done():
+        if check_done and self._all_missions_done():
             terminated = True  # 所有可行任务已完成
 
         # 4) 构建下一步状态
-        obs = self._build_observation()
-        info["action_mask"] = self._build_action_mask()
         info["current_time_s"] = self.current_time_s
-        info["schedule_log"] = self.schedule_log
+        if build_observation:
+            obs = self._build_observation()
+            info["action_mask"] = self._build_action_mask()
+            info["schedule_log"] = self.schedule_log
+        else:
+            obs = np.zeros(0, dtype=np.float32)
 
         return obs, reward, terminated, truncated, info
 

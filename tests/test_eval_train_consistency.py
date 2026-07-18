@@ -64,8 +64,17 @@ def test_stage_suite_exposes_eval_profile_flag() -> None:
     assert '["--eval_profile"] if args.eval_profile else []' in text
 
 
+def test_multi_env_uses_low_level_fast_step() -> None:
+    text = (ROOT / "envs" / "multi_satellite_env.py").read_text(encoding="utf-8")
+    assert "build_observation=False" in text
+    assert "check_done=False" in text
+    assert "_resolve_actions_with_masks" in text
+    assert "_n_fast_idle_resolve_steps" in text
+
+
 if __name__ == "__main__":
     test_das_eval_mode_defaults_to_train_path()
     test_compat_runner_eval_mode_defaults_to_train_path()
     test_stage_suite_exposes_diagnostic_repair_flag_only()
     test_stage_suite_exposes_eval_profile_flag()
+    test_multi_env_uses_low_level_fast_step()
