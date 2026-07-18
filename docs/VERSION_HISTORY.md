@@ -1,5 +1,29 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.26.0
+
+Status: implemented.
+
+Scope:
+
+- Makes DAS evaluation use the same environment action-resolution path as
+  training by default. `env.eval_mode` is no longer enabled unconditionally
+  during evaluation.
+- Keeps the old eval-only conflict repair/rescue behavior behind
+  `--eval_use_repair` for diagnostic runs.
+- Records `eval_use_repair` in the runtime plan and exposes it through the
+  staged experiment runner.
+- Adds a lightweight static regression check to keep evaluation from
+  accidentally re-enabling eval-only repair as the default.
+
+Expected effect:
+
+- Evaluation metrics now reflect the policy under the same conflict-resolution,
+  loser handling, dynamic preemption, and idle-rescue behavior used during
+  training.
+- Paper-facing results avoid the previous mismatch where eval received
+  rule-based post-processing that train did not use.
+
 ## DAS-CVA-MAPPO V0.25.0
 
 Status: implemented.

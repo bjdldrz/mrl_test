@@ -1,10 +1,10 @@
 """
-Run DAS-CVA-MAPPO V0.25.
+Run DAS-CVA-MAPPO V0.26.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
-action-set-aware MAPPO policy over action entities. V0.25 adds single-process
-batched CUDA evaluation across multiple eval environments.
+action-set-aware MAPPO policy over action entities. V0.26 makes the default
+evaluation environment use the same action-resolution path as training.
 """
 
 from __future__ import annotations
@@ -430,7 +430,7 @@ def _eval_worker(payload):
     )
 
     env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
-    env.set_eval_mode(True)
+    env.set_eval_mode(bool(getattr(args, "eval_use_repair", False)))
     model = _build_action_model(das_cfg, env).to(eval_device)
     model.load_state_dict(_numpy_state_to_torch(payload["model_state"]))
     feature_builder = ActionSetFeatureBuilder(
@@ -487,7 +487,7 @@ def _make_eval_runtime(
 ) -> Dict[str, Any]:
     routine, dynamic = scenario
     env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
-    env.set_eval_mode(True)
+    env.set_eval_mode(bool(getattr(args, "eval_use_repair", False)))
     infos = _reset_infos(env, routine, dynamic)
     return {
         "idx": int(idx),
@@ -1098,6 +1098,7 @@ def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios) -> Dict[str,
         "effective_eval_workers": int(effective_eval_workers),
         "eval_device": str(eval_device),
         "eval_execution_mode": eval_execution_mode,
+        "eval_use_repair": bool(getattr(args, "eval_use_repair", False)),
         "max_action_dim": int(cfg.mission.max_action_dim),
         "task_slots": task_slots,
         "transfer_slots": transfer_slots,
@@ -1136,6 +1137,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
         f"effective_workers={plan['effective_eval_workers']}, "
         f"device={plan['eval_device']}, "
         f"mode={plan['eval_execution_mode']}, "
+        f"repair={plan['eval_use_repair']}, "
         f"eval_max_steps={plan['eval_max_steps']}"
     )
     print(
@@ -1148,7 +1150,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.25 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.26 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1158,6 +1160,7 @@ def main() -> None:
     parser.add_argument("--eval_workers", type=int, default=24)
     parser.add_argument("--eval_device", type=str, default="same")
     parser.add_argument("--eval_deterministic", action="store_true", default=False)
+    parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--eval_max_steps", type=int, default=0)
     parser.add_argument("--n_routine", type=int, default=1200)
     parser.add_argument("--n_dynamic", type=int, default=300)
@@ -1171,7 +1174,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_25")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_26")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1320,7 +1323,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.25"
+    method_name = "DAS-CVA-MAPPO-v0.26"
     results = {
         method_name: train_and_eval(
             cfg,

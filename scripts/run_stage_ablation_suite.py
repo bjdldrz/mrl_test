@@ -126,6 +126,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--eval_max_steps", args.eval_max_steps),
         *kv("--eval_device", args.eval_device),
         *kv("--eval_workers", args.eval_workers),
+        *(["--eval_use_repair"] if args.eval_use_repair else []),
         *kv("--torch_num_threads", args.torch_num_threads),
         *kv("--vtw_time_step_s", args.vtw_time_step_s),
         *kv("--out_dir", suite_dir),
@@ -665,6 +666,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vtw_time_step_s", type=float, default=60.0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--eval_device", default="same")
+    parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

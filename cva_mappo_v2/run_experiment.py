@@ -182,7 +182,7 @@ def _eval_worker(payload):
         device=str(eval_device),
     )
 
-    env.set_eval_mode(True)
+    env.set_eval_mode(bool(getattr(args, "eval_use_repair", False)))
     reset = env.reset(options={
         "routine_missions": copy.deepcopy(routine),
         "dynamic_schedule": copy.deepcopy(dynamic),
@@ -403,6 +403,7 @@ def _runtime_plan(cfg, args, v2_cfg, train_payload, eval_scenarios, training_sca
         "dynamic_insertions_per_day": int(cfg.mission.dynamic_insertions_per_day),
         "eval_scenarios": int(len(eval_scenarios)),
         "eval_max_steps": int(getattr(args, "eval_max_steps", 0) or 0),
+        "eval_use_repair": bool(getattr(args, "eval_use_repair", False)),
         "max_action_dim": int(cfg.mission.max_action_dim),
         "task_slots": task_slots,
         "transfer_slots": transfer_slots,
@@ -427,7 +428,8 @@ def _print_runtime_plan(plan: dict) -> None:
         f"training_scale={plan['training_scale_mode']}, "
         f"routine_pool={plan['routine_pool_sizes']}, "
         f"dynamic_pool={plan['dynamic_pool_sizes']}x{plan['dynamic_insertions_per_day']}, "
-        f"eval_scenarios={plan['eval_scenarios']}"
+        f"eval_scenarios={plan['eval_scenarios']}, "
+        f"eval_repair={plan['eval_use_repair']}"
     )
     print(
         "采样计划: "
@@ -568,7 +570,7 @@ def train_and_eval(cfg, args, v2_cfg, train_payload, eval_scenarios, mission_gen
 
     if not args.no_viz and eval_scenarios:
         routine, dynamic = eval_scenarios[-1]
-        env.set_eval_mode(True)
+        env.set_eval_mode(bool(getattr(args, "eval_use_repair", False)))
         reset = env.reset(options={
             "routine_missions": copy.deepcopy(routine),
             "dynamic_schedule": copy.deepcopy(dynamic),
@@ -608,6 +610,8 @@ def main():
     parser.add_argument("--eval_deterministic", dest="eval_deterministic",
                         action="store_true", default=False,
                         help="评估时使用 actor argmax; 默认按 PPO 策略随机采样")
+    parser.add_argument("--eval_use_repair", action="store_true",
+                        help="评估时启用旧版 eval-only loser reassign/dynamic rescue 后处理")
     parser.add_argument("--eval_stochastic", dest="eval_deterministic",
                         action="store_false",
                         help="评估时按策略分布随机采样动作, 即默认口径")
@@ -788,6 +792,7 @@ def main():
         "elapsed_s": elapsed,
         "args": vars(args),
         "eval_deterministic": bool(args.eval_deterministic),
+        "eval_use_repair": bool(args.eval_use_repair),
         "requested_eval_episodes": int(args.eval_episodes),
         "actual_eval_episodes": int(len(eval_scenarios)),
         "scenario_cache_summary": cache_summary,
