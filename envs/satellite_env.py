@@ -270,6 +270,7 @@ class SatelliteSchedulingEnv(gym.Env):
         action: int,
         build_observation: bool = True,
         check_done: bool = True,
+        idle_allowed_actions: Optional[set] = None,
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
         执行一步调度决策。
@@ -294,7 +295,9 @@ class SatelliteSchedulingEnv(gym.Env):
             # 空闲: 推进到下一次真正可能执行观测的事件时刻。
             # 旧逻辑会跳到任意 VTW 起点, 即使任务未到达、deadline/持续时间/
             # 姿态转移/存储约束已经使该窗口不可执行, 会制造大量 only-idle 状态。
-            next_event_t = self._next_idle_event_time()
+            next_event_t = self._next_idle_event_time(
+                allowed_actions=idle_allowed_actions,
+            )
             reward = self.rw_cfg.penalty_idle
             self.current_time_s = max(self.current_time_s + 1.0, next_event_t)
         elif 0 <= action < self.max_action_dim:
@@ -334,16 +337,21 @@ class SatelliteSchedulingEnv(gym.Env):
 
         return obs, reward, terminated, truncated, info
 
-    def _next_idle_event_time(self) -> float:
+    def _next_idle_event_time(self, allowed_actions: Optional[set] = None) -> float:
         """Return the next useful time after an idle action.
 
         The returned event is the earliest known time where either a currently
         loaded mission can actually start an observation, a dynamic batch
         arrives, or storage may be released.  A short fallback keeps progress
         monotonic when no future executable event is known.
+
+        When ``allowed_actions`` is provided by the multi-agent wrapper, mission
+        windows are limited to the task slots currently visible to the policy.
+        Dynamic arrivals and storage releases remain global events.
         """
         current = float(self.current_time_s)
         candidates = []
+        allowed = None if allowed_actions is None else {int(a) for a in allowed_actions}
 
         if self._dynamic_queue:
             arrival_t = float(self._dynamic_queue[0][0])
@@ -355,7 +363,9 @@ class SatelliteSchedulingEnv(gym.Env):
             candidates.append(min(float(storage_release_t), self.horizon_s))
 
         if not (self.storage_limited and not self._has_storage_capacity(current)):
-            for mission in self.missions:
+            for action, mission in enumerate(self.missions):
+                if allowed is not None and action not in allowed:
+                    continue
                 obs_start = self._earliest_feasible_observation_start(mission, current)
                 if obs_start is not None and obs_start > current:
                     candidates.append(min(float(obs_start), self.horizon_s))

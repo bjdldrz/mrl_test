@@ -120,8 +120,11 @@ class CandidateValueScorer:
             env._compute_vtw_for_missions([mission])
 
         best_quality = None
+        best_key = None
         best_wait_s = 0.0
         future_windows = 0
+        response_target_s = max(float(getattr(self.cfg, "dynamic_response_target_s", 3600.0) or 3600.0), 1.0)
+        dynamic_wait_weight = max(float(getattr(self.cfg, "dynamic_window_wait_weight", 0.0) or 0.0), 0.0)
         for vtw in env.mission_vtw.get(mission.id, []):
             obs_start = max(vtw.start_time, current_time_s, mission.earliest_time_s)
             obs_end = obs_start + mission.duration_s
@@ -137,7 +140,14 @@ class CandidateValueScorer:
             max_roll = max(env.sat_config.max_roll_deg, 1e-6)
             quality = 1.0 - min(vtw.off_nadir_deg / max_roll, 1.0)
             wait_s = max(obs_start - current_time_s, 0.0)
-            if best_quality is None or quality > best_quality:
+            if mission.is_dynamic:
+                wait_pressure = float(np.clip(wait_s / response_target_s, 0.0, 1.0))
+                candidate_key = float(quality) - dynamic_wait_weight * wait_pressure
+            else:
+                wait_norm = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+                candidate_key = float(quality) - 0.25 * float(getattr(self.cfg, "w_wait", 0.0)) * wait_norm
+            if best_key is None or candidate_key > best_key:
+                best_key = float(candidate_key)
                 best_quality = float(quality)
                 best_wait_s = float(wait_s)
 

@@ -145,6 +145,13 @@ class MultiSatelliteEnv:
         self._n_multi_steps = 0
         self._n_fast_idle_resolve_steps = 0
         self._n_low_level_fast_steps = 0
+        self._n_candidate_limited_idle_advances = 0
+        self._candidate_limited_idle_wait_sum_s = 0.0
+        self._n_dynamic_candidate_idle_advances = 0
+        self._dynamic_candidate_idle_wait_sum_s = 0.0
+        self._n_downlink_priority_replans = 0
+        self._n_downlink_priority_dynamic_records = 0
+        self._dynamic_downlink_replan_gain_sum_s = 0.0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
@@ -891,6 +898,13 @@ class MultiSatelliteEnv:
         self._n_multi_steps = 0
         self._n_fast_idle_resolve_steps = 0
         self._n_low_level_fast_steps = 0
+        self._n_candidate_limited_idle_advances = 0
+        self._candidate_limited_idle_wait_sum_s = 0.0
+        self._n_dynamic_candidate_idle_advances = 0
+        self._dynamic_candidate_idle_wait_sum_s = 0.0
+        self._n_downlink_priority_replans = 0
+        self._n_downlink_priority_dynamic_records = 0
+        self._dynamic_downlink_replan_gain_sum_s = 0.0
         self._dynamic_takeover_release_keys = set()
         self._released_mission_ids = set()
         self._deadline_release_mission_ids = set()
@@ -929,6 +943,7 @@ class MultiSatelliteEnv:
         """
         self._n_multi_steps += 1
         self._is_done_cache = None
+        raw_idle = self._raw_idle_action()
         raw_actions = self._decode_actions(actions)
         results = {}
         reward_shaping_enabled = (
@@ -986,6 +1001,11 @@ class MultiSatelliteEnv:
                     {"pending_inter_satellite_transfer": True},
                 )
             else:
+                idle_allowed_actions = (
+                    self._idle_allowed_actions(agent_id)
+                    if int(action) == raw_idle else None
+                )
+                prev_time_s = float(env.current_time_s)
                 future_action_info[agent_id] = self._prepare_future_task_action(
                     agent_id,
                     action,
@@ -995,8 +1015,16 @@ class MultiSatelliteEnv:
                     action,
                     build_observation=False,
                     check_done=False,
+                    idle_allowed_actions=idle_allowed_actions,
                 )
                 self._n_low_level_fast_steps += 1
+                if idle_allowed_actions is not None:
+                    wait_s = max(float(env.current_time_s) - prev_time_s, 0.0)
+                    self._n_candidate_limited_idle_advances += 1
+                    self._candidate_limited_idle_wait_sum_s += wait_s
+                    if self._allowed_actions_include_dynamic(agent_id, idle_allowed_actions):
+                        self._n_dynamic_candidate_idle_advances += 1
+                        self._dynamic_candidate_idle_wait_sum_s += wait_s
                 if future_action_info[agent_id]:
                     info = {**info, **future_action_info[agent_id]}
             results[agent_id] = (obs, reward, term, trunc, info)
@@ -1043,6 +1071,33 @@ class MultiSatelliteEnv:
 
         return results
 
+    def _idle_allowed_actions(self, agent_id: str) -> Optional[set]:
+        """Task slots the policy could see before choosing idle.
+
+        The low-level idle jump can otherwise stop at hidden raw task windows in
+        Top-K mode.  Limiting mission events to visible candidate slots keeps the
+        time advance aligned with the action space used by both train and eval.
+        """
+        if not self._candidate_actions_enabled():
+            return None
+        mapping = self._candidate_action_maps.get(agent_id)
+        if mapping is None:
+            return None
+        return {
+            int(action)
+            for action in mapping
+            if action is not None and 0 <= int(action) < self.max_action_dim
+        }
+
+    def _allowed_actions_include_dynamic(self, agent_id: str, actions: set) -> bool:
+        env = self.envs[agent_id]
+        for action in actions:
+            if 0 <= int(action) < self.max_action_dim:
+                mission = env.missions[int(action)]
+                if mission is not None and getattr(mission, "is_dynamic", False):
+                    return True
+        return False
+
     def _rebatch_new_downlinks(
         self,
         prev_schedule_lens: Dict[str, int],
@@ -1056,13 +1111,25 @@ class MultiSatelliteEnv:
         串行调用的。这里把本步新增的观测记录收集起来,按真实 obs_end_s 重新
         分配共享基站,避免 Python 遍历顺序影响下传完成时间和奖励。
         """
-        self._ground_station_available_s[:] = list(prev_ground_available)
         new_records = []
         for aid in self.agent_ids:
             env = self.envs[aid]
             start = prev_schedule_lens.get(aid, len(env.schedule_log))
             for record in env.schedule_log[start:]:
                 new_records.append((record.obs_end_s, aid, record))
+        if not new_records:
+            return
+        if (
+            self._dynamic_downlink_priority_enabled()
+            and any(
+                getattr(self._mission_for_agent(aid, record.mission_id), "is_dynamic", False)
+                for _, aid, record in new_records
+            )
+        ):
+            self._rebatch_all_downlinks_priority(prev_schedule_lens, results)
+            return
+
+        self._ground_station_available_s[:] = list(prev_ground_available)
         new_records.sort(key=lambda item: (item[0], item[1], item[2].mission_id))
 
         for _, aid, record in new_records:
@@ -1110,10 +1177,155 @@ class MultiSatelliteEnv:
                     storage_release_s=storage_release_s,
                     release_reason=storage_reason,
                 )
+                self._sync_delivery_state_from_record(record)
 
             if aid in results and record.reward != old_reward:
                 obs, reward, term, trunc, info = results[aid]
                 results[aid] = (obs, float(reward + record.reward - old_reward), term, trunc, info)
+
+    def _dynamic_downlink_priority_enabled(self) -> bool:
+        return False
+
+    def _downlink_priority_key(self, agent_id: str, record, mission) -> tuple:
+        return (
+            float(record.obs_end_s),
+            str(agent_id),
+            int(record.mission_id),
+        )
+
+    def _rebatch_all_downlinks_priority(
+        self,
+        prev_schedule_lens: Dict[str, int],
+        results: Dict[str, Tuple[np.ndarray, float, bool, bool, Dict]],
+    ) -> None:
+        """Replan not-yet-started downlinks with method-specific priorities."""
+        records = []
+        for aid in self.agent_ids:
+            env = self.envs[aid]
+            for index, record in enumerate(env.schedule_log):
+                mission = self._mission_for_agent(aid, record.mission_id)
+                if mission is None:
+                    continue
+                records.append((aid, env, int(index), record, mission))
+        if not records:
+            return
+
+        freeze_time = min(
+            [float(env.current_time_s) for env in self.envs.values()] or [0.0]
+        )
+        station_available = [0.0] * self.n_ground_stations
+        pending = []
+        old_rewards = {}
+        dynamic_gain_sum = 0.0
+        dynamic_records = 0
+
+        for aid, env, index, record, mission in records:
+            old_rewards[(aid, index)] = float(record.reward)
+            station_id = int(getattr(record, "ground_station_id", -1))
+            downlink_start = float(getattr(record, "downlink_start_s", -1.0))
+            downlink_end = float(getattr(record, "downlink_end_s", -1.0))
+            started = station_id >= 0 and downlink_start >= 0.0 and downlink_start <= freeze_time
+            if started:
+                if 0 <= station_id < len(station_available):
+                    station_available[station_id] = max(station_available[station_id], downlink_end)
+                continue
+            pending.append((aid, env, index, record, mission))
+
+        pending.sort(key=lambda item: self._downlink_priority_key(item[0], item[3], item[4]))
+        for aid, env, _, record, mission in pending:
+            old_end = float(getattr(record, "downlink_end_s", -1.0))
+            ready_s = max(float(record.obs_end_s), freeze_time)
+            latest_end_s = min(float(env.horizon_s), float(mission.deadline_s))
+            downlink_start, downlink_end, station_id = env._find_downlink_slot(
+                ready_s,
+                latest_end_s=latest_end_s,
+                station_available_s=station_available,
+            )
+            if station_id >= 0:
+                station_available[station_id] = downlink_end
+
+            record.downlink_start_s = downlink_start
+            record.downlink_end_s = downlink_end
+            record.ground_station_id = station_id
+            mission.downlink_start_s = downlink_start
+            mission.downlink_end_s = downlink_end
+            mission.ground_station_id = station_id
+            mission.is_downlinked = (
+                station_id >= 0
+                and downlink_end <= env.horizon_s
+                and downlink_end <= mission.deadline_s
+            )
+
+            if mission.is_downlinked:
+                record.reward = env.compute_reward(
+                    mission,
+                    downlink_end,
+                    off_nadir_deg=record.off_nadir_deg,
+                )
+            else:
+                record.reward = env.rw_cfg.penalty_deadline_miss
+            storage_release_s, storage_reason = env._storage_release_from_delivery(
+                mission,
+                record.obs_end_s,
+                downlink_end,
+                station_id,
+            )
+            record.storage_release_s = storage_release_s
+            record.storage_release_reason = storage_reason
+            env._set_storage_record(
+                mission_id=record.mission_id,
+                storage_start_s=record.obs_end_s,
+                storage_release_s=storage_release_s,
+                release_reason=storage_reason,
+            )
+            self._sync_delivery_state_from_record(record)
+
+            if getattr(mission, "is_dynamic", False):
+                dynamic_records += 1
+                if old_end > 0.0 and downlink_end > 0.0:
+                    dynamic_gain_sum += max(0.0, old_end - downlink_end)
+
+        self._ground_station_available_s[:] = station_available
+        self._n_downlink_priority_replans += 1
+        self._n_downlink_priority_dynamic_records += dynamic_records
+        self._dynamic_downlink_replan_gain_sum_s += dynamic_gain_sum
+
+        for aid in self.agent_ids:
+            env = self.envs[aid]
+            start = int(prev_schedule_lens.get(aid, len(env.schedule_log)))
+            delta_reward = 0.0
+            for index in range(start, len(env.schedule_log)):
+                delta_reward += float(env.schedule_log[index].reward) - old_rewards.get((aid, index), 0.0)
+            if abs(delta_reward) > 1e-12 and aid in results:
+                obs, reward, term, trunc, info = results[aid]
+                results[aid] = (
+                    obs,
+                    float(reward + delta_reward),
+                    term,
+                    trunc,
+                    {**info, "dynamic_downlink_priority_replan": True},
+                )
+
+    def _sync_delivery_state_from_record(self, record) -> None:
+        """Keep all local mission copies aligned after downlink replanning."""
+        for env in self.envs.values():
+            for mission in env.missions:
+                if mission is None or int(mission.id) != int(record.mission_id):
+                    continue
+                mission.is_observed = True
+                mission.obs_start_s = record.obs_start_s
+                mission.obs_end_s = record.obs_end_s
+                mission.downlink_start_s = record.downlink_start_s
+                mission.downlink_end_s = record.downlink_end_s
+                mission.ground_station_id = record.ground_station_id
+                mission.is_downlinked = (
+                    (not env.downlink_required)
+                    or (
+                        record.ground_station_id >= 0
+                        and record.downlink_end_s <= env.horizon_s
+                        and record.downlink_end_s <= mission.deadline_s
+                    )
+                )
 
     def _transferable_records(self, source_aid: str) -> List[Any]:
         """返回源星当前星上仍未交付、可一次性转发的图片记录。"""
@@ -3099,6 +3311,22 @@ class MultiSatelliteEnv:
                 self._n_fast_idle_resolve_steps / max(self._n_multi_steps, 1)
             ),
             "n_low_level_fast_steps": self._n_low_level_fast_steps,
+            "n_candidate_limited_idle_advances": self._n_candidate_limited_idle_advances,
+            "avg_candidate_limited_idle_advance_s": (
+                self._candidate_limited_idle_wait_sum_s
+                / max(self._n_candidate_limited_idle_advances, 1)
+            ),
+            "n_dynamic_candidate_idle_advances": self._n_dynamic_candidate_idle_advances,
+            "avg_dynamic_candidate_idle_advance_s": (
+                self._dynamic_candidate_idle_wait_sum_s
+                / max(self._n_dynamic_candidate_idle_advances, 1)
+            ),
+            "n_downlink_priority_replans": self._n_downlink_priority_replans,
+            "n_downlink_priority_dynamic_records": self._n_downlink_priority_dynamic_records,
+            "avg_dynamic_downlink_replan_gain_s": (
+                self._dynamic_downlink_replan_gain_sum_s
+                / max(self._n_downlink_priority_dynamic_records, 1)
+            ),
         }
         if self._candidate_actions_enabled():
             denom = max(self._candidate_slot_exposure_count * self.candidate_action_top_k, 1)

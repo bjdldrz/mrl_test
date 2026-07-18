@@ -70,6 +70,28 @@ def test_multi_env_uses_low_level_fast_step() -> None:
     assert "check_done=False" in text
     assert "_resolve_actions_with_masks" in text
     assert "_n_fast_idle_resolve_steps" in text
+    assert "idle_allowed_actions=idle_allowed_actions" in text
+    assert "_idle_allowed_actions" in text
+
+
+def test_eval_device_defaults_to_cpu() -> None:
+    runner = (ROOT / "das_cva_mappo" / "run_experiment.py").read_text(encoding="utf-8")
+    suite = (ROOT / "scripts" / "run_stage_ablation_suite.py").read_text(encoding="utf-8")
+    assert 'parser.add_argument("--eval_device", type=str, default="cpu")' in runner
+    assert 'parser.add_argument("--eval_device", default="cpu")' in suite
+
+
+def test_dynamic_iteration_controls_are_exposed() -> None:
+    runner = (ROOT / "das_cva_mappo" / "run_experiment.py").read_text(encoding="utf-8")
+    suite = (ROOT / "scripts" / "run_stage_ablation_suite.py").read_text(encoding="utf-8")
+    config = (ROOT / "cva_mappo_v2" / "config.py").read_text(encoding="utf-8")
+    env = (ROOT / "envs" / "multi_satellite_env.py").read_text(encoding="utf-8")
+    assert "--dynamic_current_slot_bonus" in runner
+    assert "--dynamic_window_wait_weight" in runner
+    assert "--no_dynamic_downlink_priority" in runner
+    assert "avg_dynamic_downlink_replan_gain_s" in suite
+    assert "dynamic_downlink_priority: bool = True" in config
+    assert "_rebatch_all_downlinks_priority" in env
 
 
 if __name__ == "__main__":
@@ -78,3 +100,5 @@ if __name__ == "__main__":
     test_stage_suite_exposes_diagnostic_repair_flag_only()
     test_stage_suite_exposes_eval_profile_flag()
     test_multi_env_uses_low_level_fast_step()
+    test_eval_device_defaults_to_cpu()
+    test_dynamic_iteration_controls_are_exposed()

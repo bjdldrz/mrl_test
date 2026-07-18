@@ -45,6 +45,8 @@ class CVAMAPPOV2Config:
     routine_future_dynamic_guard_s: float = 1800.0
     routine_future_dynamic_penalty: float = 0.35
     dynamic_future_bonus: float = 0.25
+    dynamic_current_slot_bonus: float = 0.65
+    dynamic_window_wait_weight: float = 0.75
     drop_ineligible_future_candidates: bool = True
 
     # Event-triggered candidate repair.
@@ -81,6 +83,7 @@ class CVAMAPPOV2Config:
     allocator_dynamic_wait_penalty: float = 0.20
     dynamic_rescue_response_bonus: float = 1.0
     dynamic_takeover_margin_s: float = 300.0
+    dynamic_downlink_priority: bool = True
 
     def validate(self) -> None:
         if self.slots.total_slots <= 0:
@@ -126,6 +129,8 @@ class CVAMAPPOV2Config:
             "routine_future_dynamic_guard_s",
             "routine_future_dynamic_penalty",
             "dynamic_future_bonus",
+            "dynamic_current_slot_bonus",
+            "dynamic_window_wait_weight",
         ]:
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} 必须大于等于 0")

@@ -4,7 +4,7 @@
 The suite runs Stage 1-4 sequentially with a shared stress configuration:
 
   train_iters=50, eval_episodes=10, eval_workers=24, train_env_workers=16,
-  training device=cuda:0, eval_device=same by default.
+  training device=cuda:0, eval_device=cpu by default.
 
 Most ablations are applied on top of the Stage 4 configuration so the table
 compares one removed/changed component at a time against the strongest staged
@@ -80,6 +80,19 @@ SUMMARY_COLUMNS = [
     "n_future_dynamic_task_executions",
     "n_future_routine_task_executions",
     "avg_future_task_wait_s",
+    "n_candidate_limited_idle_advances",
+    "avg_candidate_limited_idle_advance_s",
+    "n_dynamic_candidate_idle_advances",
+    "avg_dynamic_candidate_idle_advance_s",
+    "dynamic_current_slot_exposure_rate",
+    "dynamic_future_slot_exposure_rate",
+    "avg_dynamic_current_slot_candidates",
+    "avg_dynamic_current_slots_selected",
+    "avg_dynamic_future_slot_candidates",
+    "avg_dynamic_future_slots_selected",
+    "n_downlink_priority_replans",
+    "n_downlink_priority_dynamic_records",
+    "avg_dynamic_downlink_replan_gain_s",
     "stale_owner_rate",
     "owner_churn_rate",
     "load_balance_cv",
@@ -128,6 +141,9 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--routine_future_dynamic_guard_s", args.routine_future_dynamic_guard_s),
         *kv("--routine_future_dynamic_penalty", args.routine_future_dynamic_penalty),
         *kv("--dynamic_future_bonus", args.dynamic_future_bonus),
+        *kv("--dynamic_current_slot_bonus", args.dynamic_current_slot_bonus),
+        *kv("--dynamic_window_wait_weight", args.dynamic_window_wait_weight),
+        *(["--no_dynamic_downlink_priority"] if args.no_dynamic_downlink_priority else []),
         *kv("--candidate_dynamic_response_bonus", args.candidate_dynamic_response_bonus),
         *kv("--candidate_dynamic_wait_penalty", args.candidate_dynamic_wait_penalty),
         *kv("--dynamic_response_target_s", args.dynamic_response_target_s),
@@ -196,6 +212,8 @@ def stage2_dynamic_priority_common() -> list[str]:
         *kv("--dynamic_broadcast_window_s", 10800),
         *kv("--candidate_wait_penalty", "0.14"),
         *kv("--candidate_dynamic_urgency_bonus", "0.30"),
+        *kv("--dynamic_current_slot_bonus", "0.85"),
+        *kv("--dynamic_window_wait_weight", "1.00"),
         *kv("--allocator_wait_penalty", "0.18"),
         *kv("--allocator_dynamic_urgency_bonus", "0.30"),
     ]
@@ -340,6 +358,15 @@ def ablation_specs() -> list[dict[str, Any]]:
                 *kv("--allocator_dynamic_response_bonus", "0.00"),
                 *kv("--allocator_dynamic_wait_penalty", "0.00"),
                 *kv("--dynamic_rescue_response_bonus", "0.00"),
+            ],
+        },
+        {
+            "name": "abl_stage2_no_dynamic_downlink_priority",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--no_dynamic_downlink_priority",
             ],
         },
         {
@@ -675,6 +702,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--routine_future_dynamic_guard_s", type=float, default=1800.0)
     parser.add_argument("--routine_future_dynamic_penalty", type=float, default=0.35)
     parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
+    parser.add_argument("--dynamic_current_slot_bonus", type=float, default=0.65)
+    parser.add_argument("--dynamic_window_wait_weight", type=float, default=0.75)
+    parser.add_argument("--no_dynamic_downlink_priority", action="store_true")
     parser.add_argument("--candidate_dynamic_response_bonus", type=float, default=0.24)
     parser.add_argument("--candidate_dynamic_wait_penalty", type=float, default=0.20)
     parser.add_argument("--dynamic_response_target_s", type=float, default=3600.0)
@@ -688,7 +718,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--torch_num_threads", type=int, default=1)
     parser.add_argument("--vtw_time_step_s", type=float, default=60.0)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--eval_device", default="same")
+    parser.add_argument("--eval_device", default="cpu")
     parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--eval_profile", action="store_true")
     parser.add_argument("--stages_only", action="store_true")

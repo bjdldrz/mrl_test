@@ -62,6 +62,10 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_invalid_reason_sum = {reason: 0 for reason in SLOT_INVALID_REASONS}
+        self._dynamic_current_slot_candidate_sum = 0
+        self._dynamic_current_slot_selected_sum = 0
+        self._dynamic_future_slot_candidate_sum = 0
+        self._dynamic_future_slot_selected_sum = 0
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -89,6 +93,10 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_type_filled_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_type_capacity_sum = {"routine": 0, "dynamic": 0, "flex": 0}
         self._slot_invalid_reason_sum = {reason: 0 for reason in SLOT_INVALID_REASONS}
+        self._dynamic_current_slot_candidate_sum = 0
+        self._dynamic_current_slot_selected_sum = 0
+        self._dynamic_future_slot_candidate_sum = 0
+        self._dynamic_future_slot_selected_sum = 0
         self._clear_v2_step_cache()
         result = super().reset(*args, **kwargs)
         self._clear_v2_step_cache()
@@ -128,6 +136,24 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
     def _dynamic_rescue_response_bonus(self) -> float:
         return float(getattr(self.v2_cfg, "dynamic_rescue_response_bonus", 0.0) or 0.0)
+
+    def _dynamic_downlink_priority_enabled(self) -> bool:
+        return bool(getattr(self.v2_cfg, "dynamic_downlink_priority", False))
+
+    def _downlink_priority_key(self, agent_id: str, record, mission) -> tuple:
+        if not self._dynamic_downlink_priority_enabled():
+            return super()._downlink_priority_key(agent_id, record, mission)
+        dynamic_rank = 0 if getattr(mission, "is_dynamic", False) else 1
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        return (
+            dynamic_rank,
+            float(mission.deadline_s),
+            -float(getattr(mission, "priority", 0.0)),
+            arrival_s if dynamic_rank == 0 else float(record.obs_end_s),
+            float(record.obs_end_s),
+            str(agent_id),
+            int(record.mission_id),
+        )
 
     # ------------------------------------------------------------------
     # Task-centered candidate assignment
@@ -377,6 +403,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
 
     def _select_candidate_actions(self, agent_id: str, full_mask: np.ndarray) -> List[Optional[int]]:
         routine, dynamic, flex = self._rank_all_slot_groups(agent_id, full_mask)
+        self._record_dynamic_slot_candidates(agent_id, dynamic, full_mask)
 
         selected: List[Optional[int]] = []
         slot_types: List[str] = []
@@ -477,6 +504,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._slot_types[agent_id] = slot_types
         self._slot_scores[agent_id] = slot_scores
         self._slot_timing[agent_id] = self._slot_timing_features(agent_id, selected, full_mask)
+        self._record_dynamic_slot_selection(agent_id, selected, full_mask)
         for slot_type in ("routine", "dynamic", "flex"):
             if self.v2_cfg.slot_selection_mode == "mixed":
                 capacity = self.v2_cfg.slots.total_slots
@@ -577,6 +605,36 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
                 self._slot_invalid_reason_sum[reason] = (
                     self._slot_invalid_reason_sum.get(reason, 0) + 1
                 )
+
+    def _record_dynamic_slot_candidates(
+        self,
+        agent_id: str,
+        dynamic_items,
+        full_mask: np.ndarray,
+    ) -> None:
+        for is_available, _, action in dynamic_items:
+            if is_available:
+                self._dynamic_current_slot_candidate_sum += 1
+            elif self._future_task_action_valid(agent_id, int(action), full_mask):
+                self._dynamic_future_slot_candidate_sum += 1
+
+    def _record_dynamic_slot_selection(
+        self,
+        agent_id: str,
+        selected: List[Optional[int]],
+        full_mask: np.ndarray,
+    ) -> None:
+        env = self.envs[agent_id]
+        for action in selected[:self.v2_cfg.slots.total_slots]:
+            if action is None or action < 0 or action >= self.max_action_dim:
+                continue
+            mission = env.missions[int(action)]
+            if mission is None or not getattr(mission, "is_dynamic", False):
+                continue
+            if action < len(full_mask) and full_mask[action] > 0:
+                self._dynamic_current_slot_selected_sum += 1
+            elif self._future_task_action_valid(agent_id, int(action), full_mask):
+                self._dynamic_future_slot_selected_sum += 1
 
     def _slot_invalid_reason(
         self,
@@ -787,10 +845,16 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             if is_available:
                 score += 0.15
                 if mission.is_dynamic:
-                    score += 0.35
+                    score += float(getattr(self.v2_cfg, "dynamic_current_slot_bonus", 0.0) or 0.0)
             elif future_ready is not None:
                 if mission.is_dynamic:
-                    score += float(getattr(self.v2_cfg, "dynamic_future_bonus", 0.0) or 0.0)
+                    target_s = max(float(self.v2_cfg.dynamic_response_target_s or 0.0), 1.0)
+                    wait_s = max(float(future_ready) - current_time, 0.0)
+                    response_weight = 1.0 - float(np.clip(wait_s / target_s, 0.0, 1.0))
+                    score += (
+                        float(getattr(self.v2_cfg, "dynamic_future_bonus", 0.0) or 0.0)
+                        * (0.5 + 0.5 * response_weight)
+                    )
                 elif self._near_dynamic_pressure(agent_id, full_mask, current_time):
                     score -= float(getattr(self.v2_cfg, "routine_future_dynamic_penalty", 0.0) or 0.0)
             item = (is_available, float(score), int(action))
@@ -1005,6 +1069,26 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             "avg_filled_slots": self._slot_filled_sum / exposures,
             "avg_invalid_slots": invalid_total / exposures,
             "avg_filled_invalid_slots": filled_invalid / exposures,
+            "dynamic_current_slot_exposure_rate": (
+                self._dynamic_current_slot_selected_sum
+                / max(self._dynamic_current_slot_candidate_sum, 1)
+            ),
+            "dynamic_future_slot_exposure_rate": (
+                self._dynamic_future_slot_selected_sum
+                / max(self._dynamic_future_slot_candidate_sum, 1)
+            ),
+            "avg_dynamic_current_slot_candidates": (
+                self._dynamic_current_slot_candidate_sum / exposures
+            ),
+            "avg_dynamic_current_slots_selected": (
+                self._dynamic_current_slot_selected_sum / exposures
+            ),
+            "avg_dynamic_future_slot_candidates": (
+                self._dynamic_future_slot_candidate_sum / exposures
+            ),
+            "avg_dynamic_future_slots_selected": (
+                self._dynamic_future_slot_selected_sum / exposures
+            ),
             "slot_selection_mixed": 1.0 if self.v2_cfg.slot_selection_mode == "mixed" else 0.0,
         })
         for reason in SLOT_INVALID_REASONS:

@@ -1,5 +1,5 @@
 """
-Run DAS-CVA-MAPPO V0.28.
+Run DAS-CVA-MAPPO V0.29.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
@@ -7,7 +7,10 @@ action-set-aware MAPPO policy over action entities. V0.26 makes the default
 evaluation environment use the same action-resolution path as training. V0.27
 adds optional evaluation profiling so slow evaluation runs can be diagnosed.
 V0.28 removes repeated low-level obs/mask construction inside multi-agent
-environment steps.
+environment steps. V0.28.1 restores CPU evaluation as the default while keeping
+CUDA as the default training device. V0.29 adds response-aware dynamic window
+selection, visible-candidate idle advancement, and dynamic-priority downlink
+replanning.
 """
 
 from __future__ import annotations
@@ -111,6 +114,8 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         routine_future_dynamic_guard_s=args.routine_future_dynamic_guard_s,
         routine_future_dynamic_penalty=args.routine_future_dynamic_penalty,
         dynamic_future_bonus=args.dynamic_future_bonus,
+        dynamic_current_slot_bonus=args.dynamic_current_slot_bonus,
+        dynamic_window_wait_weight=args.dynamic_window_wait_weight,
         drop_ineligible_future_candidates=not args.keep_ineligible_future_candidates,
         replan_interval_s=args.assignment_replan_interval_s,
         replan_horizon_s=args.assignment_replan_horizon_s,
@@ -131,6 +136,7 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         allocator_dynamic_response_bonus=args.allocator_dynamic_response_bonus,
         allocator_dynamic_wait_penalty=args.allocator_dynamic_wait_penalty,
         dynamic_rescue_response_bonus=args.dynamic_rescue_response_bonus,
+        dynamic_downlink_priority=not args.no_dynamic_downlink_priority,
         triggers=triggers,
     )
     cfg.validate()
@@ -1324,7 +1330,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.28 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.29 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1332,7 +1338,7 @@ def main() -> None:
     parser.add_argument("--train_iters", type=int, default=30)
     parser.add_argument("--eval_episodes", type=int, default=8)
     parser.add_argument("--eval_workers", type=int, default=24)
-    parser.add_argument("--eval_device", type=str, default="same")
+    parser.add_argument("--eval_device", type=str, default="cpu")
     parser.add_argument("--eval_deterministic", action="store_true", default=False)
     parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--eval_profile", action="store_true")
@@ -1349,7 +1355,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_28")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_29")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1409,6 +1415,9 @@ def main() -> None:
     parser.add_argument("--routine_future_dynamic_guard_s", type=float, default=1800.0)
     parser.add_argument("--routine_future_dynamic_penalty", type=float, default=0.35)
     parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
+    parser.add_argument("--dynamic_current_slot_bonus", type=float, default=0.65)
+    parser.add_argument("--dynamic_window_wait_weight", type=float, default=0.75)
+    parser.add_argument("--no_dynamic_downlink_priority", action="store_true")
     parser.add_argument("--keep_ineligible_future_candidates", action="store_true")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
@@ -1498,7 +1507,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.28"
+    method_name = "DAS-CVA-MAPPO-v0.29"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1583,6 +1592,9 @@ def main() -> None:
             "routine_future_dynamic_guard_s": v2_cfg.routine_future_dynamic_guard_s,
             "routine_future_dynamic_penalty": v2_cfg.routine_future_dynamic_penalty,
             "dynamic_future_bonus": v2_cfg.dynamic_future_bonus,
+            "dynamic_current_slot_bonus": v2_cfg.dynamic_current_slot_bonus,
+            "dynamic_window_wait_weight": v2_cfg.dynamic_window_wait_weight,
+            "dynamic_downlink_priority": v2_cfg.dynamic_downlink_priority,
             "drop_ineligible_future_candidates": v2_cfg.drop_ineligible_future_candidates,
             "candidate_wait_penalty": v2_cfg.w_wait,
             "candidate_storage_penalty": v2_cfg.w_storage_pressure,

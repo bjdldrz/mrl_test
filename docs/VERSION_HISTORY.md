@@ -1,5 +1,42 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.29.0
+
+Status: implemented.
+
+Scope:
+
+- Adds visible-candidate idle advancement: in Top-K mode, idle mission-window
+  jumps are limited to task slots the policy could actually see, while dynamic
+  arrivals and storage releases remain global events.
+- Makes dynamic candidate ranking response-aware by penalizing late dynamic
+  windows during score-pair window selection.
+- Adds a configurable current-dynamic slot boost and reports current/future
+  dynamic slot exposure diagnostics.
+- Adds dynamic-priority downlink replanning for not-yet-started downlinks so
+  dynamic images can move ahead of routine images in the ground segment.
+- Exposes `--dynamic_current_slot_bonus`, `--dynamic_window_wait_weight`, and
+  `--no_dynamic_downlink_priority`.
+
+Expected effect:
+
+- Reduce `avg_dynamic_response_s` and improve `dynamic_completion_rate_raw`
+  when dynamic observations were waiting behind routine future windows or
+  routine downlink reservations.
+- Use `abl_stage2_no_dynamic_downlink_priority` to isolate the ground-segment
+  contribution.
+
+## DAS-CVA-MAPPO V0.28.1
+
+Status: implemented.
+
+Scope:
+
+- Restores CPU evaluation as the default for both the DAS runner and staged
+  ablation suite, while keeping CUDA as the default training device.
+- Keeps `--eval_device cuda:0` available for explicit diagnostic runs, but
+  future model-iteration commands should use CPU evaluation for consistency.
+
 ## DAS-CVA-MAPPO V0.28.0
 
 Status: implemented.

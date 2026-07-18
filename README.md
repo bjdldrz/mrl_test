@@ -35,7 +35,7 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.19
+## DAS V0.29
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
@@ -70,9 +70,16 @@ python3 -m das_cva_mappo.run_experiment \
   --candidate_wait_penalty 0.08 \
   --candidate_storage_penalty 0.08 \
   --candidate_dynamic_urgency_bonus 0.12 \
+  --candidate_dynamic_response_bonus 0.24 \
+  --candidate_dynamic_wait_penalty 0.20 \
+  --dynamic_response_target_s 3600 \
+  --dynamic_current_slot_bonus 0.65 \
+  --dynamic_window_wait_weight 0.75 \
   --allocator_wait_penalty 0.10 \
   --allocator_stale_rescue_bonus 0.25 \
   --allocator_dynamic_urgency_bonus 0.10 \
+  --allocator_dynamic_response_bonus 0.24 \
+  --allocator_dynamic_wait_penalty 0.20 \
   --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
   --matcher set_transformer \
   --idle_valid_penalty 0.0 \
@@ -100,13 +107,14 @@ python3 -m das_cva_mappo.run_experiment \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_19 \
+  --run_name das_v0_29 \
   --device cuda:0
 ```
 
-By default `--train_env_workers 16`, `--eval_workers 24`, and `--device cuda:0`
-are used. `--rollout_steps` is split across `--train_env_workers`, so the total
-rollout budget per iteration stays at 512 in the command above. Use
+By default `--train_env_workers 16`, `--eval_workers 24`, `--eval_device cpu`,
+and `--device cuda:0` are used. `--rollout_steps` is split across
+`--train_env_workers`, so the total rollout budget per iteration stays at 512 in
+the command above. Use
 `--rollout_steps_per_worker` only when each worker should collect the full
 rollout budget. If `--eval_device` is a CUDA device, DAS automatically uses one
 eval worker to avoid multiple processes competing for the same GPU. On a CPU-only
@@ -139,9 +147,16 @@ Primary DAS ablation knobs:
 - `--candidate_wait_penalty`
 - `--candidate_storage_penalty`
 - `--candidate_dynamic_urgency_bonus`
+- `--candidate_dynamic_response_bonus`
+- `--candidate_dynamic_wait_penalty`
+- `--dynamic_current_slot_bonus`
+- `--dynamic_window_wait_weight`
+- `--no_dynamic_downlink_priority`
 - `--allocator_wait_penalty`
 - `--allocator_stale_rescue_bonus`
 - `--allocator_dynamic_urgency_bonus`
+- `--allocator_dynamic_response_bonus`
+- `--allocator_dynamic_wait_penalty`
 - `--dynamic_takeover_margin_s`
 - `--routine_candidate_owners`
 - `--dynamic_candidate_owners`
@@ -164,6 +179,10 @@ Use these commands after generating the scenario cache below. Stage 1 is a
 diagnostic run; stages 2-4 progressively enable the candidate/owner, dynamic,
 and storage-pressure optimizations.
 
+For V0.29 dynamic-response checks, compare `avg_dynamic_response_s`,
+`dynamic_current_slot_exposure_rate`, `dynamic_future_slot_exposure_rate`, and
+`avg_dynamic_downlink_replan_gain_s`.
+
 Stage 1: slot-invalid diagnosis. Inspect `slot_invalid_*`,
 `avg_filled_invalid_slots`, `eval_valid_decision_rate`, and
 `stale_owner_rate` in `comparison_results.json`.
@@ -175,6 +194,7 @@ python3 -m das_cva_mappo.run_experiment \
   --vtw_cache_dir runs/scenario_cache/das_cva_stress_seed42/vtw_cache \
   --n_satellites 6 \
   --train_iters 0 \
+  --train_env_workers 16 \
   --eval_episodes 5 \
   --n_routine 600 \
   --n_dynamic 150 \
@@ -237,18 +257,25 @@ python3 -m das_cva_mappo.run_experiment \
   --dynamic_takeover_margin_s 120 \
   --candidate_wait_penalty 0.10 \
   --candidate_dynamic_urgency_bonus 0.16 \
+  --candidate_dynamic_response_bonus 0.24 \
+  --candidate_dynamic_wait_penalty 0.20 \
+  --dynamic_response_target_s 3600 \
+  --dynamic_current_slot_bonus 0.65 \
+  --dynamic_window_wait_weight 0.75 \
   --allocator_wait_penalty 0.14 \
   --allocator_stale_rescue_bonus 0.35 \
   --allocator_dynamic_urgency_bonus 0.16 \
+  --allocator_dynamic_response_bonus 0.24 \
+  --allocator_dynamic_wait_penalty 0.20 \
   --candidate_scorer_mode v2_heuristic \
   --rollout_steps 512 \
-  --train_env_workers 8 \
+  --train_env_workers 16 \
   --split_rollout_steps_across_workers \
   --ppo_epochs 4 \
   --ppo_batch_size 512 \
   --eval_max_steps 8000 \
   --eval_device cpu \
-  --eval_workers 16 \
+  --eval_workers 24 \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
@@ -530,3 +557,18 @@ The current `cva_mappo_v2` code should be treated as an implementation support
 layer for DAS iterations, not as the main experimental method. New method
 development, logs, manifests, and ablations should be centered on
 `das_cva_mappo`.
+
+Current V0.29 short validation command:
+
+```bash
+python3 scripts/run_stage_ablation_suite.py \
+  --suite_name das_v029_dynamic_response_iter \
+  --only stage2_candidate_owner_repair stage2_dynamic_priority_recovery abl_stage2_no_dynamic_downlink_priority \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --no_progress
+```
