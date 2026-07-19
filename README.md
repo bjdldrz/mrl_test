@@ -35,15 +35,15 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.30
+## DAS V0.31
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
-loss. V0.30 makes candidate scoring downlink-aware before an observation is
-selected, keeps post-hoc dynamic downlink priority disabled by default, and
-adds per-dynamic-task diagnostics. The default runner uses parallel rollout
-workers, parallel CPU evaluation, and `cuda:0` for PPO/candidate-scorer
-training:
+loss. V0.31 keeps V0.30's downlink-aware candidate scoring, adds response-budget
+features to the actor state/action entities and learned candidate scorer, keeps
+post-hoc dynamic downlink priority disabled by default, and retains
+per-dynamic-task diagnostics. The default runner uses parallel rollout workers,
+parallel CPU evaluation, and `cuda:0` for PPO/candidate-scorer training:
 
 ```bash
 python3 -m das_cva_mappo.run_experiment \
@@ -116,7 +116,7 @@ python3 -m das_cva_mappo.run_experiment \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_30 \
+  --run_name das_v0_31 \
   --device cuda:0
 ```
 
@@ -136,6 +136,7 @@ Primary DAS ablation knobs:
 - `--no_candidate_score_feature`
 - `--no_set_context`
 - `--no_action_type_gate`
+- `--no_response_budget_features`
 - `--idle_valid_penalty`
 - `--idle_aux_coeff`
 - `--candidate_dropout_prob`
@@ -195,7 +196,7 @@ Use these commands after generating the scenario cache below. Stage 1 is a
 diagnostic run; stages 2-4 progressively enable the candidate/owner, dynamic,
 and storage-pressure optimizations.
 
-For V0.30 dynamic-response checks, compare `avg_dynamic_response_s`,
+For V0.31 dynamic-response checks, compare `avg_dynamic_response_s`,
 `avg_downlink_queue_s`, `dynamic_task_candidate_seen_rate`,
 `dynamic_task_policy_selected_rate`, `dynamic_task_downlink_queue_block_rate`,
 and `avg_dynamic_task_downlink_queue_s`. The per-episode task-level file
@@ -578,12 +579,12 @@ layer for DAS iterations, not as the main experimental method. New method
 development, logs, manifests, and ablations should be centered on
 `das_cva_mappo`.
 
-Current V0.30 short validation command:
+Current V0.31 short validation command:
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v030_downlink_aware_edge_value \
-  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_downlink_aware_edge_value abl_stage2_posthoc_dynamic_downlink_priority \
+  --suite_name das_v031_response_budget_features \
+  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_response_budget_features abl_stage2_no_downlink_aware_edge_value \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \

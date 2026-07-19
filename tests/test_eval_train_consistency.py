@@ -96,7 +96,10 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--candidate_dynamic_delivery_delay_penalty" in runner
     assert "--dynamic_downlink_priority" in runner
     assert "--no_dynamic_downlink_priority" in runner
+    assert "--no_response_budget_features" in runner
+    assert "--no_response_budget_features" in suite
     assert "avg_dynamic_downlink_replan_gain_s" in suite
+    assert "abl_stage2_no_response_budget_features" in suite
     assert "abl_stage2_no_dynamic_downlink_priority" in suite
     assert "abl_stage2_no_downlink_aware_edge_value" in suite
     assert "abl_stage2_posthoc_dynamic_downlink_priority" in suite
@@ -106,7 +109,7 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "get_dynamic_task_diagnostics" in v2_env
     assert "_write_eval_dynamic_task_diagnostics" in runner
     assert "estimated_downlink_queue_s" in scorer
-    assert "EDGE_FEATURE_DIM = 24" in das_scorer
+    assert "EDGE_FEATURE_DIM = 28" in das_scorer
 
 
 if __name__ == "__main__":

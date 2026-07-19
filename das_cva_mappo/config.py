@@ -12,9 +12,9 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.30.0"
-    state_dim: int = 12
-    action_feature_dim: int = 24
+    version: str = "0.31.0"
+    state_dim: int = 16
+    action_feature_dim: int = 28
     actor_hidden_dims: Tuple[int, ...] = (256, 256)
     action_hidden_dim: int = 128
     critic_hidden_dims: Tuple[int, ...] = (256, 256)
@@ -23,6 +23,7 @@ class DASConfig:
     use_candidate_score_feature: bool = True
     use_set_context: bool = True
     use_action_type_gate: bool = True
+    use_response_budget_features: bool = True
     idle_valid_penalty: float = 0.0
     idle_aux_coeff: float = 0.05
     candidate_dropout_prob: float = 0.0

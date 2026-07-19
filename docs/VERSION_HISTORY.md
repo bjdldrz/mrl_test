@@ -1,5 +1,28 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.31.0
+
+Status: implemented.
+
+Scope:
+
+- Adds response-budget features to the DAS actor local state and task action
+  entities. Dynamic task actions now expose age pressure, remaining response
+  budget, budget-overrun status, and post-wait response pressure.
+- Extends the trainable candidate scorer edge feature vector from 24 to 28
+  dimensions with dynamic age/budget/delivery-budget signals.
+- Adds `--no_response_budget_features` for ablation while keeping the features
+  enabled by default.
+- Adds `abl_stage2_no_response_budget_features` to the staged ablation suite.
+
+Expected effect:
+
+- Make the policy and learned scorer distinguish dynamic tasks that merely have
+  high priority from tasks whose response budget is already being consumed.
+- Improve `avg_dynamic_response_s`, `dynamic_task_policy_selected_rate`, and
+  dynamic feasible-normalized completion without relying on post-hoc downlink
+  priority repair.
+
 ## DAS-CVA-MAPPO V0.30.0
 
 Status: implemented.

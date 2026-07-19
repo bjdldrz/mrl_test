@@ -1,6 +1,6 @@
 # 当前项目工作报告
 
-更新时间：2026-07-18
+更新时间：2026-07-19
 
 ## 1. 项目定位
 
@@ -8,7 +8,7 @@
 
 项目已经从早期 `cva_mappo_v2` 的固定槽位、规则候选分配路线，逐步转向 `das_cva_mappo` 主线。当前推荐的论文方法中心是 `das_cva_mappo/`，而 `cva_mappo_v2/` 主要作为候选生成、环境封装和兼容层继续被使用。
 
-当前主线版本为 `DAS-CVA-MAPPO V0.30.0`。
+当前主线版本为 `DAS-CVA-MAPPO V0.31.0`。
 
 ## 2. 已完成的主要工作
 
@@ -89,7 +89,7 @@
 - 增加 dynamic current/future slot exposure 诊断指标。
 - 增加 dynamic-priority downlink replanning，让未开始的 routine downlink 可以被动态任务图像重排到后面。
 
-最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。
+最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。V0.31 进一步把动态任务响应预算显式接入 actor 局部状态、动作实体特征和学习型候选 scorer 的边特征中。
 
 ### 2.7 训练与评估一致性
 
@@ -302,13 +302,13 @@ Response-aware Dynamic Action-Set CVA-MAPPO
 
 这样 CVA scorer 预测的是“观测并交付”的边价值，而不是只预测“观测”的边价值。后续还可以把该估计从当前的启发式预览升级为学习型 delivery-value head。
 
-第二，response-budget-aware reward 或 critic feature。动态任务可以定义剩余响应预算：
+第二，response-budget-aware actor/scorer feature。V0.31 已把动态任务剩余响应预算接入 actor 局部状态、动作实体特征和学习型 candidate scorer 边特征。动态任务可以定义剩余响应预算：
 
 ```text
 response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 ```
 
-策略和 scorer 都可以使用该预算作为特征。奖励中也可以对超出响应目标的动态任务递增惩罚，而不是只在完成后统计 `avg_dynamic_response_s`。这样论文可以说明方法是 response-aware，而不是事后报告响应时间。
+策略和 scorer 都可以使用该预算作为特征。后续还可以在奖励或 critic feature 中对超出响应目标的动态任务递增建模，而不是只在完成后统计 `avg_dynamic_response_s`。这样论文可以说明方法是 response-aware，而不是事后报告响应时间。
 
 第三，候选 exposure 的可解释约束。对于每个动态任务，记录它从到达到完成之间被多少个卫星看到、看到时是否当前可执行、是否被 future slot 挤出、是否被 routine 下传阻塞。这可以形成一组可解释诊断指标，让方法改进与动态任务表现之间有因果链条。
 
@@ -362,14 +362,14 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 ## 7. 建议的后续路线
 
-### 7.1 优先完成 V0.30 验证
+### 7.1 优先完成 V0.31 验证
 
 建议先运行当前短验证：
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v030_downlink_aware_edge_value \
-  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_downlink_aware_edge_value abl_stage2_posthoc_dynamic_downlink_priority \
+  --suite_name das_v031_response_budget_features \
+  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_response_budget_features abl_stage2_no_downlink_aware_edge_value \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
@@ -393,7 +393,7 @@ python3 scripts/run_stage_ablation_suite.py \
 - `dynamic_current_slot_exposure_rate`
 - `dynamic_future_slot_exposure_rate`
 
-如果关闭 downlink-aware edge value 后响应时间或下传队列明显变差，则 V0.30 的方法创新点可以保留；如果重新开启 post-hoc dynamic downlink priority 仍无收益，则旧重排路线应只作为消融对照。
+如果关闭 response-budget features 后 `avg_dynamic_response_s`、`dynamic_task_policy_selected_rate` 或动态 feasible-normalized completion 明显变差，则 V0.31 的模型侧特征可以保留；如果关闭 downlink-aware edge value 后响应时间或下传队列明显变差，则 V0.30 的端到端交付前置评分仍可作为独立贡献点。
 
 ### 7.2 动态任务指标单独成表
 
@@ -410,7 +410,7 @@ python3 scripts/run_stage_ablation_suite.py \
 
 ### 7.3 继续压低 downlink queue
 
-如果 V0.30 的 downlink-aware edge value 收益仍有限，下一步应考虑：
+如果 V0.31 的 response-budget features 和 V0.30 的 downlink-aware edge value 收益仍有限，下一步应考虑：
 
 - 为动态图像设置更强的 downlink deadline 或 priority key。
 - 将当前启发式预计 downlink finish time 升级为 learned delivery-value head。
@@ -443,4 +443,4 @@ python3 scripts/run_stage_ablation_suite.py \
 
 当前项目已经完成了从兼容层规则调度到 DAS-CVA-MAPPO 动态动作集策略的主体改造，并建立了较完整的阶段实验、消融、指标诊断和 train/eval 一致性保护。项目的主要优势是方法结构清晰、实验可诊断、动态任务问题被拆解得比较细；主要不足是动态任务 raw completion 仍不够强、stale owner 偏高、downlink queue 对响应时间影响大、评估成本仍偏高。
 
-从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，下一步不建议大范围重构，而应先验证 downlink-aware edge value 是否能相对当前强 baseline 降低动态响应时间和下传队列阻塞率。
+从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，V0.31 已把 response budget 前置到模型输入中。下一步不建议大范围重构，而应先验证 response-budget features 与 downlink-aware edge value 是否能相对当前强 baseline 降低动态响应时间和下传队列阻塞率。

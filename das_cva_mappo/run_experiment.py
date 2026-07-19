@@ -1,5 +1,5 @@
 """
-Run DAS-CVA-MAPPO V0.30.
+Run DAS-CVA-MAPPO V0.31.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
@@ -11,7 +11,8 @@ environment steps. V0.28.1 restores CPU evaluation as the default while keeping
 CUDA as the default training device. V0.29 adds response-aware dynamic window
 selection and visible-candidate idle advancement. V0.30 moves dynamic-response
 work from post-observation downlink reordering into downlink-aware candidate
-edge values and per-dynamic-task diagnostics.
+edge values and per-dynamic-task diagnostics. V0.31 adds response-budget
+features to the actor state/action entities and learned candidate edge scorer.
 """
 
 from __future__ import annotations
@@ -158,6 +159,7 @@ def _build_das_config(args) -> DASConfig:
         use_candidate_score_feature=use_score,
         use_set_context=not args.no_set_context,
         use_action_type_gate=not args.no_action_type_gate,
+        use_response_budget_features=not args.no_response_budget_features,
         idle_valid_penalty=args.idle_valid_penalty,
         idle_aux_coeff=args.idle_aux_coeff,
         candidate_dropout_prob=args.candidate_dropout_prob,
@@ -304,6 +306,7 @@ def _build_worker_candidate_scorer(
         hidden_dim=das_cfg.candidate_scorer_hidden_dim,
         lr=das_cfg.candidate_scorer_lr,
         device=device,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     scorer.model.load_state_dict(_numpy_state_to_torch(state))
     scorer.model.eval()
@@ -548,6 +551,7 @@ def _eval_worker(payload):
         mode=das_cfg.action_feature_mode,
         use_candidate_score=das_cfg.use_candidate_score_feature,
         candidate_adapter=candidate_adapter,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     trainer = ActionSetMAPPOTrainer(
         model,
@@ -751,6 +755,7 @@ def _batched_eval_single_process(
         mode=das_cfg.action_feature_mode,
         use_candidate_score=das_cfg.use_candidate_score_feature,
         candidate_adapter=candidate_adapter,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     _profile_stop(profile, "setup", setup_started)
 
@@ -991,6 +996,7 @@ def _collect_rollout_worker(payload):
         use_candidate_score=das_cfg.use_candidate_score_feature,
         candidate_scorer=candidate_scorer if das_cfg.candidate_aux_update else None,
         candidate_adapter=candidate_adapter,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     model = _build_action_model(das_cfg, env).to("cpu")
     model.load_state_dict(_numpy_state_to_torch(payload["model_state"]))
@@ -1043,6 +1049,7 @@ def train_and_eval(
         use_candidate_score=das_cfg.use_candidate_score_feature,
         candidate_scorer=candidate_scorer if das_cfg.candidate_aux_update else None,
         candidate_adapter=candidate_adapter,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     model = _build_action_model(das_cfg, env).to(device)
     trainer = ActionSetMAPPOTrainer(
@@ -1245,6 +1252,7 @@ def _build_candidate_scorer(cfg, args, v2_cfg, das_cfg, train_payload, mission_g
         hidden_dim=das_cfg.candidate_scorer_hidden_dim,
         lr=das_cfg.candidate_scorer_lr,
         device=args.device,
+        use_response_budget_features=das_cfg.use_response_budget_features,
     )
     if train_payload is not None:
         warmup_scenarios = flatten_train_scenarios(train_payload)
@@ -1389,7 +1397,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.30 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.31 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1414,7 +1422,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_30")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_31")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1497,6 +1505,7 @@ def main() -> None:
     parser.add_argument("--no_candidate_score_feature", action="store_true")
     parser.add_argument("--no_set_context", action="store_true")
     parser.add_argument("--no_action_type_gate", action="store_true")
+    parser.add_argument("--no_response_budget_features", action="store_true")
     parser.add_argument("--idle_valid_penalty", type=float, default=0.0)
     parser.add_argument("--idle_aux_coeff", type=float, default=0.05)
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
@@ -1574,7 +1583,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.30"
+    method_name = "DAS-CVA-MAPPO-v0.31"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1607,6 +1616,7 @@ def main() -> None:
             "use_candidate_score_feature": das_cfg.use_candidate_score_feature,
             "use_set_context": das_cfg.use_set_context,
             "use_action_type_gate": das_cfg.use_action_type_gate,
+            "use_response_budget_features": das_cfg.use_response_budget_features,
             "idle_valid_penalty": das_cfg.idle_valid_penalty,
             "idle_aux_coeff": das_cfg.idle_aux_coeff,
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,

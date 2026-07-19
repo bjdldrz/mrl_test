@@ -14,7 +14,7 @@ from cva_mappo_v2.scorer import CandidateScore, CandidateValueScorer
 from .env_adapter import V2CandidateAdapter
 
 
-EDGE_FEATURE_DIM = 24
+EDGE_FEATURE_DIM = 28
 
 
 @dataclass
@@ -74,6 +74,7 @@ class TrainableCandidateValueScorer:
         hidden_dim: int = 64,
         lr: float = 1e-3,
         device: str = "cpu",
+        use_response_budget_features: bool = True,
     ):
         if mode not in {"v2_heuristic", "learned", "hybrid"}:
             raise ValueError("candidate scorer mode must be v2_heuristic, learned, or hybrid")
@@ -81,6 +82,7 @@ class TrainableCandidateValueScorer:
         self.mode = str(mode)
         self.mix = float(np.clip(mix, 0.0, 1.0))
         self.device = torch.device(device)
+        self.use_response_budget_features = bool(use_response_budget_features)
         self.model = EdgeValueMLP(EDGE_FEATURE_DIM, hidden_dim).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=float(lr))
         self.warmup_stats = ScorerWarmupStats()
@@ -199,6 +201,11 @@ class TrainableCandidateValueScorer:
                 1.0,
             )
         )
+        response_budget = (
+            self._response_budget_features(env, mission, heuristic_score, current_time_s)
+            if self.use_response_budget_features
+            else (0.0, 0.0, 0.0, 0.0)
+        )
         return np.array([
             heuristic_score.quality,
             priority,
@@ -224,6 +231,7 @@ class TrainableCandidateValueScorer:
             delivery_delay_pressure,
             downlink_feasible,
             downlink_queue_norm,
+            *response_budget,
         ], dtype=np.float32)
 
     def warm_start(
@@ -465,3 +473,36 @@ class TrainableCandidateValueScorer:
                 wait_s = max(obs_start - current_time_s, 0.0)
                 break
         return float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
+
+    def _response_budget_features(
+        self,
+        env,
+        mission,
+        heuristic_score: CandidateScore,
+        current_time_s: float,
+    ) -> Tuple[float, float, float, float]:
+        if not getattr(mission, "is_dynamic", False):
+            return 0.0, 0.0, 0.0, 0.0
+        response_target_s = max(
+            float(getattr(self.heuristic.cfg, "dynamic_response_target_s", 3600.0) or 3600.0),
+            1.0,
+        )
+        # Prefer the scorer's normalized pressure when available so the feature
+        # stays aligned with the v2 candidate scoring configuration.
+        age_pressure = float(np.clip(
+            getattr(heuristic_score, "dynamic_response_pressure", 0.0),
+            0.0,
+            1.0,
+        ))
+        if age_pressure <= 0.0:
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            age_s = max(float(current_time_s) - arrival_s, 0.0)
+            age_pressure = float(np.clip(age_s / response_target_s, 0.0, 1.0))
+        budget_remaining = float(np.clip(1.0 - age_pressure, 0.0, 1.0))
+        overrun = 1.0 if age_pressure >= 1.0 else 0.0
+        delivery_budget_pressure = float(np.clip(
+            getattr(heuristic_score, "estimated_delivery_delay_s", 0.0) / response_target_s,
+            0.0,
+            1.0,
+        ))
+        return age_pressure, budget_remaining, overrun, delivery_budget_pressure

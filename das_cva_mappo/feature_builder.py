@@ -26,12 +26,13 @@ class ActionSetFeatureBuilder:
 
     def __init__(
         self,
-        state_dim: int = 12,
-        action_feature_dim: int = 24,
+        state_dim: int = 16,
+        action_feature_dim: int = 28,
         mode: str = "full",
         use_candidate_score: bool = True,
         candidate_scorer=None,
         candidate_adapter=None,
+        use_response_budget_features: bool = True,
     ):
         self.state_dim = int(state_dim)
         self.action_feature_dim = int(action_feature_dim)
@@ -39,6 +40,7 @@ class ActionSetFeatureBuilder:
         self.use_candidate_score = bool(use_candidate_score and self.mode != "no_score")
         self.candidate_scorer = candidate_scorer
         self.candidate_adapter = candidate_adapter or V2CandidateAdapter()
+        self.use_response_budget_features = bool(use_response_budget_features)
 
     def build_agent(self, env, agent_id: str, info: Dict) -> ActionSetBatch:
         mask = np.asarray(info.get("action_mask", np.ones(env.action_dim)), dtype=np.float32)
@@ -95,6 +97,8 @@ class ActionSetFeatureBuilder:
             float(self.candidate_adapter.n_task_candidate_owners(env, info)) / max(env.max_action_dim, 1),
             float(getattr(env, "n_agents", 1)) / 32.0,
         ]
+        if self.use_response_budget_features:
+            values.extend(self._dynamic_response_state(env, sub_env))
         state[: min(len(values), self.state_dim)] = values[: self.state_dim]
         return state
 
@@ -140,6 +144,11 @@ class ActionSetFeatureBuilder:
             out[exposed_action, 21] = float(getattr(mission, "priority", 0.0)) / 10.0
             out[exposed_action, 22] = float(timing.get("currently_executable", mask[exposed_action] > 0))
             out[exposed_action, 23] = float(timing.get("future_executable", 0.0))
+            if self.use_response_budget_features and out.shape[1] > 24:
+                wait_s = float(timing.get("wait_norm", wait_norm)) * max(float(sub_env.horizon_s), 1.0)
+                response_features = self._dynamic_response_features(env, sub_env, mission, wait_s)
+                limit = min(out.shape[1] - 24, len(response_features))
+                out[exposed_action, 24:24 + limit] = response_features[:limit]
             edge_feature = self._candidate_edge_feature(env, agent_id, sub_env, mission)
             if edge_feature is not None:
                 edge_out[exposed_action] = edge_feature
@@ -208,6 +217,71 @@ class ActionSetFeatureBuilder:
         wait_norm = float(np.clip(wait_s / max(sub_env.horizon_s, 1.0), 0.0, 1.0))
         slack_norm = float(np.clip(slack_s / max(sub_env.horizon_s, 1.0), 0.0, 1.0))
         return mission_feats, wait_norm, slack_norm
+
+    def _dynamic_response_state(self, env, sub_env) -> List[float]:
+        current_time = float(sub_env.current_time_s)
+        target_s = self._dynamic_response_target_s(env, sub_env)
+        known_dynamic = []
+        arrived_pending = []
+        for mission in sub_env.missions[: getattr(env, "max_action_dim", len(sub_env.missions))]:
+            if mission is None or not getattr(mission, "is_dynamic", False):
+                continue
+            known_dynamic.append(mission)
+            if mission.is_observed:
+                continue
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if arrival_s <= current_time <= float(mission.deadline_s):
+                arrived_pending.append(mission)
+
+        age_pressures = []
+        deadline_pressures = []
+        over_budget = 0
+        for mission in arrived_pending:
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            age_s = max(current_time - arrival_s, 0.0)
+            age_pressure = float(np.clip(age_s / target_s, 0.0, 1.0))
+            age_pressures.append(age_pressure)
+            over_budget += int(age_s >= target_s)
+            slack_s = max(float(mission.deadline_s) - current_time, 0.0)
+            horizon_s = max(float(sub_env.horizon_s), 1.0)
+            deadline_pressures.append(1.0 - float(np.clip(slack_s / horizon_s, 0.0, 1.0)))
+
+        pending_frac = len(arrived_pending) / max(len(known_dynamic), 1)
+        over_budget_frac = over_budget / max(len(arrived_pending), 1)
+        return [
+            float(np.clip(pending_frac, 0.0, 1.0)),
+            float(np.clip(max(age_pressures, default=0.0), 0.0, 1.0)),
+            float(np.clip(max(deadline_pressures, default=0.0), 0.0, 1.0)),
+            float(np.clip(over_budget_frac, 0.0, 1.0)),
+        ]
+
+    def _dynamic_response_features(self, env, sub_env, mission, wait_s: float) -> np.ndarray:
+        if not getattr(mission, "is_dynamic", False):
+            return np.zeros(4, dtype=np.float32)
+        target_s = self._dynamic_response_target_s(env, sub_env)
+        current_time = float(sub_env.current_time_s)
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        age_s = max(current_time - arrival_s, 0.0)
+        age_pressure = float(np.clip(age_s / target_s, 0.0, 1.0))
+        budget_remaining = float(np.clip((target_s - age_s) / target_s, 0.0, 1.0))
+        budget_overrun = 1.0 if age_s >= target_s else 0.0
+        post_wait_pressure = float(
+            np.clip((age_s + max(float(wait_s), 0.0)) / target_s, 0.0, 1.0)
+        )
+        return np.array([
+            age_pressure,
+            budget_remaining,
+            budget_overrun,
+            post_wait_pressure,
+        ], dtype=np.float32)
+
+    @staticmethod
+    def _dynamic_response_target_s(env, sub_env) -> float:
+        v2_cfg = getattr(env, "v2_cfg", None)
+        target_s = float(getattr(v2_cfg, "dynamic_response_target_s", 0.0) or 0.0)
+        if target_s <= 0.0:
+            target_s = float(getattr(sub_env, "horizon_s", 1.0))
+        return max(target_s, 1.0)
 
     @staticmethod
     def _set_type(row: np.ndarray, action_type: str) -> None:

@@ -10,8 +10,9 @@ Most ablations are applied on top of the Stage 4 configuration so the table
 compares one removed/changed component at a time against the strongest staged
 setting. Targeted Stage 2 ablations are included for changes that should be
 validated before hybrid scorer/storage-pressure effects enter the comparison.
-V0.30 keeps no post-hoc dynamic downlink priority as the stronger Stage-2
-baseline and tests downlink-aware candidate edge value instead.
+V0.31 keeps no post-hoc dynamic downlink priority as the stronger Stage-2
+baseline, tests downlink-aware candidate edge value, and exposes a response
+budget feature ablation.
 """
 
 from __future__ import annotations
@@ -183,6 +184,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--dynamic_rescue_response_bonus", args.dynamic_rescue_response_bonus),
         *kv("--ownership_mask_mode", "soft"),
         *kv("--matcher", "set_transformer"),
+        *(["--no_response_budget_features"] if args.no_response_budget_features else []),
         *kv("--idle_aux_coeff", "0.05"),
         *kv("--action_feature_mode", "full"),
         *kv("--candidate_adapter_mode", "v2_compat"),
@@ -389,6 +391,15 @@ def ablation_specs() -> list[dict[str, Any]]:
                 *kv("--allocator_dynamic_response_bonus", "0.00"),
                 *kv("--allocator_dynamic_wait_penalty", "0.00"),
                 *kv("--dynamic_rescue_response_bonus", "0.00"),
+            ],
+        },
+        {
+            "name": "abl_stage2_no_response_budget_features",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--no_response_budget_features",
             ],
         },
         {
@@ -778,6 +789,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval_device", default="cpu")
     parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--eval_profile", action="store_true")
+    parser.add_argument("--no_response_budget_features", action="store_true")
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")
