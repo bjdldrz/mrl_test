@@ -12,7 +12,7 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.29.0"
+    version: str = "0.30.0"
     state_dim: int = 12
     action_feature_dim: int = 24
     actor_hidden_dims: Tuple[int, ...] = (256, 256)

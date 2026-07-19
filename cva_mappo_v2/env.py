@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -66,6 +66,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._dynamic_current_slot_selected_sum = 0
         self._dynamic_future_slot_candidate_sum = 0
         self._dynamic_future_slot_selected_sum = 0
+        self._dynamic_task_diagnostics: Dict[int, Dict[str, Any]] = {}
         kwargs["candidate_action_top_k"] = self.v2_cfg.slots.total_slots
         kwargs["episode_assignment"] = True
         kwargs["assignment_replan_interval_s"] = self.v2_cfg.replan_interval_s
@@ -97,19 +98,228 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
         self._dynamic_current_slot_selected_sum = 0
         self._dynamic_future_slot_candidate_sum = 0
         self._dynamic_future_slot_selected_sum = 0
+        self._dynamic_task_diagnostics = {}
         self._clear_v2_step_cache()
         result = super().reset(*args, **kwargs)
         self._clear_v2_step_cache()
         return result
 
     def step(self, actions):
+        prev_schedule_lens = {
+            aid: len(env.schedule_log)
+            for aid, env in self.envs.items()
+        }
+        self._record_dynamic_policy_selection(actions)
         self._clear_v2_step_cache()
         result = super().step(actions)
+        self._record_dynamic_delivery_diagnostics(prev_schedule_lens)
         self._clear_v2_step_cache()
         return result
 
     def _clear_v2_step_cache(self) -> None:
         self._v2_step_cache = {}
+
+    def _dynamic_diag_entry(self, mission: Mission) -> Dict[str, Any]:
+        mission_id = int(mission.id)
+        entry = self._dynamic_task_diagnostics.get(mission_id)
+        if entry is None:
+            entry = {
+                "mission_id": mission_id,
+                "arrival_time_s": float(getattr(mission, "arrival_time_s", mission.earliest_time_s)),
+                "earliest_time_s": float(getattr(mission, "earliest_time_s", 0.0)),
+                "deadline_s": float(getattr(mission, "deadline_s", 0.0)),
+                "priority": float(getattr(mission, "priority", 0.0)),
+                "arrived": False,
+                "candidate_seen": False,
+                "candidate_seen_count": 0,
+                "candidate_current_executable_seen": False,
+                "candidate_current_executable_seen_count": 0,
+                "candidate_future_executable_seen": False,
+                "candidate_future_executable_seen_count": 0,
+                "selected": False,
+                "selected_count": 0,
+                "selected_current_executable": False,
+                "observed": False,
+                "downlinked": False,
+                "downlink_queued": False,
+                "downlink_queue_blocked": False,
+                "downlink_failed": False,
+                "first_candidate_seen_s": None,
+                "first_current_executable_seen_s": None,
+                "first_selected_s": None,
+                "obs_end_s": None,
+                "downlink_start_s": None,
+                "downlink_end_s": None,
+                "final_downlink_queue_s": 0.0,
+                "max_downlink_queue_s": 0.0,
+            }
+            self._dynamic_task_diagnostics[mission_id] = entry
+        else:
+            entry["arrival_time_s"] = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            entry["earliest_time_s"] = float(getattr(mission, "earliest_time_s", 0.0))
+            entry["deadline_s"] = float(getattr(mission, "deadline_s", 0.0))
+            entry["priority"] = float(getattr(mission, "priority", 0.0))
+        return entry
+
+    def _record_dynamic_candidate_seen(
+        self,
+        agent_id: str,
+        action: int,
+        full_mask: np.ndarray,
+    ) -> None:
+        env = self.envs[agent_id]
+        if action < 0 or action >= self.max_action_dim:
+            return
+        mission = env.missions[int(action)]
+        if mission is None or not getattr(mission, "is_dynamic", False):
+            return
+        current_time = float(env.current_time_s)
+        arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+        if arrival_s > current_time:
+            return
+        entry = self._dynamic_diag_entry(mission)
+        entry["arrived"] = True
+        entry["candidate_seen"] = True
+        entry["candidate_seen_count"] = int(entry["candidate_seen_count"]) + 1
+        if entry["first_candidate_seen_s"] is None:
+            entry["first_candidate_seen_s"] = current_time
+        current_valid = action < len(full_mask) and full_mask[action] > 0
+        future_valid = (not current_valid) and self._future_task_action_valid(
+            agent_id,
+            int(action),
+            full_mask,
+        )
+        if current_valid:
+            entry["candidate_current_executable_seen"] = True
+            entry["candidate_current_executable_seen_count"] = (
+                int(entry["candidate_current_executable_seen_count"]) + 1
+            )
+            if entry["first_current_executable_seen_s"] is None:
+                entry["first_current_executable_seen_s"] = current_time
+        if future_valid:
+            entry["candidate_future_executable_seen"] = True
+            entry["candidate_future_executable_seen_count"] = (
+                int(entry["candidate_future_executable_seen_count"]) + 1
+            )
+
+    def _record_dynamic_policy_selection(self, actions: Dict[str, int]) -> None:
+        if not self._candidate_actions_enabled():
+            return
+        raw_actions = self._decode_actions(actions)
+        for agent_id, raw_action in raw_actions.items():
+            if raw_action is None or raw_action < 0 or raw_action >= self.max_action_dim:
+                continue
+            env = self.envs[agent_id]
+            mission = env.missions[int(raw_action)]
+            if mission is None or not getattr(mission, "is_dynamic", False):
+                continue
+            current_time = float(env.current_time_s)
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if arrival_s > current_time:
+                continue
+            entry = self._dynamic_diag_entry(mission)
+            entry["arrived"] = True
+            entry["selected"] = True
+            entry["selected_count"] = int(entry["selected_count"]) + 1
+            if entry["first_selected_s"] is None:
+                entry["first_selected_s"] = current_time
+            if bool(entry.get("candidate_current_executable_seen", False)):
+                entry["selected_current_executable"] = True
+
+    def _record_dynamic_delivery_diagnostics(
+        self,
+        prev_schedule_lens: Dict[str, int],
+    ) -> None:
+        queue_target_s = max(
+            float(getattr(self.v2_cfg, "downlink_queue_target_s", 3600.0) or 3600.0),
+            1.0,
+        )
+        for agent_id, env in self.envs.items():
+            start = int(prev_schedule_lens.get(agent_id, len(env.schedule_log)))
+            for record in env.schedule_log[start:]:
+                mission = self._mission_for_agent(agent_id, record.mission_id)
+                is_dynamic = bool(getattr(record, "is_dynamic", False)) or bool(
+                    getattr(mission, "is_dynamic", False)
+                )
+                if mission is None or not is_dynamic:
+                    continue
+                entry = self._dynamic_diag_entry(mission)
+                queue_s = (
+                    max(0.0, float(record.downlink_start_s) - float(record.obs_end_s))
+                    if int(getattr(record, "ground_station_id", -1)) >= 0
+                    else 0.0
+                )
+                entry["arrived"] = True
+                entry["observed"] = True
+                entry["downlinked"] = bool(getattr(mission, "is_downlinked", False))
+                entry["obs_end_s"] = float(record.obs_end_s)
+                entry["downlink_start_s"] = float(record.downlink_start_s)
+                entry["downlink_end_s"] = float(record.downlink_end_s)
+                entry["final_downlink_queue_s"] = float(queue_s)
+                entry["max_downlink_queue_s"] = max(
+                    float(entry.get("max_downlink_queue_s", 0.0) or 0.0),
+                    float(queue_s),
+                )
+                if queue_s > 1e-6:
+                    entry["downlink_queued"] = True
+                if queue_s >= queue_target_s:
+                    entry["downlink_queue_blocked"] = True
+                if getattr(env, "downlink_required", False) and int(getattr(record, "ground_station_id", -1)) < 0:
+                    entry["downlink_failed"] = True
+
+    def get_dynamic_task_diagnostics(self) -> Dict[str, Dict[str, Any]]:
+        current_time = float(self._current_time_s())
+        missions: Dict[int, Mission] = {}
+        for env in self.envs.values():
+            for mission in env.missions[:self.max_action_dim]:
+                if mission is not None and getattr(mission, "is_dynamic", False):
+                    missions[int(mission.id)] = mission
+        for mission in missions.values():
+            arrival_s = float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if arrival_s <= current_time or int(mission.id) in self._dynamic_task_diagnostics:
+                entry = self._dynamic_diag_entry(mission)
+                entry["arrived"] = bool(entry["arrived"] or arrival_s <= current_time)
+                entry["observed"] = bool(entry["observed"] or self._mission_observed_anywhere(mission.id))
+                entry["downlinked"] = bool(entry["downlinked"] or getattr(mission, "is_downlinked", False))
+        queue_target_s = max(
+            float(getattr(self.v2_cfg, "downlink_queue_target_s", 3600.0) or 3600.0),
+            1.0,
+        )
+        for agent_id, env in self.envs.items():
+            for record in env.schedule_log:
+                mission = self._mission_for_agent(agent_id, record.mission_id)
+                is_dynamic = bool(getattr(record, "is_dynamic", False)) or bool(
+                    getattr(mission, "is_dynamic", False)
+                )
+                if mission is None or not is_dynamic:
+                    continue
+                entry = self._dynamic_diag_entry(mission)
+                queue_s = (
+                    max(0.0, float(record.downlink_start_s) - float(record.obs_end_s))
+                    if int(getattr(record, "ground_station_id", -1)) >= 0
+                    else 0.0
+                )
+                entry["arrived"] = True
+                entry["observed"] = True
+                entry["downlinked"] = bool(entry["downlinked"] or getattr(mission, "is_downlinked", False))
+                entry["obs_end_s"] = float(record.obs_end_s)
+                entry["downlink_start_s"] = float(record.downlink_start_s)
+                entry["downlink_end_s"] = float(record.downlink_end_s)
+                entry["final_downlink_queue_s"] = float(queue_s)
+                entry["max_downlink_queue_s"] = max(
+                    float(entry.get("max_downlink_queue_s", 0.0) or 0.0),
+                    float(queue_s),
+                )
+                entry["downlink_queued"] = bool(queue_s > 1e-6)
+                entry["downlink_queue_blocked"] = bool(queue_s >= queue_target_s)
+                entry["downlink_failed"] = bool(
+                    getattr(env, "downlink_required", False)
+                    and int(getattr(record, "ground_station_id", -1)) < 0
+                )
+        return {
+            str(mission_id): dict(entry)
+            for mission_id, entry in sorted(self._dynamic_task_diagnostics.items())
+        }
 
     def _future_task_execution_enabled(self) -> bool:
         return bool(getattr(self.v2_cfg, "allow_future_task_execution", False))
@@ -631,6 +841,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             mission = env.missions[int(action)]
             if mission is None or not getattr(mission, "is_dynamic", False):
                 continue
+            self._record_dynamic_candidate_seen(agent_id, int(action), full_mask)
             if action < len(full_mask) and full_mask[action] > 0:
                 self._dynamic_current_slot_selected_sum += 1
             elif self._future_task_action_valid(agent_id, int(action), full_mask):
@@ -1049,6 +1260,56 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             }
         return obs, info
 
+    def _dynamic_task_diagnostic_metrics(self) -> Dict[str, float]:
+        rows = [
+            entry for entry in self.get_dynamic_task_diagnostics().values()
+            if bool(entry.get("arrived", False))
+        ]
+        n_arrived = len(rows)
+        seen = [entry for entry in rows if bool(entry.get("candidate_seen", False))]
+        current_seen = [
+            entry for entry in rows
+            if bool(entry.get("candidate_current_executable_seen", False))
+        ]
+        future_seen = [
+            entry for entry in rows
+            if bool(entry.get("candidate_future_executable_seen", False))
+        ]
+        selected = [entry for entry in rows if bool(entry.get("selected", False))]
+        observed = [entry for entry in rows if bool(entry.get("observed", False))]
+        downlinked = [entry for entry in rows if bool(entry.get("downlinked", False))]
+        queued = [entry for entry in observed if bool(entry.get("downlink_queued", False))]
+        blocked = [entry for entry in observed if bool(entry.get("downlink_queue_blocked", False))]
+        failed = [entry for entry in observed if bool(entry.get("downlink_failed", False))]
+        queue_values = [
+            float(entry.get("final_downlink_queue_s", 0.0) or 0.0)
+            for entry in observed
+        ]
+        return {
+            "n_dynamic_tasks_arrived": float(n_arrived),
+            "n_dynamic_tasks_candidate_seen": float(len(seen)),
+            "dynamic_task_candidate_seen_rate": len(seen) / max(n_arrived, 1),
+            "n_dynamic_tasks_current_executable_seen": float(len(current_seen)),
+            "dynamic_task_current_executable_seen_rate": len(current_seen) / max(len(seen), 1),
+            "n_dynamic_tasks_future_executable_seen": float(len(future_seen)),
+            "dynamic_task_future_executable_seen_rate": len(future_seen) / max(len(seen), 1),
+            "n_dynamic_tasks_policy_selected": float(len(selected)),
+            "dynamic_task_policy_selected_rate": len(selected) / max(len(seen), 1),
+            "n_dynamic_tasks_observed_diag": float(len(observed)),
+            "dynamic_task_observed_after_selected_rate": len(observed) / max(len(selected), 1),
+            "n_dynamic_tasks_downlinked_diag": float(len(downlinked)),
+            "dynamic_task_downlinked_after_observed_rate": len(downlinked) / max(len(observed), 1),
+            "n_dynamic_tasks_with_downlink_queue": float(len(queued)),
+            "dynamic_task_downlink_queue_rate": len(queued) / max(len(observed), 1),
+            "n_dynamic_tasks_downlink_queue_blocked": float(len(blocked)),
+            "dynamic_task_downlink_queue_block_rate": len(blocked) / max(len(observed), 1),
+            "n_dynamic_tasks_downlink_failed": float(len(failed)),
+            "dynamic_task_downlink_failed_rate": len(failed) / max(len(observed), 1),
+            "avg_dynamic_task_downlink_queue_s": (
+                float(np.mean(queue_values)) if queue_values else 0.0
+            ),
+        }
+
     def get_metrics(self):
         metrics = super().get_metrics()
         denom = max(self._slot_exposure_count * self.v2_cfg.slots.total_slots, 1)
@@ -1091,6 +1352,7 @@ class CVAMAPPOV2Env(MultiSatelliteEnv):
             ),
             "slot_selection_mixed": 1.0 if self.v2_cfg.slot_selection_mode == "mixed" else 0.0,
         })
+        metrics.update(self._dynamic_task_diagnostic_metrics())
         for reason in SLOT_INVALID_REASONS:
             count = self._slot_invalid_reason_sum.get(reason, 0)
             metrics[f"slot_invalid_{reason}_ratio"] = count / denom

@@ -8,7 +8,7 @@
 
 项目已经从早期 `cva_mappo_v2` 的固定槽位、规则候选分配路线，逐步转向 `das_cva_mappo` 主线。当前推荐的论文方法中心是 `das_cva_mappo/`，而 `cva_mappo_v2/` 主要作为候选生成、环境封装和兼容层继续被使用。
 
-当前主线版本为 `DAS-CVA-MAPPO V0.29.0`。
+当前主线版本为 `DAS-CVA-MAPPO V0.30.0`。
 
 ## 2. 已完成的主要工作
 
@@ -89,7 +89,7 @@
 - 增加 dynamic current/future slot exposure 诊断指标。
 - 增加 dynamic-priority downlink replanning，让未开始的 routine downlink 可以被动态任务图像重排到后面。
 
-最近一轮 V0.29 的重点已经从“是否能完成动态任务”推进到“完成后是否能更快下传”，这是因为实验中 `avg_downlink_queue_s` 对 `avg_dynamic_response_s` 的贡献很大。
+最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。
 
 ### 2.7 训练与评估一致性
 
@@ -212,7 +212,7 @@ README 里已有完整运行命令，stage suite 可以复现实验组合，summ
 
 `avg_downlink_queue_s` 经常达到数小时量级，而 `avg_dynamic_response_s` 定义包含从任务最早时间到下传完成的全过程。因此即使观测调度变好，若动态图像排在 routine downlink 后面，响应时间仍会很差。
 
-V0.29 已加入 dynamic-priority downlink replanning，但还需要实验确认它能稳定降低：
+V0.29 的 dynamic-priority downlink replanning 没有在最近结果中形成稳定收益。V0.30 已把优化重心改为 downlink-aware candidate edge value，需要继续确认它是否能稳定降低：
 
 - `avg_dynamic_response_s`
 - `avg_downlink_queue_s`
@@ -283,15 +283,15 @@ Response-aware Dynamic Action-Set CVA-MAPPO
 
 第三，响应感知 CVA 候选评分。动态任务的候选排序引入 response pressure，使任务年龄、响应目标和未来窗口等待共同影响卫星-任务边价值。该设计比单纯按优先级或 off-nadir 质量排序更贴合动态应急任务。
 
-第四，观测-存储-下传耦合的调度评价。V0.29 已开始把 downlink queue 纳入动态响应优化，通过 dynamic-priority downlink replanning 让动态图像在未开始的数传计划中获得更高优先级。论文中可以强调方法不只优化观测覆盖率，而是优化从任务到达到数据交付的端到端响应。
+第四，观测-存储-下传耦合的调度评价。V0.30 已把 downlink queue、预计交付延迟和下传可行性纳入候选边价值，让动态图像在观测选择前就能根据端到端交付代价排序。论文中可以强调方法不只优化观测覆盖率，而是优化从任务到达到数据交付的端到端响应。
 
 第五，训练评估一致的约束决策流程。当前 eval 默认不再启用 train 中没有的 repair 逻辑，保证论文结果反映策略和候选机制本身，而不是评估阶段额外规则后处理。这一点虽然不是算法创新，但能显著增强实验可信度。
 
 ### 6.2 还需要补强的机制创新
 
-为了让方法不只停留在“已有实现加权重”，建议后续优先补三个机制。
+为了让方法不只停留在“已有实现加权重”，建议后续围绕三个机制继续强化，其中第一项已经完成第一版实现。
 
-第一，downlink-aware edge value。当前候选评分主要面向观测可行性和动态等待压力，downlink priority 更多发生在观测之后。更强的版本应在候选评分阶段估计：
+第一，downlink-aware edge value。V0.30 已完成第一版下传感知候选边价值，在候选评分阶段估计：
 
 - earliest downlink start。
 - earliest downlink finish。
@@ -300,7 +300,7 @@ Response-aware Dynamic Action-Set CVA-MAPPO
 - relay usefulness。
 - dynamic delivery deadline margin。
 
-这样 CVA scorer 预测的是“观测并交付”的边价值，而不是只预测“观测”的边价值。该点最容易提升论文创新性，因为它把卫星观测调度和地面站下传资源真正耦合起来。
+这样 CVA scorer 预测的是“观测并交付”的边价值，而不是只预测“观测”的边价值。后续还可以把该估计从当前的启发式预览升级为学习型 delivery-value head。
 
 第二，response-budget-aware reward 或 critic feature。动态任务可以定义剩余响应预算：
 
@@ -324,7 +324,8 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 - no future task execution：证明时序可执行性表示有用。
 - open future macro：证明无约束未来宏动作会损害动态任务。
 - no dynamic response pressure：证明响应感知候选排序有效。
-- no dynamic downlink priority：证明端到端交付优化有效。
+- no downlink-aware edge value：证明端到端交付代价前置到候选评分中是有效的。
+- post-hoc dynamic downlink priority：证明 V0.30 的前置评分优于 V0.29 的事后重排路线。
 
 对应指标应包括：
 
@@ -361,14 +362,14 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 ## 7. 建议的后续路线
 
-### 7.1 优先完成 V0.29 验证
+### 7.1 优先完成 V0.30 验证
 
 建议先运行当前短验证：
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v029_dynamic_response_iter \
-  --only stage2_candidate_owner_repair stage2_dynamic_priority_recovery abl_stage2_no_dynamic_downlink_priority \
+  --suite_name das_v030_downlink_aware_edge_value \
+  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_downlink_aware_edge_value abl_stage2_posthoc_dynamic_downlink_priority \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
@@ -386,10 +387,13 @@ python3 scripts/run_stage_ablation_suite.py \
 - `avg_downlink_queue_s`
 - `n_downlink_priority_replans`
 - `avg_dynamic_downlink_replan_gain_s`
+- `dynamic_task_candidate_seen_rate`
+- `dynamic_task_policy_selected_rate`
+- `dynamic_task_downlink_queue_block_rate`
 - `dynamic_current_slot_exposure_rate`
 - `dynamic_future_slot_exposure_rate`
 
-如果禁用 dynamic downlink priority 后响应时间明显变差，则 V0.29 可以作为有效改进保留。
+如果关闭 downlink-aware edge value 后响应时间或下传队列明显变差，则 V0.30 的方法创新点可以保留；如果重新开启 post-hoc dynamic downlink priority 仍无收益，则旧重排路线应只作为消融对照。
 
 ### 7.2 动态任务指标单独成表
 
@@ -406,10 +410,10 @@ python3 scripts/run_stage_ablation_suite.py \
 
 ### 7.3 继续压低 downlink queue
 
-如果 V0.29 的 downlink priority 收益有限，下一步应考虑：
+如果 V0.30 的 downlink-aware edge value 收益仍有限，下一步应考虑：
 
 - 为动态图像设置更强的 downlink deadline 或 priority key。
-- 在观测候选评分阶段加入预计 downlink finish time，而不是只在观测后重排。
+- 将当前启发式预计 downlink finish time 升级为 learned delivery-value head。
 - 将 ground-station queue pressure 加入候选 edge feature。
 - 对即将产生动态图像的任务预留或提前释放下传窗口。
 
@@ -431,7 +435,7 @@ python3 scripts/run_stage_ablation_suite.py \
 - 3 到 5 个随机种子。
 - 固定 scenario cache。
 - stage2 baseline、stage2_dynamic_priority、stage3 hybrid、stage4 storage/downlink。
-- 关键消融：no future task、no dynamic response pressure、no dynamic downlink priority、heuristic vs hybrid。
+- 关键消融：no future task、no dynamic response pressure、no downlink-aware edge value、post-hoc dynamic downlink priority、heuristic vs hybrid。
 
 最终报告均值和标准差，避免单次结果波动影响结论。
 
@@ -439,4 +443,4 @@ python3 scripts/run_stage_ablation_suite.py \
 
 当前项目已经完成了从兼容层规则调度到 DAS-CVA-MAPPO 动态动作集策略的主体改造，并建立了较完整的阶段实验、消融、指标诊断和 train/eval 一致性保护。项目的主要优势是方法结构清晰、实验可诊断、动态任务问题被拆解得比较细；主要不足是动态任务 raw completion 仍不够强、stale owner 偏高、downlink queue 对响应时间影响大、评估成本仍偏高。
 
-从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知的动态动作集约束调度”。下一步不建议大范围重构，而应沿 V0.29 路线做有针对性的验证：先确认 dynamic downlink priority 是否显著降低响应时间，再决定是否把 downlink finish time 前置到候选评分和 owner 分配中。
+从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，下一步不建议大范围重构，而应先验证 downlink-aware edge value 是否能相对当前强 baseline 降低动态响应时间和下传队列阻塞率。

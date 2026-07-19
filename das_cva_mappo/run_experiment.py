@@ -1,5 +1,5 @@
 """
-Run DAS-CVA-MAPPO V0.29.
+Run DAS-CVA-MAPPO V0.30.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
@@ -9,8 +9,9 @@ adds optional evaluation profiling so slow evaluation runs can be diagnosed.
 V0.28 removes repeated low-level obs/mask construction inside multi-agent
 environment steps. V0.28.1 restores CPU evaluation as the default while keeping
 CUDA as the default training device. V0.29 adds response-aware dynamic window
-selection, visible-candidate idle advancement, and dynamic-priority downlink
-replanning.
+selection and visible-candidate idle advancement. V0.30 moves dynamic-response
+work from post-observation downlink reordering into downlink-aware candidate
+edge values and per-dynamic-task diagnostics.
 """
 
 from __future__ import annotations
@@ -130,13 +131,19 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         w_dynamic_response=args.candidate_dynamic_response_bonus,
         w_dynamic_wait=args.candidate_dynamic_wait_penalty,
         dynamic_response_target_s=args.dynamic_response_target_s,
+        downlink_aware_candidate_score=not args.no_downlink_aware_candidate_score,
+        downlink_queue_target_s=args.downlink_queue_target_s,
+        w_downlink_queue=args.candidate_downlink_queue_penalty,
+        w_downlink_miss=args.candidate_downlink_miss_penalty,
+        w_dynamic_delivery=args.candidate_dynamic_delivery_bonus,
+        w_dynamic_delivery_delay=args.candidate_dynamic_delivery_delay_penalty,
         allocator_wait_penalty=args.allocator_wait_penalty,
         allocator_stale_rescue_bonus=args.allocator_stale_rescue_bonus,
         allocator_dynamic_urgency_bonus=args.allocator_dynamic_urgency_bonus,
         allocator_dynamic_response_bonus=args.allocator_dynamic_response_bonus,
         allocator_dynamic_wait_penalty=args.allocator_dynamic_wait_penalty,
         dynamic_rescue_response_bonus=args.dynamic_rescue_response_bonus,
-        dynamic_downlink_priority=not args.no_dynamic_downlink_priority,
+        dynamic_downlink_priority=args.dynamic_downlink_priority,
         triggers=triggers,
     )
     cfg.validate()
@@ -600,7 +607,17 @@ def _eval_worker(payload):
     finalize_started = _profile_start(profile)
     row = _finalize_eval_metrics(env, n_steps, max_steps, counter)
     _profile_stop(profile, "finalize", finalize_started)
-    return {"idx": payload["idx"], "metrics": row, "profile": profile}
+    diagnostics = (
+        env.get_dynamic_task_diagnostics()
+        if hasattr(env, "get_dynamic_task_diagnostics")
+        else {}
+    )
+    return {
+        "idx": payload["idx"],
+        "metrics": row,
+        "profile": profile,
+        "dynamic_task_diagnostics": diagnostics,
+    }
 
 
 def _make_eval_runtime(
@@ -777,7 +794,16 @@ def _batched_eval_single_process(
                         runtime["counter"],
                     )
                     _profile_stop(profile, "finalize", finalize_started)
-                    raw.append({"idx": runtime["idx"], "metrics": row})
+                    diagnostics = (
+                        env.get_dynamic_task_diagnostics()
+                        if hasattr(env, "get_dynamic_task_diagnostics")
+                        else {}
+                    )
+                    raw.append({
+                        "idx": runtime["idx"],
+                        "metrics": row,
+                        "dynamic_task_diagnostics": diagnostics,
+                    })
                     finished.append(runtime)
                     pbar.update(1)
 
@@ -802,6 +828,7 @@ def _parallel_eval(
     model,
     scenarios,
     candidate_scorer: Optional[TrainableCandidateValueScorer] = None,
+    diagnostics_out_dir: Optional[Path] = None,
     show_progress=True,
 ) -> Dict[str, float]:
     from multiprocessing import get_context
@@ -833,6 +860,7 @@ def _parallel_eval(
             show_progress=show_progress,
         )
         raw = sorted(raw, key=lambda row: row["idx"])
+        _write_eval_dynamic_task_diagnostics(raw, diagnostics_out_dir)
         metrics = _avg_metrics([row["metrics"] for row in raw])
         if getattr(args, "eval_profile", False):
             total_steps = sum(float(row["metrics"].get("eval_steps", 0.0)) for row in raw)
@@ -882,6 +910,7 @@ def _parallel_eval(
                 disable=not show_progress,
             ))
     raw = sorted(raw, key=lambda row: row["idx"])
+    _write_eval_dynamic_task_diagnostics(raw, diagnostics_out_dir)
     metrics = _avg_metrics([row["metrics"] for row in raw])
     if getattr(args, "eval_profile", False):
         total_steps = sum(float(row["metrics"].get("eval_steps", 0.0)) for row in raw)
@@ -893,6 +922,35 @@ def _parallel_eval(
             len(raw),
         ))
     return metrics
+
+
+def _write_eval_dynamic_task_diagnostics(
+    raw: List[Dict[str, Any]],
+    out_dir: Optional[Path],
+) -> None:
+    if out_dir is None:
+        return
+    episodes = []
+    for row in raw:
+        diagnostics = row.get("dynamic_task_diagnostics")
+        if not diagnostics:
+            continue
+        episodes.append({
+            "idx": int(row.get("idx", 0)),
+            "dynamic_tasks": diagnostics,
+        })
+    if not episodes:
+        return
+    with open(out_dir / "eval_dynamic_task_diagnostics.json", "w") as f:
+        dump_json(
+            {
+                "schema_version": 1,
+                "episodes": episodes,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def _write_train_log(out_dir: Path, rows: List[Dict[str, Any]]) -> None:
@@ -1145,6 +1203,7 @@ def train_and_eval(
         model=model,
         scenarios=eval_scenarios,
         candidate_scorer=candidate_scorer,
+        diagnostics_out_dir=out_dir,
         show_progress=not args.no_progress,
     )
 
@@ -1330,7 +1389,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.29 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.30 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1355,7 +1414,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_29")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_30")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1392,6 +1451,12 @@ def main() -> None:
     parser.add_argument("--candidate_dynamic_response_bonus", type=float, default=0.24)
     parser.add_argument("--candidate_dynamic_wait_penalty", type=float, default=0.20)
     parser.add_argument("--dynamic_response_target_s", type=float, default=3600.0)
+    parser.add_argument("--no_downlink_aware_candidate_score", action="store_true")
+    parser.add_argument("--downlink_queue_target_s", type=float, default=3600.0)
+    parser.add_argument("--candidate_downlink_queue_penalty", type=float, default=0.10)
+    parser.add_argument("--candidate_downlink_miss_penalty", type=float, default=0.20)
+    parser.add_argument("--candidate_dynamic_delivery_bonus", type=float, default=0.24)
+    parser.add_argument("--candidate_dynamic_delivery_delay_penalty", type=float, default=0.20)
     parser.add_argument("--allocator_wait_penalty", type=float, default=0.10)
     parser.add_argument("--allocator_stale_rescue_bonus", type=float, default=0.25)
     parser.add_argument("--allocator_dynamic_urgency_bonus", type=float, default=0.10)
@@ -1417,7 +1482,9 @@ def main() -> None:
     parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
     parser.add_argument("--dynamic_current_slot_bonus", type=float, default=0.65)
     parser.add_argument("--dynamic_window_wait_weight", type=float, default=0.75)
-    parser.add_argument("--no_dynamic_downlink_priority", action="store_true")
+    parser.add_argument("--dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_true")
+    parser.add_argument("--no_dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_false")
+    parser.set_defaults(dynamic_downlink_priority=False)
     parser.add_argument("--keep_ineligible_future_candidates", action="store_true")
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
@@ -1507,7 +1574,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.29"
+    method_name = "DAS-CVA-MAPPO-v0.30"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1594,6 +1661,12 @@ def main() -> None:
             "dynamic_future_bonus": v2_cfg.dynamic_future_bonus,
             "dynamic_current_slot_bonus": v2_cfg.dynamic_current_slot_bonus,
             "dynamic_window_wait_weight": v2_cfg.dynamic_window_wait_weight,
+            "downlink_aware_candidate_score": v2_cfg.downlink_aware_candidate_score,
+            "downlink_queue_target_s": v2_cfg.downlink_queue_target_s,
+            "candidate_downlink_queue_penalty": v2_cfg.w_downlink_queue,
+            "candidate_downlink_miss_penalty": v2_cfg.w_downlink_miss,
+            "candidate_dynamic_delivery_bonus": v2_cfg.w_dynamic_delivery,
+            "candidate_dynamic_delivery_delay_penalty": v2_cfg.w_dynamic_delivery_delay,
             "dynamic_downlink_priority": v2_cfg.dynamic_downlink_priority,
             "drop_ineligible_future_candidates": v2_cfg.drop_ineligible_future_candidates,
             "candidate_wait_penalty": v2_cfg.w_wait,

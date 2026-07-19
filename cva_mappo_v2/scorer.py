@@ -23,6 +23,22 @@ class CandidateScore:
     wait_s: float = 0.0
     dynamic_response_pressure: float = 0.0
     dynamic_wait_pressure: float = 0.0
+    downlink_queue_pressure: float = 0.0
+    delivery_delay_pressure: float = 0.0
+    downlink_feasible: float = 1.0
+    estimated_downlink_queue_s: float = 0.0
+    estimated_delivery_delay_s: float = 0.0
+
+
+@dataclass
+class PairFeatures:
+    quality: float
+    wait_s: float
+    future_loss: float
+    obs_end_s: float
+    downlink_queue_s: float
+    delivery_delay_s: float
+    downlink_feasible: float
 
 
 class CandidateValueScorer:
@@ -58,7 +74,9 @@ class CandidateValueScorer:
         if pair is None:
             return None
 
-        quality, wait_s, future_loss = pair
+        quality = pair.quality
+        wait_s = pair.wait_s
+        future_loss = pair.future_loss
         priority = float(np.clip(mission.priority / 10.0, 0.0, 1.0))
         slack_s = max(mission.deadline_s - max(current_time_s, mission.earliest_time_s), 0.0)
         deadline_pressure = 1.0 - float(np.clip(slack_s / max(env.horizon_s, 1.0), 0.0, 1.0))
@@ -84,7 +102,26 @@ class CandidateValueScorer:
             capacity = max(int(getattr(env, "satellite_storage_capacity", 0) or 0), 1)
             storage_pressure = float(np.clip(env._onboard_image_count(current_time_s) / capacity, 0.0, 1.0))
         dynamic_urgency = dynamic * max(deadline_pressure, dynamic_response_pressure)
+        downlink_queue_target_s = max(
+            float(getattr(self.cfg, "downlink_queue_target_s", 3600.0) or 3600.0),
+            1.0,
+        )
+        downlink_queue_pressure = float(
+            np.clip(pair.downlink_queue_s / downlink_queue_target_s, 0.0, 1.0)
+        )
+        delivery_delay_pressure = 0.0
+        dynamic_delivery_score = 0.0
+        if mission.is_dynamic:
+            delivery_delay_pressure = float(
+                np.clip(pair.delivery_delay_s / response_target_s, 0.0, 1.0)
+            )
+            if pair.downlink_feasible > 0.0:
+                dynamic_delivery_score = 1.0 - delivery_delay_pressure
         cfg = self.cfg
+        downlink_terms_enabled = bool(
+            getattr(cfg, "downlink_aware_candidate_score", True)
+            and getattr(env, "downlink_required", False)
+        )
         score = (
             cfg.w_quality * quality
             + cfg.w_priority * priority
@@ -100,6 +137,13 @@ class CandidateValueScorer:
             - getattr(cfg, "w_dynamic_wait", 0.0) * dynamic_wait_pressure
             - getattr(cfg, "w_storage_pressure", 0.0) * storage_pressure
         )
+        if downlink_terms_enabled:
+            score += (
+                getattr(cfg, "w_dynamic_delivery", 0.0) * dynamic * dynamic_delivery_score
+                - getattr(cfg, "w_dynamic_delivery_delay", 0.0) * dynamic * delivery_delay_pressure
+                - getattr(cfg, "w_downlink_queue", 0.0) * downlink_queue_pressure
+                - getattr(cfg, "w_downlink_miss", 0.0) * (1.0 - float(pair.downlink_feasible))
+            )
         return CandidateScore(
             agent_id=agent_id,
             mission_id=int(mission.id),
@@ -113,6 +157,11 @@ class CandidateValueScorer:
             wait_s=float(wait_s),
             dynamic_response_pressure=float(dynamic_response_pressure),
             dynamic_wait_pressure=float(dynamic_wait_pressure),
+            downlink_queue_pressure=float(downlink_queue_pressure),
+            delivery_delay_pressure=float(delivery_delay_pressure),
+            downlink_feasible=float(pair.downlink_feasible),
+            estimated_downlink_queue_s=float(pair.downlink_queue_s),
+            estimated_delivery_delay_s=float(pair.delivery_delay_s),
         )
 
     def _pair_features(self, env, mission: Mission, current_time_s: float, allow_future: bool):
@@ -122,6 +171,10 @@ class CandidateValueScorer:
         best_quality = None
         best_key = None
         best_wait_s = 0.0
+        best_obs_end_s = 0.0
+        best_downlink_queue_s = 0.0
+        best_delivery_delay_s = 0.0
+        best_downlink_feasible = 1.0
         future_windows = 0
         response_target_s = max(float(getattr(self.cfg, "dynamic_response_target_s", 3600.0) or 3600.0), 1.0)
         dynamic_wait_weight = max(float(getattr(self.cfg, "dynamic_window_wait_weight", 0.0) or 0.0), 0.0)
@@ -146,16 +199,81 @@ class CandidateValueScorer:
             else:
                 wait_norm = float(np.clip(wait_s / max(env.horizon_s, 1.0), 0.0, 1.0))
                 candidate_key = float(quality) - 0.25 * float(getattr(self.cfg, "w_wait", 0.0)) * wait_norm
+            downlink_queue_s, delivery_delay_s, downlink_feasible = self._downlink_features(
+                env=env,
+                mission=mission,
+                obs_end_s=obs_end,
+            )
+            if bool(
+                getattr(self.cfg, "downlink_aware_candidate_score", True)
+                and getattr(env, "downlink_required", False)
+            ):
+                queue_target_s = max(
+                    float(getattr(self.cfg, "downlink_queue_target_s", 3600.0) or 3600.0),
+                    1.0,
+                )
+                queue_pressure = float(np.clip(downlink_queue_s / queue_target_s, 0.0, 1.0))
+                candidate_key -= float(getattr(self.cfg, "w_downlink_queue", 0.0)) * queue_pressure
+                candidate_key -= float(getattr(self.cfg, "w_downlink_miss", 0.0)) * (1.0 - downlink_feasible)
+                if mission.is_dynamic:
+                    delivery_pressure = float(np.clip(delivery_delay_s / response_target_s, 0.0, 1.0))
+                    candidate_key += float(getattr(self.cfg, "w_dynamic_delivery", 0.0)) * (1.0 - delivery_pressure)
+                    candidate_key -= float(getattr(self.cfg, "w_dynamic_delivery_delay", 0.0)) * delivery_pressure
             if best_key is None or candidate_key > best_key:
                 best_key = float(candidate_key)
                 best_quality = float(quality)
                 best_wait_s = float(wait_s)
+                best_obs_end_s = float(obs_end)
+                best_downlink_queue_s = float(downlink_queue_s)
+                best_delivery_delay_s = float(delivery_delay_s)
+                best_downlink_feasible = float(downlink_feasible)
 
         if best_quality is None:
             return None
         # Few future windows means losing this opportunity is more costly.
         future_loss = 1.0 / max(future_windows, 1)
-        return best_quality, best_wait_s, float(future_loss)
+        return PairFeatures(
+            quality=float(best_quality),
+            wait_s=float(best_wait_s),
+            future_loss=float(future_loss),
+            obs_end_s=float(best_obs_end_s),
+            downlink_queue_s=float(best_downlink_queue_s),
+            delivery_delay_s=float(best_delivery_delay_s),
+            downlink_feasible=float(best_downlink_feasible),
+        )
+
+    def _downlink_features(self, env, mission: Mission, obs_end_s: float):
+        origin_s = (
+            float(getattr(mission, "arrival_time_s", mission.earliest_time_s))
+            if mission.is_dynamic
+            else float(mission.earliest_time_s)
+        )
+        if not bool(getattr(self.cfg, "downlink_aware_candidate_score", True)):
+            return 0.0, max(float(obs_end_s) - origin_s, 0.0), 1.0
+        if not getattr(env, "downlink_required", False):
+            return 0.0, max(float(obs_end_s) - origin_s, 0.0), 1.0
+        if not hasattr(env, "_find_downlink_slot"):
+            return 0.0, max(float(obs_end_s) - origin_s, 0.0), 1.0
+
+        latest_end_s = min(float(getattr(env, "horizon_s", mission.deadline_s)), float(mission.deadline_s))
+        availability = list(getattr(env, "_ground_station_available_s", []) or [])
+        downlink_start, downlink_end, station_id = env._find_downlink_slot(
+            float(obs_end_s),
+            latest_end_s=latest_end_s,
+            station_available_s=availability,
+        )
+        if station_id < 0:
+            miss_end = max(float(obs_end_s), latest_end_s)
+            return (
+                max(miss_end - float(obs_end_s), 0.0),
+                max(miss_end - origin_s, 0.0),
+                0.0,
+            )
+        return (
+            max(float(downlink_start) - float(obs_end_s), 0.0),
+            max(float(downlink_end) - origin_s, 0.0),
+            1.0,
+        )
 
 
 def score_table_to_debug(scores: Dict[int, Dict[str, CandidateScore]]) -> Dict[int, Dict[str, float]]:

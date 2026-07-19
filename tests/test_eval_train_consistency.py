@@ -86,12 +86,27 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     suite = (ROOT / "scripts" / "run_stage_ablation_suite.py").read_text(encoding="utf-8")
     config = (ROOT / "cva_mappo_v2" / "config.py").read_text(encoding="utf-8")
     env = (ROOT / "envs" / "multi_satellite_env.py").read_text(encoding="utf-8")
+    v2_env = (ROOT / "cva_mappo_v2" / "env.py").read_text(encoding="utf-8")
+    scorer = (ROOT / "cva_mappo_v2" / "scorer.py").read_text(encoding="utf-8")
+    das_scorer = (ROOT / "das_cva_mappo" / "candidate_scorer.py").read_text(encoding="utf-8")
     assert "--dynamic_current_slot_bonus" in runner
     assert "--dynamic_window_wait_weight" in runner
+    assert "--no_downlink_aware_candidate_score" in runner
+    assert "--candidate_downlink_queue_penalty" in runner
+    assert "--candidate_dynamic_delivery_delay_penalty" in runner
+    assert "--dynamic_downlink_priority" in runner
     assert "--no_dynamic_downlink_priority" in runner
     assert "avg_dynamic_downlink_replan_gain_s" in suite
-    assert "dynamic_downlink_priority: bool = True" in config
+    assert "abl_stage2_no_dynamic_downlink_priority" in suite
+    assert "abl_stage2_no_downlink_aware_edge_value" in suite
+    assert "abl_stage2_posthoc_dynamic_downlink_priority" in suite
+    assert "dynamic_downlink_priority: bool = False" in config
+    assert "downlink_aware_candidate_score: bool = True" in config
     assert "_rebatch_all_downlinks_priority" in env
+    assert "get_dynamic_task_diagnostics" in v2_env
+    assert "_write_eval_dynamic_task_diagnostics" in runner
+    assert "estimated_downlink_queue_s" in scorer
+    assert "EDGE_FEATURE_DIM = 24" in das_scorer
 
 
 if __name__ == "__main__":

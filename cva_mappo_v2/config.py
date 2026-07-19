@@ -73,6 +73,12 @@ class CVAMAPPOV2Config:
     w_dynamic_response: float = 0.24
     w_dynamic_wait: float = 0.20
     dynamic_response_target_s: float = 3600.0
+    downlink_aware_candidate_score: bool = True
+    downlink_queue_target_s: float = 3600.0
+    w_downlink_queue: float = 0.10
+    w_downlink_miss: float = 0.20
+    w_dynamic_delivery: float = 0.24
+    w_dynamic_delivery_delay: float = 0.20
 
     # Allocator repair weights. These bias ownership toward agents with earlier
     # feasible windows, especially for stale owners and urgent dynamic tasks.
@@ -83,7 +89,7 @@ class CVAMAPPOV2Config:
     allocator_dynamic_wait_penalty: float = 0.20
     dynamic_rescue_response_bonus: float = 1.0
     dynamic_takeover_margin_s: float = 300.0
-    dynamic_downlink_priority: bool = True
+    dynamic_downlink_priority: bool = False
 
     def validate(self) -> None:
         if self.slots.total_slots <= 0:
@@ -119,6 +125,11 @@ class CVAMAPPOV2Config:
             "w_dynamic_response",
             "w_dynamic_wait",
             "dynamic_response_target_s",
+            "downlink_queue_target_s",
+            "w_downlink_queue",
+            "w_downlink_miss",
+            "w_dynamic_delivery",
+            "w_dynamic_delivery_delay",
             "allocator_wait_penalty",
             "allocator_stale_rescue_bonus",
             "allocator_dynamic_urgency_bonus",

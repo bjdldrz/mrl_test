@@ -10,6 +10,8 @@ Most ablations are applied on top of the Stage 4 configuration so the table
 compares one removed/changed component at a time against the strongest staged
 setting. Targeted Stage 2 ablations are included for changes that should be
 validated before hybrid scorer/storage-pressure effects enter the comparison.
+V0.30 keeps no post-hoc dynamic downlink priority as the stronger Stage-2
+baseline and tests downlink-aware candidate edge value instead.
 """
 
 from __future__ import annotations
@@ -93,6 +95,26 @@ SUMMARY_COLUMNS = [
     "n_downlink_priority_replans",
     "n_downlink_priority_dynamic_records",
     "avg_dynamic_downlink_replan_gain_s",
+    "n_dynamic_tasks_arrived",
+    "n_dynamic_tasks_candidate_seen",
+    "dynamic_task_candidate_seen_rate",
+    "n_dynamic_tasks_current_executable_seen",
+    "dynamic_task_current_executable_seen_rate",
+    "n_dynamic_tasks_future_executable_seen",
+    "dynamic_task_future_executable_seen_rate",
+    "n_dynamic_tasks_policy_selected",
+    "dynamic_task_policy_selected_rate",
+    "n_dynamic_tasks_observed_diag",
+    "dynamic_task_observed_after_selected_rate",
+    "n_dynamic_tasks_downlinked_diag",
+    "dynamic_task_downlinked_after_observed_rate",
+    "n_dynamic_tasks_with_downlink_queue",
+    "dynamic_task_downlink_queue_rate",
+    "n_dynamic_tasks_downlink_queue_blocked",
+    "dynamic_task_downlink_queue_block_rate",
+    "n_dynamic_tasks_downlink_failed",
+    "dynamic_task_downlink_failed_rate",
+    "avg_dynamic_task_downlink_queue_s",
     "stale_owner_rate",
     "owner_churn_rate",
     "load_balance_cv",
@@ -143,7 +165,16 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--dynamic_future_bonus", args.dynamic_future_bonus),
         *kv("--dynamic_current_slot_bonus", args.dynamic_current_slot_bonus),
         *kv("--dynamic_window_wait_weight", args.dynamic_window_wait_weight),
-        *(["--no_dynamic_downlink_priority"] if args.no_dynamic_downlink_priority else []),
+        *(["--no_downlink_aware_candidate_score"] if args.no_downlink_aware_candidate_score else []),
+        *kv("--downlink_queue_target_s", args.downlink_queue_target_s),
+        *kv("--candidate_downlink_queue_penalty", args.candidate_downlink_queue_penalty),
+        *kv("--candidate_downlink_miss_penalty", args.candidate_downlink_miss_penalty),
+        *kv("--candidate_dynamic_delivery_bonus", args.candidate_dynamic_delivery_bonus),
+        *kv(
+            "--candidate_dynamic_delivery_delay_penalty",
+            args.candidate_dynamic_delivery_delay_penalty,
+        ),
+        *(["--dynamic_downlink_priority"] if args.dynamic_downlink_priority else ["--no_dynamic_downlink_priority"]),
         *kv("--candidate_dynamic_response_bonus", args.candidate_dynamic_response_bonus),
         *kv("--candidate_dynamic_wait_penalty", args.candidate_dynamic_wait_penalty),
         *kv("--dynamic_response_target_s", args.dynamic_response_target_s),
@@ -362,11 +393,29 @@ def ablation_specs() -> list[dict[str, Any]]:
         },
         {
             "name": "abl_stage2_no_dynamic_downlink_priority",
-            "group": "ablation",
+            "group": "baseline",
             "base_stage": "stage2",
             "args": [
                 *stage2_base,
                 "--no_dynamic_downlink_priority",
+            ],
+        },
+        {
+            "name": "abl_stage2_no_downlink_aware_edge_value",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--no_downlink_aware_candidate_score",
+            ],
+        },
+        {
+            "name": "abl_stage2_posthoc_dynamic_downlink_priority",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--dynamic_downlink_priority",
             ],
         },
         {
@@ -704,7 +753,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
     parser.add_argument("--dynamic_current_slot_bonus", type=float, default=0.65)
     parser.add_argument("--dynamic_window_wait_weight", type=float, default=0.75)
-    parser.add_argument("--no_dynamic_downlink_priority", action="store_true")
+    parser.add_argument("--no_downlink_aware_candidate_score", action="store_true")
+    parser.add_argument("--downlink_queue_target_s", type=float, default=3600.0)
+    parser.add_argument("--candidate_downlink_queue_penalty", type=float, default=0.10)
+    parser.add_argument("--candidate_downlink_miss_penalty", type=float, default=0.20)
+    parser.add_argument("--candidate_dynamic_delivery_bonus", type=float, default=0.24)
+    parser.add_argument("--candidate_dynamic_delivery_delay_penalty", type=float, default=0.20)
+    parser.add_argument("--dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_true")
+    parser.add_argument("--no_dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_false")
+    parser.set_defaults(dynamic_downlink_priority=False)
     parser.add_argument("--candidate_dynamic_response_bonus", type=float, default=0.24)
     parser.add_argument("--candidate_dynamic_wait_penalty", type=float, default=0.20)
     parser.add_argument("--dynamic_response_target_s", type=float, default=3600.0)

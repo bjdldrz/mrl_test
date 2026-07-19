@@ -1,5 +1,44 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.30.0
+
+Status: implemented.
+
+Scope:
+
+- Keeps `abl_stage2_no_dynamic_downlink_priority` as the current stronger
+  Stage-2 baseline after V0.29 results showed post-hoc dynamic downlink
+  replanning did not improve dynamic response or downlink queue time.
+- Moves downlink pressure into candidate edge value before observation
+  selection. The CVA scorer now estimates downlink queue delay, delivery delay,
+  and downlink feasibility for each satellite-task candidate window.
+- Extends the trainable DAS candidate scorer edge feature vector with downlink
+  queue pressure, delivery delay pressure, downlink feasibility, and normalized
+  queue delay.
+- Adds configurable knobs:
+  `--no_downlink_aware_candidate_score`, `--downlink_queue_target_s`,
+  `--candidate_downlink_queue_penalty`,
+  `--candidate_downlink_miss_penalty`,
+  `--candidate_dynamic_delivery_bonus`,
+  `--candidate_dynamic_delivery_delay_penalty`, and
+  `--dynamic_downlink_priority`.
+- Adds per-dynamic-task diagnostics. Evaluation now writes
+  `eval_dynamic_task_diagnostics.json`, and summary metrics report whether
+  arrived dynamic tasks were seen in candidates, currently executable when
+  seen, selected by the policy, observed, downlinked, or blocked by the
+  downlink queue.
+
+Expected effect:
+
+- Make dynamic response optimization part of action selection instead of
+  relying on post-observation downlink reordering.
+- Reduce `avg_downlink_queue_s`, `avg_dynamic_response_s`, and
+  `dynamic_task_downlink_queue_block_rate` while preserving the stronger
+  no-posthoc-priority Stage-2 baseline.
+- Use `abl_stage2_no_downlink_aware_edge_value` to isolate the new edge value
+  contribution and `abl_stage2_posthoc_dynamic_downlink_priority` to compare
+  against the rejected V0.29 post-hoc downlink priority path.
+
 ## DAS-CVA-MAPPO V0.29.0
 
 Status: implemented.

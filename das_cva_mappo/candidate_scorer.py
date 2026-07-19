@@ -14,7 +14,7 @@ from cva_mappo_v2.scorer import CandidateScore, CandidateValueScorer
 from .env_adapter import V2CandidateAdapter
 
 
-EDGE_FEATURE_DIM = 20
+EDGE_FEATURE_DIM = 24
 
 
 @dataclass
@@ -152,6 +152,11 @@ class TrainableCandidateValueScorer:
             wait_s=float(getattr(heuristic_score, "wait_s", 0.0)),
             dynamic_response_pressure=float(getattr(heuristic_score, "dynamic_response_pressure", 0.0)),
             dynamic_wait_pressure=float(getattr(heuristic_score, "dynamic_wait_pressure", 0.0)),
+            downlink_queue_pressure=float(getattr(heuristic_score, "downlink_queue_pressure", 0.0)),
+            delivery_delay_pressure=float(getattr(heuristic_score, "delivery_delay_pressure", 0.0)),
+            downlink_feasible=float(getattr(heuristic_score, "downlink_feasible", 1.0)),
+            estimated_downlink_queue_s=float(getattr(heuristic_score, "estimated_downlink_queue_s", 0.0)),
+            estimated_delivery_delay_s=float(getattr(heuristic_score, "estimated_delivery_delay_s", 0.0)),
         )
 
     def edge_features(
@@ -183,6 +188,17 @@ class TrainableCandidateValueScorer:
         downlink_enabled = 1.0 if getattr(env, "n_ground_stations", 0) > 0 and getattr(env, "downlink_time_s", 0.0) > 0 else 0.0
         dynamic_response_pressure = float(getattr(heuristic_score, "dynamic_response_pressure", 0.0))
         dynamic_wait_pressure = float(getattr(heuristic_score, "dynamic_wait_pressure", 0.0))
+        downlink_queue_pressure = float(getattr(heuristic_score, "downlink_queue_pressure", 0.0))
+        delivery_delay_pressure = float(getattr(heuristic_score, "delivery_delay_pressure", 0.0))
+        downlink_feasible = float(getattr(heuristic_score, "downlink_feasible", 1.0))
+        downlink_queue_norm = float(
+            np.clip(
+                float(getattr(heuristic_score, "estimated_downlink_queue_s", 0.0))
+                / max(float(getattr(env, "horizon_s", 1.0)), 1.0),
+                0.0,
+                1.0,
+            )
+        )
         return np.array([
             heuristic_score.quality,
             priority,
@@ -204,6 +220,10 @@ class TrainableCandidateValueScorer:
             1.0 if allow_future else 0.0,
             dynamic_response_pressure,
             dynamic_wait_pressure,
+            downlink_queue_pressure,
+            delivery_delay_pressure,
+            downlink_feasible,
+            downlink_queue_norm,
         ], dtype=np.float32)
 
     def warm_start(

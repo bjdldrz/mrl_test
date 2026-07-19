@@ -35,12 +35,15 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.29
+## DAS V0.30
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
-loss. The default runner uses parallel rollout workers, parallel CPU
-evaluation, and `cuda:0` for PPO/candidate-scorer training:
+loss. V0.30 makes candidate scoring downlink-aware before an observation is
+selected, keeps post-hoc dynamic downlink priority disabled by default, and
+adds per-dynamic-task diagnostics. The default runner uses parallel rollout
+workers, parallel CPU evaluation, and `cuda:0` for PPO/candidate-scorer
+training:
 
 ```bash
 python3 -m das_cva_mappo.run_experiment \
@@ -75,6 +78,12 @@ python3 -m das_cva_mappo.run_experiment \
   --dynamic_response_target_s 3600 \
   --dynamic_current_slot_bonus 0.65 \
   --dynamic_window_wait_weight 0.75 \
+  --downlink_queue_target_s 3600 \
+  --candidate_downlink_queue_penalty 0.10 \
+  --candidate_downlink_miss_penalty 0.20 \
+  --candidate_dynamic_delivery_bonus 0.24 \
+  --candidate_dynamic_delivery_delay_penalty 0.20 \
+  --no_dynamic_downlink_priority \
   --allocator_wait_penalty 0.10 \
   --allocator_stale_rescue_bonus 0.25 \
   --allocator_dynamic_urgency_bonus 0.10 \
@@ -107,7 +116,7 @@ python3 -m das_cva_mappo.run_experiment \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_29 \
+  --run_name das_v0_30 \
   --device cuda:0
 ```
 
@@ -151,6 +160,13 @@ Primary DAS ablation knobs:
 - `--candidate_dynamic_wait_penalty`
 - `--dynamic_current_slot_bonus`
 - `--dynamic_window_wait_weight`
+- `--no_downlink_aware_candidate_score`
+- `--downlink_queue_target_s`
+- `--candidate_downlink_queue_penalty`
+- `--candidate_downlink_miss_penalty`
+- `--candidate_dynamic_delivery_bonus`
+- `--candidate_dynamic_delivery_delay_penalty`
+- `--dynamic_downlink_priority`
 - `--no_dynamic_downlink_priority`
 - `--allocator_wait_penalty`
 - `--allocator_stale_rescue_bonus`
@@ -179,9 +195,13 @@ Use these commands after generating the scenario cache below. Stage 1 is a
 diagnostic run; stages 2-4 progressively enable the candidate/owner, dynamic,
 and storage-pressure optimizations.
 
-For V0.29 dynamic-response checks, compare `avg_dynamic_response_s`,
-`dynamic_current_slot_exposure_rate`, `dynamic_future_slot_exposure_rate`, and
-`avg_dynamic_downlink_replan_gain_s`.
+For V0.30 dynamic-response checks, compare `avg_dynamic_response_s`,
+`avg_downlink_queue_s`, `dynamic_task_candidate_seen_rate`,
+`dynamic_task_policy_selected_rate`, `dynamic_task_downlink_queue_block_rate`,
+and `avg_dynamic_task_downlink_queue_s`. The per-episode task-level file
+`eval_dynamic_task_diagnostics.json` records whether each arrived dynamic task
+was seen in candidates, currently executable when seen, selected by the policy,
+observed, downlinked, or blocked by the downlink queue.
 
 Stage 1: slot-invalid diagnosis. Inspect `slot_invalid_*`,
 `avg_filled_invalid_slots`, `eval_valid_decision_rate`, and
@@ -558,12 +578,12 @@ layer for DAS iterations, not as the main experimental method. New method
 development, logs, manifests, and ablations should be centered on
 `das_cva_mappo`.
 
-Current V0.29 short validation command:
+Current V0.30 short validation command:
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v029_dynamic_response_iter \
-  --only stage2_candidate_owner_repair stage2_dynamic_priority_recovery abl_stage2_no_dynamic_downlink_priority \
+  --suite_name das_v030_downlink_aware_edge_value \
+  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_downlink_aware_edge_value abl_stage2_posthoc_dynamic_downlink_priority \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
