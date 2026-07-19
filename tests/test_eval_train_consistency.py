@@ -98,14 +98,20 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--no_dynamic_downlink_priority" in runner
     assert "--no_response_budget_features" in runner
     assert "--no_temporal_window_features" in runner
+    assert "--no_early_delivery_temporal_features" in runner
+    assert "--temporal_early_delivery_weight" in runner
     assert "--temporal_state_encoder" in runner
     assert "--temporal_state_history_len" in runner
     assert "--no_response_budget_features" in suite
     assert "--no_temporal_window_features" in suite
+    assert "--no_early_delivery_temporal_features" in suite
+    assert "--temporal_early_delivery_weight" in suite
     assert "--temporal_state_encoder" in suite
     assert "avg_dynamic_downlink_replan_gain_s" in suite
     assert "abl_stage2_no_response_budget_features" in suite
     assert "abl_stage2_no_temporal_window_features" in suite
+    assert "abl_stage2_no_early_delivery_temporal_features" in suite
+    assert "cmp_stage2_temporal_early_delivery_features" in suite
     assert "cmp_stage2_temporal_future_features" in suite
     assert "cmp_stage2_temporal_gru_state" in suite
     assert "abl_stage2_no_dynamic_downlink_priority" in suite

@@ -1,5 +1,5 @@
 """
-Run DAS-CVA-MAPPO V0.32.
+Run DAS-CVA-MAPPO V0.33.
 
 This runner uses the current CVA-MAPPO v2 environment as the scheduling
 compatibility layer, adds a DAS-owned candidate edge scorer, and trains an
@@ -15,6 +15,8 @@ edge values and per-dynamic-task diagnostics. V0.31 adds response-budget
 features to the actor state/action entities and learned candidate edge scorer.
 V0.32 adds future-window temporal features and an optional GRU state-history
 encoder for temporal-model ablations.
+V0.33 adds early-delivery temporal features so future-window reasoning favors
+quick dynamic delivery rather than only eventual delivery feasibility.
 """
 
 from __future__ import annotations
@@ -163,7 +165,9 @@ def _build_das_config(args) -> DASConfig:
         use_action_type_gate=not args.no_action_type_gate,
         use_response_budget_features=not args.no_response_budget_features,
         use_temporal_window_features=not args.no_temporal_window_features,
+        use_early_delivery_temporal_features=not args.no_early_delivery_temporal_features,
         temporal_window_top_k=args.temporal_window_top_k,
+        temporal_early_delivery_weight=args.temporal_early_delivery_weight,
         temporal_state_encoder=args.temporal_state_encoder,
         temporal_state_history_len=args.temporal_state_history_len,
         idle_valid_penalty=args.idle_valid_penalty,
@@ -316,7 +320,9 @@ def _build_worker_candidate_scorer(
         device=device,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
     )
     scorer.model.load_state_dict(_numpy_state_to_torch(state))
     scorer.model.eval()
@@ -564,7 +570,9 @@ def _eval_worker(payload):
         candidate_adapter=candidate_adapter,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
         temporal_state_history_len=das_cfg.temporal_state_history_len,
     )
     trainer = ActionSetMAPPOTrainer(
@@ -772,7 +780,9 @@ def _batched_eval_single_process(
         candidate_adapter=candidate_adapter,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
         temporal_state_history_len=das_cfg.temporal_state_history_len,
     )
     _profile_stop(profile, "setup", setup_started)
@@ -1017,7 +1027,9 @@ def _collect_rollout_worker(payload):
         candidate_adapter=candidate_adapter,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
         temporal_state_history_len=das_cfg.temporal_state_history_len,
     )
     model = _build_action_model(das_cfg, env).to("cpu")
@@ -1074,7 +1086,9 @@ def train_and_eval(
         candidate_adapter=candidate_adapter,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
         temporal_state_history_len=das_cfg.temporal_state_history_len,
     )
     model = _build_action_model(das_cfg, env).to(device)
@@ -1280,7 +1294,9 @@ def _build_candidate_scorer(cfg, args, v2_cfg, das_cfg, train_payload, mission_g
         device=args.device,
         use_response_budget_features=das_cfg.use_response_budget_features,
         use_temporal_window_features=das_cfg.use_temporal_window_features,
+        use_early_delivery_temporal_features=das_cfg.use_early_delivery_temporal_features,
         temporal_window_top_k=das_cfg.temporal_window_top_k,
+        temporal_early_delivery_weight=das_cfg.temporal_early_delivery_weight,
     )
     if train_payload is not None:
         warmup_scenarios = flatten_train_scenarios(train_payload)
@@ -1425,7 +1441,7 @@ def _print_runtime_plan(plan: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.32 experiment")
+    parser = argparse.ArgumentParser(description="DAS-CVA-MAPPO V0.33 experiment")
     parser.add_argument("--acled_path", type=str, default=None)
     parser.add_argument("--scenario_cache_dir", type=str, default=None)
     parser.add_argument("--vtw_cache_dir", type=str, default=None)
@@ -1450,7 +1466,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--out_dir", type=str, default="runs/das_cva_mappo")
-    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_32")
+    parser.add_argument("--run_name", type=str, default="das_cva_mappo_v0_33")
     parser.add_argument("--rollout_steps", type=int, default=256)
     parser.add_argument("--train_env_workers", type=int, default=16)
     parser.add_argument(
@@ -1535,7 +1551,9 @@ def main() -> None:
     parser.add_argument("--no_action_type_gate", action="store_true")
     parser.add_argument("--no_response_budget_features", action="store_true")
     parser.add_argument("--no_temporal_window_features", action="store_true")
+    parser.add_argument("--no_early_delivery_temporal_features", action="store_true")
     parser.add_argument("--temporal_window_top_k", type=int, default=3)
+    parser.add_argument("--temporal_early_delivery_weight", type=float, default=0.35)
     parser.add_argument("--temporal_state_encoder", choices=["mlp", "gru"], default="mlp")
     parser.add_argument("--temporal_state_history_len", type=int, default=1)
     parser.add_argument("--idle_valid_penalty", type=float, default=0.0)
@@ -1615,7 +1633,7 @@ def main() -> None:
         cfg, args, v2_cfg, das_cfg, train_payload, mission_gen, candidate_adapter
     )
 
-    method_name = "DAS-CVA-MAPPO-v0.32"
+    method_name = "DAS-CVA-MAPPO-v0.33"
     results = {
         method_name: train_and_eval(
             cfg,
@@ -1653,7 +1671,9 @@ def main() -> None:
             "use_action_type_gate": das_cfg.use_action_type_gate,
             "use_response_budget_features": das_cfg.use_response_budget_features,
             "use_temporal_window_features": das_cfg.use_temporal_window_features,
+            "use_early_delivery_temporal_features": das_cfg.use_early_delivery_temporal_features,
             "temporal_window_top_k": das_cfg.temporal_window_top_k,
+            "temporal_early_delivery_weight": das_cfg.temporal_early_delivery_weight,
             "temporal_state_encoder": das_cfg.temporal_state_encoder,
             "temporal_state_history_len": das_cfg.temporal_state_history_len,
             "idle_valid_penalty": das_cfg.idle_valid_penalty,

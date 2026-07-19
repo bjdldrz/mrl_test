@@ -1,5 +1,32 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.33.0
+
+Status: implemented.
+
+Scope:
+
+- Extends temporal window features from 10 to 16 dimensions with early-delivery
+  signals: first-window delivery delay, first-window remaining response budget,
+  first-window overrun flag, earliest feasible delivery delay, earliest
+  feasible remaining budget, and the lateness gap between the selected
+  quality/value window and the earliest feasible delivery window.
+- Biases dynamic-task temporal window selection toward earlier delivery through
+  `--temporal_early_delivery_weight`, while preserving the V0.33 network shape
+  through `--no_early_delivery_temporal_features`.
+- Adds `cmp_stage2_temporal_early_delivery_features` and
+  `abl_stage2_no_early_delivery_temporal_features` to isolate the V0.33 change
+  from the V0.32 future-window feature baseline.
+- Updates runner, suite, manifest, README, and static tests for V0.33.
+
+Expected effect:
+
+- Keep V0.32's gains on downlink closure while reducing the dynamic response
+  time regression observed in the first temporal-feature run.
+- Improve `avg_dynamic_response_s`, `dynamic_task_downlinked_after_observed_rate`,
+  `avg_dynamic_task_downlink_queue_s`, and `avg_downlink_queue_s` relative to
+  the V0.32-like `--no_early_delivery_temporal_features` baseline.
+
 ## DAS-CVA-MAPPO V0.32.0
 
 Status: implemented.

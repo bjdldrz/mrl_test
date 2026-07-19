@@ -8,7 +8,7 @@
 
 项目已经从早期 `cva_mappo_v2` 的固定槽位、规则候选分配路线，逐步转向 `das_cva_mappo` 主线。当前推荐的论文方法中心是 `das_cva_mappo/`，而 `cva_mappo_v2/` 主要作为候选生成、环境封装和兼容层继续被使用。
 
-当前主线版本为 `DAS-CVA-MAPPO V0.32.0`。
+当前主线版本为 `DAS-CVA-MAPPO V0.33.0`。
 
 ## 2. 已完成的主要工作
 
@@ -89,16 +89,17 @@
 - 增加 dynamic current/future slot exposure 诊断指标。
 - 增加 dynamic-priority downlink replanning，让未开始的 routine downlink 可以被动态任务图像重排到后面。
 
-最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。V0.31 进一步把动态任务响应预算显式接入 actor 局部状态、动作实体特征和学习型候选 scorer 的边特征中。V0.32 在此基础上加入未来窗口时序摘要，并提供 GRU state-history encoder 对比版本，用于判断“显式未来窗口特征”和“学习式状态历史编码”哪条路线更有效。
+最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。V0.31 进一步把动态任务响应预算显式接入 actor 局部状态、动作实体特征和学习型候选 scorer 的边特征中。V0.32 在此基础上加入未来窗口时序摘要，并提供 GRU state-history encoder 对比版本。V0.32 结果显示未来窗口特征改善了下传闭环，但平均动态响应时间被拉长，因此 V0.33 增加 early-delivery temporal features，把时序信号从“最终可交付”进一步推向“尽早交付”。
 
-### 2.7 V0.32 时序模块
+### 2.7 V0.33 时序模块
 
-当前 V0.32 已实现两条可对比的时序路线：
+当前 V0.33 已实现三条可对比的时序路线：
 
 - 未来窗口特征版：对每个卫星-任务候选抽取未来 top-K 可行观测窗口的摘要，包含等待时间、窗口质量、质量趋势、预计下传队列、交付延迟、下传可行性和响应/截止预算余量；这些特征同时进入 actor action entity 和学习型 candidate edge scorer。
+- early-delivery temporal 版：在未来窗口摘要上继续加入首个窗口交付延迟、首个窗口剩余响应预算、首个窗口超预算标记、最早可行交付延迟、最早可行交付预算余量，以及质量最优窗口相对最早交付窗口的延迟差；动态任务的窗口选择 key 也通过 `--temporal_early_delivery_weight` 偏向早交付。
 - GRU state-history 版：通过 `--temporal_state_encoder gru --temporal_state_history_len 4` 将最近若干步局部 state 拼成固定历史序列，由 GRU 编码后再进入 action-set actor。该版本不改变 PPO buffer 的主体结构，也不在多进程 worker 间维护 recurrent hidden state，因此适合先做模型侧时序对比。
 
-当前建议优先比较未来窗口特征版和 GRU state-history 版，而不是直接重构成完整 recurrent MAPPO。完整 recurrent MAPPO 需要改 rollout buffer、hidden state reset、done mask、并行采样和 eval 路径，工程风险明显更高。
+当前建议优先比较 early-delivery temporal 版、V0.32-like 未来窗口特征版、GRU state-history 版和关闭 temporal 的消融版，而不是直接重构成完整 recurrent MAPPO。完整 recurrent MAPPO 需要改 rollout buffer、hidden state reset、done mask、并行采样和 eval 路径，工程风险明显更高。
 
 ### 2.8 训练与评估一致性
 
@@ -319,7 +320,7 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 策略和 scorer 都可以使用该预算作为特征。后续还可以在奖励或 critic feature 中对超出响应目标的动态任务递增建模，而不是只在完成后统计 `avg_dynamic_response_s`。这样论文可以说明方法是 response-aware，而不是事后报告响应时间。
 
-第三，future-window temporal feature / GRU state-history。V0.32 已把候选任务未来 top-K 可行窗口的等待、质量、下传队列、交付延迟和预算余量接入 actor action entity 与 candidate edge scorer，同时提供 GRU 局部状态历史编码作为对比版本。该机制用于回答“未来窗口序列是否值得等待”，补足 V0.31 只能表达“当前任务是否紧急”的不足。
+第三，future-window temporal feature / early-delivery temporal feature / GRU state-history。V0.32 已把候选任务未来 top-K 可行窗口的等待、质量、下传队列、交付延迟和预算余量接入 actor action entity 与 candidate edge scorer，同时提供 GRU 局部状态历史编码作为对比版本。V0.33 进一步加入早交付特征，直接表达“第一个可交付窗口是否会超出动态响应预算”和“质量最优窗口相对最早交付窗口要晚多少”。该机制用于回答“未来窗口序列是否值得等待，以及是否值得为了质量牺牲响应时间”，补足 V0.31 只能表达“当前任务是否紧急”的不足。
 
 第四，候选 exposure 的可解释约束。对于每个动态任务，记录它从到达到完成之间被多少个卫星看到、看到时是否当前可执行、是否被 future slot 挤出、是否被 routine 下传阻塞。这可以形成一组可解释诊断指标，让方法改进与动态任务表现之间有因果链条。
 
@@ -373,14 +374,14 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 ## 7. 建议的后续路线
 
-### 7.1 优先完成 V0.32 时序对比
+### 7.1 优先完成 V0.33 早交付时序对比
 
-建议先运行当前短验证，对比未来窗口特征版、GRU state-history 版和关闭未来窗口特征的消融版：
+建议先运行当前短验证，对比 early-delivery temporal、V0.32-like 未来窗口特征版、GRU state-history 版和关闭未来窗口特征的消融版：
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v032_temporal_window_vs_gru \
-  --only cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
+  --suite_name das_v033_early_delivery_temporal \
+  --only cmp_stage2_temporal_early_delivery_features cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
@@ -406,7 +407,7 @@ python3 scripts/run_stage_ablation_suite.py \
 - `dynamic_current_slot_exposure_rate`
 - `dynamic_future_slot_exposure_rate`
 
-如果关闭 future-window features 后 `avg_dynamic_response_s`、`dynamic_task_policy_selected_rate`、`n_future_dynamic_task_executions` 或动态 feasible-normalized completion 明显变差，则 V0.32 的显式未来窗口特征可以保留为主线模型设计。若 GRU state-history 版优于未来窗口特征版，再考虑把时序模块从固定摘要升级为更强的序列编码；若 GRU 不占优，则优先保留轻量 future-feature 版本。
+如果 V0.33 early-delivery temporal 相比 V0.32-like future-window features 同时保住 `dynamic_task_downlinked_after_observed_rate` 并降低 `avg_dynamic_response_s`，则早交付特征可以保留为主线模型设计。若 GRU state-history 版仍只改善完成率但不改善响应时间，则暂时不把 GRU 作为论文主方法核心。
 
 ### 7.2 动态任务指标单独成表
 
@@ -423,7 +424,7 @@ python3 scripts/run_stage_ablation_suite.py \
 
 ### 7.3 继续压低 downlink queue
 
-如果 V0.32 的时序特征仍不能显著压低下传队列或动态响应时间，下一步应考虑：
+如果 V0.33 的早交付时序特征仍不能显著压低下传队列或动态响应时间，下一步应考虑：
 
 - 为动态图像设置更强的 downlink deadline 或 priority key。
 - 将当前启发式预计 downlink finish time 升级为 learned delivery-value head。
@@ -456,4 +457,4 @@ python3 scripts/run_stage_ablation_suite.py \
 
 当前项目已经完成了从兼容层规则调度到 DAS-CVA-MAPPO 动态动作集策略的主体改造，并建立了较完整的阶段实验、消融、指标诊断和 train/eval 一致性保护。项目的主要优势是方法结构清晰、实验可诊断、动态任务问题被拆解得比较细；主要不足是动态任务 raw completion 仍不够强、stale owner 偏高、downlink queue 对响应时间影响大、评估成本仍偏高。
 
-从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知、交付感知、时序感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，V0.31 已把 response budget 前置到模型输入中，V0.32 已加入未来窗口时序摘要并提供 GRU state-history 对比版本。下一步应优先跑 V0.32 三组短验证，确认显式未来窗口特征和 GRU 时序编码哪条路线对动态响应和交付闭环更有效。
+从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知、交付感知、时序感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，V0.31 已把 response budget 前置到模型输入中，V0.32 已加入未来窗口时序摘要并提供 GRU state-history 对比版本，V0.33 已把时序模块进一步改为早交付导向。下一步应优先跑 V0.33 四组短验证，确认早交付特征能否在保住下传闭环收益的同时降低动态响应时间。

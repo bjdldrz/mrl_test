@@ -36,7 +36,9 @@ class ActionSetFeatureBuilder:
         candidate_adapter=None,
         use_response_budget_features: bool = True,
         use_temporal_window_features: bool = True,
+        use_early_delivery_temporal_features: bool = True,
         temporal_window_top_k: int = 3,
+        temporal_early_delivery_weight: float = 0.35,
         temporal_state_history_len: int = 1,
     ):
         self.state_dim = int(state_dim)
@@ -48,7 +50,9 @@ class ActionSetFeatureBuilder:
         self.candidate_adapter = candidate_adapter or V2CandidateAdapter()
         self.use_response_budget_features = bool(use_response_budget_features)
         self.use_temporal_window_features = bool(use_temporal_window_features)
+        self.use_early_delivery_temporal_features = bool(use_early_delivery_temporal_features)
         self.temporal_window_top_k = max(int(temporal_window_top_k), 1)
+        self.temporal_early_delivery_weight = max(float(temporal_early_delivery_weight), 0.0)
         self.temporal_state_history_len = max(int(temporal_state_history_len), 1)
         self._state_history: Dict[Tuple[int, str], List[np.ndarray]] = {}
         self._state_history_last_time: Dict[Tuple[int, str], float] = {}
@@ -349,6 +353,8 @@ class ActionSetFeatureBuilder:
             response_target_s=response_target_s,
             downlink_queue_target_s=downlink_queue_target_s,
             downlink_feature_fn=downlink_fn,
+            use_early_delivery_features=self.use_early_delivery_temporal_features,
+            early_delivery_weight=self.temporal_early_delivery_weight,
         )
 
     @staticmethod

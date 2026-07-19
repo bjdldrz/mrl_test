@@ -18,7 +18,7 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.32.0"
+    version: str = "0.33.0"
     state_base_dim: int = BASE_STATE_DIM
     state_dim: int = BASE_STATE_DIM
     action_feature_dim: int = BASE_ACTION_FEATURE_DIM
@@ -32,7 +32,9 @@ class DASConfig:
     use_action_type_gate: bool = True
     use_response_budget_features: bool = True
     use_temporal_window_features: bool = True
+    use_early_delivery_temporal_features: bool = True
     temporal_window_top_k: int = 3
+    temporal_early_delivery_weight: float = 0.35
     temporal_state_encoder: str = "mlp"
     temporal_state_history_len: int = 1
     idle_valid_penalty: float = 0.0
@@ -68,6 +70,7 @@ class DASConfig:
 
     def validate(self) -> None:
         self.temporal_window_top_k = max(int(self.temporal_window_top_k), 1)
+        self.temporal_early_delivery_weight = max(float(self.temporal_early_delivery_weight), 0.0)
         self.temporal_state_history_len = max(int(self.temporal_state_history_len), 1)
         self.state_base_dim = max(int(self.state_base_dim), 1)
         self.state_dim = (

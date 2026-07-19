@@ -35,17 +35,18 @@ installed:
 python3 -m pip install -r requirements.txt
 ```
 
-## DAS V0.32
+## DAS V0.33
 
 Run the current DAS action-set policy with hybrid CVA edge scoring,
 set-transformer action matching, action-type gating, and idle auxiliary PPO
-loss. V0.32 keeps V0.30's downlink-aware candidate scoring and V0.31's
-response-budget features, adds future-window temporal features to actor action
-entities and learned candidate edges, and exposes an optional GRU local-state
-history encoder for temporal-model comparison. Post-hoc dynamic downlink
-priority remains disabled by default. The default runner uses parallel rollout
-workers, parallel CPU evaluation, and `cuda:0` for PPO/candidate-scorer
-training:
+loss. V0.33 keeps V0.30's downlink-aware candidate scoring, V0.31's
+response-budget features, and V0.32's future-window temporal features, then
+adds early-delivery temporal signals so dynamic tasks are biased toward earlier
+delivery rather than only eventual delivery feasibility. It still exposes an
+optional GRU local-state history encoder for temporal-model comparison.
+Post-hoc dynamic downlink priority remains disabled by default. The default
+runner uses parallel rollout workers, parallel CPU evaluation, and `cuda:0` for
+PPO/candidate-scorer training:
 
 ```bash
 python3 -m das_cva_mappo.run_experiment \
@@ -94,6 +95,7 @@ python3 -m das_cva_mappo.run_experiment \
   --assignment_replan_trigger periodic,dynamic,stale_owner,deadline \
   --matcher set_transformer \
   --temporal_window_top_k 3 \
+  --temporal_early_delivery_weight 0.35 \
   --temporal_state_encoder mlp \
   --temporal_state_history_len 1 \
   --idle_valid_penalty 0.0 \
@@ -121,7 +123,7 @@ python3 -m das_cva_mappo.run_experiment \
   --torch_num_threads 1 \
   --vtw_time_step_s 60 \
   --out_dir runs/das_cva_mappo \
-  --run_name das_v0_32 \
+  --run_name das_v0_33 \
   --device cuda:0
 ```
 
@@ -143,7 +145,9 @@ Primary DAS ablation knobs:
 - `--no_action_type_gate`
 - `--no_response_budget_features`
 - `--no_temporal_window_features`
+- `--no_early_delivery_temporal_features`
 - `--temporal_window_top_k`
+- `--temporal_early_delivery_weight`
 - `--temporal_state_encoder mlp|gru`
 - `--temporal_state_history_len`
 - `--idle_valid_penalty`
@@ -205,7 +209,7 @@ Use these commands after generating the scenario cache below. Stage 1 is a
 diagnostic run; stages 2-4 progressively enable the candidate/owner, dynamic,
 and storage-pressure optimizations.
 
-For V0.32 temporal checks, compare `avg_dynamic_response_s`,
+For V0.33 temporal checks, compare `avg_dynamic_response_s`,
 `avg_downlink_queue_s`, `n_future_dynamic_task_executions`,
 `avg_future_task_wait_s`, `dynamic_task_candidate_seen_rate`,
 `dynamic_task_policy_selected_rate`, `dynamic_task_downlink_queue_block_rate`,
@@ -589,12 +593,12 @@ layer for DAS iterations, not as the main experimental method. New method
 development, logs, manifests, and ablations should be centered on
 `das_cva_mappo`.
 
-Current V0.32 temporal comparison command:
+Current V0.33 early-delivery temporal comparison command:
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v032_temporal_window_vs_gru \
-  --only cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
+  --suite_name das_v033_early_delivery_temporal \
+  --only cmp_stage2_temporal_early_delivery_features cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \

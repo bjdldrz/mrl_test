@@ -77,7 +77,9 @@ class TrainableCandidateValueScorer:
         device: str = "cpu",
         use_response_budget_features: bool = True,
         use_temporal_window_features: bool = True,
+        use_early_delivery_temporal_features: bool = True,
         temporal_window_top_k: int = 3,
+        temporal_early_delivery_weight: float = 0.35,
     ):
         if mode not in {"v2_heuristic", "learned", "hybrid"}:
             raise ValueError("candidate scorer mode must be v2_heuristic, learned, or hybrid")
@@ -87,7 +89,9 @@ class TrainableCandidateValueScorer:
         self.device = torch.device(device)
         self.use_response_budget_features = bool(use_response_budget_features)
         self.use_temporal_window_features = bool(use_temporal_window_features)
+        self.use_early_delivery_temporal_features = bool(use_early_delivery_temporal_features)
         self.temporal_window_top_k = max(int(temporal_window_top_k), 1)
+        self.temporal_early_delivery_weight = max(float(temporal_early_delivery_weight), 0.0)
         self.model = EdgeValueMLP(EDGE_FEATURE_DIM, hidden_dim).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=float(lr))
         self.warmup_stats = ScorerWarmupStats()
@@ -220,6 +224,8 @@ class TrainableCandidateValueScorer:
                 response_target_s=getattr(self.heuristic.cfg, "dynamic_response_target_s", 3600.0),
                 downlink_queue_target_s=getattr(self.heuristic.cfg, "downlink_queue_target_s", 3600.0),
                 downlink_feature_fn=self.heuristic._downlink_features,
+                use_early_delivery_features=self.use_early_delivery_temporal_features,
+                early_delivery_weight=self.temporal_early_delivery_weight,
             )
             if self.use_temporal_window_features
             else np.zeros(TEMPORAL_WINDOW_FEATURE_DIM, dtype=np.float32)

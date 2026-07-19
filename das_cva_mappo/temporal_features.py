@@ -5,7 +5,7 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 
-TEMPORAL_WINDOW_FEATURE_DIM = 10
+TEMPORAL_WINDOW_FEATURE_DIM = 16
 
 
 def temporal_window_features(
@@ -16,6 +16,8 @@ def temporal_window_features(
     response_target_s: float = 3600.0,
     downlink_queue_target_s: float = 3600.0,
     downlink_feature_fn: Optional[Callable[[object, object, float], Tuple[float, float, float]]] = None,
+    use_early_delivery_features: bool = True,
+    early_delivery_weight: float = 0.35,
 ) -> np.ndarray:
     """Summarize the future feasible observation/downlink sequence for an edge."""
 
@@ -39,11 +41,13 @@ def temporal_window_features(
     first = windows[0]
     best = max(
         windows,
-        key=lambda item: (
-            item["quality"]
-            - 0.25 * _clip01(item["wait_s"] / time_target_s)
-            - 0.10 * _clip01(item["delivery_delay_s"] / time_target_s)
-            - 0.10 * _clip01(item["downlink_queue_s"] / downlink_queue_target_s)
+        key=lambda item: _window_key(
+            item=item,
+            dynamic=dynamic,
+            time_target_s=time_target_s,
+            downlink_queue_target_s=downlink_queue_target_s,
+            use_early_delivery_features=use_early_delivery_features,
+            early_delivery_weight=early_delivery_weight,
         ),
     )
     qualities = [item["quality"] for item in windows]
@@ -52,15 +56,53 @@ def temporal_window_features(
     any_downlink_feasible = max(item["downlink_feasible"] for item in windows)
     first_quality = float(first["quality"])
     last_quality = float(windows[-1]["quality"])
+    earliest_feasible = min(
+        (item for item in windows if float(item["downlink_feasible"]) > 0.0),
+        key=lambda item: item["delivery_delay_s"],
+        default=min(windows, key=lambda item: item["delivery_delay_s"]),
+    )
 
     if dynamic:
         budget_remaining = _clip01(
             (response_target_s - float(best["delivery_delay_s"])) / response_target_s
         )
+        first_budget_remaining = _clip01(
+            (response_target_s - float(first["delivery_delay_s"])) / response_target_s
+        )
+        first_overrun = 1.0 if float(first["delivery_delay_s"]) > response_target_s else 0.0
+        earliest_budget_remaining = _clip01(
+            (response_target_s - float(earliest_feasible["delivery_delay_s"])) / response_target_s
+        )
     else:
         budget_remaining = _clip01(
             (float(mission.deadline_s) - float(best["obs_end_s"])) / horizon_s
         )
+        first_budget_remaining = _clip01(
+            (float(mission.deadline_s) - float(first["obs_end_s"])) / horizon_s
+        )
+        first_overrun = 1.0 if float(first["obs_end_s"]) > float(mission.deadline_s) else 0.0
+        earliest_budget_remaining = _clip01(
+            (float(mission.deadline_s) - float(earliest_feasible["obs_end_s"])) / horizon_s
+        )
+
+    early_features = (
+        [
+            _clip01(float(first["delivery_delay_s"]) / time_target_s),
+            _clip01(float(first_budget_remaining)),
+            _clip01(float(first_overrun)),
+            _clip01(float(earliest_feasible["delivery_delay_s"]) / time_target_s),
+            _clip01(float(earliest_budget_remaining)),
+            _clip01(
+                max(
+                    float(best["delivery_delay_s"]) - float(earliest_feasible["delivery_delay_s"]),
+                    0.0,
+                )
+                / time_target_s
+            ),
+        ]
+        if use_early_delivery_features
+        else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
 
     return np.array([
         _clip01(count / max(int(top_k), 1)),
@@ -73,7 +115,33 @@ def temporal_window_features(
         _clip01(float(min_downlink_queue_s) / downlink_queue_target_s),
         _clip01(float(any_downlink_feasible)),
         _clip01(float(budget_remaining)),
+        *early_features,
     ], dtype=np.float32)
+
+
+def _window_key(
+    item: dict,
+    dynamic: bool,
+    time_target_s: float,
+    downlink_queue_target_s: float,
+    use_early_delivery_features: bool,
+    early_delivery_weight: float,
+) -> float:
+    delivery_pressure = _clip01(item["delivery_delay_s"] / time_target_s)
+    key = (
+        float(item["quality"])
+        - 0.25 * _clip01(item["wait_s"] / time_target_s)
+        - 0.10 * delivery_pressure
+        - 0.10 * _clip01(item["downlink_queue_s"] / downlink_queue_target_s)
+    )
+    if dynamic and use_early_delivery_features:
+        weight = max(float(early_delivery_weight), 0.0)
+        budget_remaining = _clip01(1.0 - delivery_pressure)
+        overrun = 1.0 if delivery_pressure >= 1.0 else 0.0
+        key += weight * budget_remaining
+        key -= weight * delivery_pressure
+        key -= 0.5 * weight * overrun
+    return float(key)
 
 
 def _feasible_windows(
