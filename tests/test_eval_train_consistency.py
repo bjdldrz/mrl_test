@@ -97,9 +97,17 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--dynamic_downlink_priority" in runner
     assert "--no_dynamic_downlink_priority" in runner
     assert "--no_response_budget_features" in runner
+    assert "--no_temporal_window_features" in runner
+    assert "--temporal_state_encoder" in runner
+    assert "--temporal_state_history_len" in runner
     assert "--no_response_budget_features" in suite
+    assert "--no_temporal_window_features" in suite
+    assert "--temporal_state_encoder" in suite
     assert "avg_dynamic_downlink_replan_gain_s" in suite
     assert "abl_stage2_no_response_budget_features" in suite
+    assert "abl_stage2_no_temporal_window_features" in suite
+    assert "cmp_stage2_temporal_future_features" in suite
+    assert "cmp_stage2_temporal_gru_state" in suite
     assert "abl_stage2_no_dynamic_downlink_priority" in suite
     assert "abl_stage2_no_downlink_aware_edge_value" in suite
     assert "abl_stage2_posthoc_dynamic_downlink_priority" in suite
@@ -109,7 +117,7 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "get_dynamic_task_diagnostics" in v2_env
     assert "_write_eval_dynamic_task_diagnostics" in runner
     assert "estimated_downlink_queue_s" in scorer
-    assert "EDGE_FEATURE_DIM = 28" in das_scorer
+    assert "EDGE_FEATURE_DIM = 28 + TEMPORAL_WINDOW_FEATURE_DIM" in das_scorer
 
 
 if __name__ == "__main__":

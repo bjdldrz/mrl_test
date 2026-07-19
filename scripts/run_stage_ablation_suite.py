@@ -10,9 +10,9 @@ Most ablations are applied on top of the Stage 4 configuration so the table
 compares one removed/changed component at a time against the strongest staged
 setting. Targeted Stage 2 ablations are included for changes that should be
 validated before hybrid scorer/storage-pressure effects enter the comparison.
-V0.31 keeps no post-hoc dynamic downlink priority as the stronger Stage-2
-baseline, tests downlink-aware candidate edge value, and exposes a response
-budget feature ablation.
+V0.32 keeps no post-hoc dynamic downlink priority as the stronger Stage-2
+baseline, adds future-window temporal features, and exposes a GRU state-history
+variant for model-side temporal comparison.
 """
 
 from __future__ import annotations
@@ -185,6 +185,10 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--ownership_mask_mode", "soft"),
         *kv("--matcher", "set_transformer"),
         *(["--no_response_budget_features"] if args.no_response_budget_features else []),
+        *(["--no_temporal_window_features"] if args.no_temporal_window_features else []),
+        *kv("--temporal_window_top_k", args.temporal_window_top_k),
+        *kv("--temporal_state_encoder", args.temporal_state_encoder),
+        *kv("--temporal_state_history_len", args.temporal_state_history_len),
         *kv("--idle_aux_coeff", "0.05"),
         *kv("--action_feature_mode", "full"),
         *kv("--candidate_adapter_mode", "v2_compat"),
@@ -363,6 +367,24 @@ def ablation_specs() -> list[dict[str, Any]]:
     hybrid = [*hybrid_scorer_args(candidate_aux_load_penalty="0.20")]
     return [
         {
+            "name": "cmp_stage2_temporal_future_features",
+            "group": "temporal",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+            ],
+        },
+        {
+            "name": "cmp_stage2_temporal_gru_state",
+            "group": "temporal",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                *kv("--temporal_state_encoder", "gru"),
+                *kv("--temporal_state_history_len", 4),
+            ],
+        },
+        {
             "name": "abl_stage2_no_future_task_execution",
             "group": "ablation",
             "base_stage": "stage2",
@@ -400,6 +422,15 @@ def ablation_specs() -> list[dict[str, Any]]:
             "args": [
                 *stage2_base,
                 "--no_response_budget_features",
+            ],
+        },
+        {
+            "name": "abl_stage2_no_temporal_window_features",
+            "group": "ablation",
+            "base_stage": "stage2",
+            "args": [
+                *stage2_base,
+                "--no_temporal_window_features",
             ],
         },
         {
@@ -790,6 +821,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval_use_repair", action="store_true")
     parser.add_argument("--eval_profile", action="store_true")
     parser.add_argument("--no_response_budget_features", action="store_true")
+    parser.add_argument("--no_temporal_window_features", action="store_true")
+    parser.add_argument("--temporal_window_top_k", type=int, default=3)
+    parser.add_argument("--temporal_state_encoder", choices=["mlp", "gru"], default="mlp")
+    parser.add_argument("--temporal_state_history_len", type=int, default=1)
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

@@ -1,5 +1,40 @@
 # Version History
 
+## DAS-CVA-MAPPO V0.32.0
+
+Status: implemented.
+
+Scope:
+
+- Adds future-window temporal features to task action entities and learned
+  candidate edge features. Each satellite-task candidate now exposes a top-K
+  summary of future feasible observation windows, including wait time, quality
+  trend, delivery delay, downlink queue pressure, downlink feasibility, and
+  remaining response/deadline budget.
+- Extends the DAS actor local state with future-candidate density and minimum
+  future wait summaries.
+- Extends the action feature vector from 28 to 38 dimensions and the learned
+  candidate edge feature vector from 28 to 38 dimensions.
+- Adds `--no_temporal_window_features` and `--temporal_window_top_k` for
+  future-feature ablations.
+- Adds an optional GRU local-state history encoder through
+  `--temporal_state_encoder gru` and `--temporal_state_history_len`.
+- Adds staged comparison specs:
+  `cmp_stage2_temporal_future_features`,
+  `cmp_stage2_temporal_gru_state`, and
+  `abl_stage2_no_temporal_window_features`.
+
+Expected effect:
+
+- Let the policy and learned scorer distinguish tasks that are merely visible
+  from tasks whose future observation/downlink sequence is actually worth
+  waiting for.
+- Increase `n_future_dynamic_task_executions`,
+  `dynamic_task_policy_selected_rate`, and dynamic completion while reducing
+  `avg_dynamic_response_s` and downlink queue/blocking metrics.
+- Compare a low-risk feature-based temporal design against a GRU state-history
+  design without changing the PPO rollout/update contract.
+
 ## DAS-CVA-MAPPO V0.31.0
 
 Status: implemented.

@@ -32,13 +32,31 @@ class ActionSetActor(nn.Module):
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
         idle_valid_penalty: float = 2.0,
+        temporal_state_encoder: str = "mlp",
+        temporal_state_history_len: int = 1,
     ):
         super().__init__()
         self.matcher = matcher
         self.use_set_context = bool(use_set_context)
         self.use_action_type_gate = bool(use_action_type_gate)
         self.idle_valid_penalty = max(0.0, float(idle_valid_penalty))
-        self.state_encoder = _mlp(state_dim, hidden_dims, action_hidden_dim)
+        self.temporal_state_encoder = str(temporal_state_encoder)
+        self.temporal_state_history_len = max(int(temporal_state_history_len), 1)
+        if self.temporal_state_encoder not in {"mlp", "gru"}:
+            raise ValueError("temporal_state_encoder must be mlp or gru")
+        if self.temporal_state_encoder == "gru":
+            if int(state_dim) % self.temporal_state_history_len != 0:
+                raise ValueError("GRU temporal state encoder requires state_dim divisible by history length")
+            self.state_step_dim = int(state_dim) // self.temporal_state_history_len
+            self.state_pre_encoder = _mlp(self.state_step_dim, hidden_dims[:1], action_hidden_dim)
+            self.state_gru = nn.GRU(
+                input_size=action_hidden_dim,
+                hidden_size=action_hidden_dim,
+                batch_first=True,
+            )
+        else:
+            self.state_step_dim = int(state_dim)
+            self.state_encoder = _mlp(state_dim, hidden_dims, action_hidden_dim)
         self.action_encoder = _mlp(action_feature_dim, hidden_dims[:1], action_hidden_dim)
         if matcher == "additive":
             self.state_proj = nn.Linear(action_hidden_dim, action_hidden_dim)
@@ -80,6 +98,14 @@ class ActionSetActor(nn.Module):
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
                 nn.init.constant_(module.bias, 0.0)
+            elif isinstance(module, nn.GRU):
+                for name, param in module.named_parameters():
+                    if "weight_ih" in name:
+                        nn.init.xavier_uniform_(param)
+                    elif "weight_hh" in name:
+                        nn.init.orthogonal_(param)
+                    elif "bias" in name:
+                        nn.init.constant_(param, 0.0)
         if hasattr(self, "logit_head"):
             nn.init.orthogonal_(self.logit_head.weight, gain=0.01)
         if hasattr(self, "type_gate_head"):
@@ -92,7 +118,7 @@ class ActionSetActor(nn.Module):
         action_features: torch.Tensor,
         action_mask: Optional[torch.Tensor] = None,
     ) -> Categorical:
-        state_h = self.state_encoder(state)
+        state_h = self._encode_state(state)
         action_h = self.action_encoder(action_features)
         if action_mask is None:
             action_mask = torch.ones(action_features.shape[:2], device=action_features.device)
@@ -144,6 +170,15 @@ class ActionSetActor(nn.Module):
             logits = logits - self._idle_valid_penalty(action_features, action_mask)
         logits = logits + (1.0 - action_mask) * (-1e8)
         return Categorical(logits=logits)
+
+    def _encode_state(self, state: torch.Tensor) -> torch.Tensor:
+        if self.temporal_state_encoder != "gru":
+            return self.state_encoder(state)
+        seq = state.reshape(state.shape[0], self.temporal_state_history_len, self.state_step_dim)
+        encoded = self.state_pre_encoder(seq.reshape(-1, self.state_step_dim))
+        encoded = encoded.reshape(state.shape[0], self.temporal_state_history_len, -1)
+        _, hidden = self.state_gru(encoded)
+        return hidden[-1]
 
     def _action_type_gate(self, context: torch.Tensor, action_features: torch.Tensor) -> torch.Tensor:
         """Add learnable routine/dynamic/flex/transfer/idle mode logits."""
@@ -216,6 +251,8 @@ class ActionSetActorCritic(nn.Module):
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
         idle_valid_penalty: float = 2.0,
+        temporal_state_encoder: str = "mlp",
+        temporal_state_history_len: int = 1,
     ):
         super().__init__()
         self.actor = ActionSetActor(
@@ -227,6 +264,8 @@ class ActionSetActorCritic(nn.Module):
             use_set_context=use_set_context,
             use_action_type_gate=use_action_type_gate,
             idle_valid_penalty=idle_valid_penalty,
+            temporal_state_encoder=temporal_state_encoder,
+            temporal_state_history_len=temporal_state_history_len,
         )
         self.critic = SetCritic(global_state_dim, tuple(critic_hidden_dims))
 

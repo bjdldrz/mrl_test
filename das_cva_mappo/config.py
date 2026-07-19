@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Tuple
 
+from .temporal_features import TEMPORAL_WINDOW_FEATURE_DIM
+
+
+BASE_STATE_DIM = 20
+BASE_ACTION_FEATURE_DIM = 28 + TEMPORAL_WINDOW_FEATURE_DIM
+
 
 @dataclass
 class DASConfig:
@@ -12,9 +18,10 @@ class DASConfig:
     keeps the main method logic in DAS-specific action and candidate modules.
     """
 
-    version: str = "0.31.0"
-    state_dim: int = 16
-    action_feature_dim: int = 28
+    version: str = "0.32.0"
+    state_base_dim: int = BASE_STATE_DIM
+    state_dim: int = BASE_STATE_DIM
+    action_feature_dim: int = BASE_ACTION_FEATURE_DIM
     actor_hidden_dims: Tuple[int, ...] = (256, 256)
     action_hidden_dim: int = 128
     critic_hidden_dims: Tuple[int, ...] = (256, 256)
@@ -24,6 +31,10 @@ class DASConfig:
     use_set_context: bool = True
     use_action_type_gate: bool = True
     use_response_budget_features: bool = True
+    use_temporal_window_features: bool = True
+    temporal_window_top_k: int = 3
+    temporal_state_encoder: str = "mlp"
+    temporal_state_history_len: int = 1
     idle_valid_penalty: float = 0.0
     idle_aux_coeff: float = 0.05
     candidate_dropout_prob: float = 0.0
@@ -53,8 +64,17 @@ class DASConfig:
     supported_feature_modes: Tuple[str, ...] = field(default=("full", "minimal", "no_score"), init=False)
     supported_scorers: Tuple[str, ...] = field(default=("v2_heuristic", "learned", "hybrid"), init=False)
     supported_adapters: Tuple[str, ...] = field(default=("v2_compat",), init=False)
+    supported_temporal_state_encoders: Tuple[str, ...] = field(default=("mlp", "gru"), init=False)
 
     def validate(self) -> None:
+        self.temporal_window_top_k = max(int(self.temporal_window_top_k), 1)
+        self.temporal_state_history_len = max(int(self.temporal_state_history_len), 1)
+        self.state_base_dim = max(int(self.state_base_dim), 1)
+        self.state_dim = (
+            self.state_base_dim * self.temporal_state_history_len
+            if self.temporal_state_encoder == "gru"
+            else self.state_base_dim
+        )
         if self.matcher not in self.supported_matchers:
             raise ValueError(f"matcher must be one of {self.supported_matchers}")
         if self.action_feature_mode not in self.supported_feature_modes:
@@ -63,6 +83,10 @@ class DASConfig:
             raise ValueError(f"candidate_scorer_mode must be one of {self.supported_scorers}")
         if self.candidate_adapter_mode not in self.supported_adapters:
             raise ValueError(f"candidate_adapter_mode must be one of {self.supported_adapters}")
+        if self.temporal_state_encoder not in self.supported_temporal_state_encoders:
+            raise ValueError(
+                f"temporal_state_encoder must be one of {self.supported_temporal_state_encoders}"
+            )
         if not 0.0 <= float(self.candidate_dropout_prob) < 1.0:
             raise ValueError("candidate_dropout_prob must be in [0, 1)")
         if float(self.idle_valid_penalty) < 0:

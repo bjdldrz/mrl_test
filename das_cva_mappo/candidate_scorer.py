@@ -12,9 +12,10 @@ import torch.optim as optim
 
 from cva_mappo_v2.scorer import CandidateScore, CandidateValueScorer
 from .env_adapter import V2CandidateAdapter
+from .temporal_features import TEMPORAL_WINDOW_FEATURE_DIM, temporal_window_features
 
 
-EDGE_FEATURE_DIM = 28
+EDGE_FEATURE_DIM = 28 + TEMPORAL_WINDOW_FEATURE_DIM
 
 
 @dataclass
@@ -75,6 +76,8 @@ class TrainableCandidateValueScorer:
         lr: float = 1e-3,
         device: str = "cpu",
         use_response_budget_features: bool = True,
+        use_temporal_window_features: bool = True,
+        temporal_window_top_k: int = 3,
     ):
         if mode not in {"v2_heuristic", "learned", "hybrid"}:
             raise ValueError("candidate scorer mode must be v2_heuristic, learned, or hybrid")
@@ -83,6 +86,8 @@ class TrainableCandidateValueScorer:
         self.mix = float(np.clip(mix, 0.0, 1.0))
         self.device = torch.device(device)
         self.use_response_budget_features = bool(use_response_budget_features)
+        self.use_temporal_window_features = bool(use_temporal_window_features)
+        self.temporal_window_top_k = max(int(temporal_window_top_k), 1)
         self.model = EdgeValueMLP(EDGE_FEATURE_DIM, hidden_dim).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=float(lr))
         self.warmup_stats = ScorerWarmupStats()
@@ -206,6 +211,19 @@ class TrainableCandidateValueScorer:
             if self.use_response_budget_features
             else (0.0, 0.0, 0.0, 0.0)
         )
+        temporal_windows = (
+            temporal_window_features(
+                env=env,
+                mission=mission,
+                current_time_s=current_time_s,
+                top_k=self.temporal_window_top_k,
+                response_target_s=getattr(self.heuristic.cfg, "dynamic_response_target_s", 3600.0),
+                downlink_queue_target_s=getattr(self.heuristic.cfg, "downlink_queue_target_s", 3600.0),
+                downlink_feature_fn=self.heuristic._downlink_features,
+            )
+            if self.use_temporal_window_features
+            else np.zeros(TEMPORAL_WINDOW_FEATURE_DIM, dtype=np.float32)
+        )
         return np.array([
             heuristic_score.quality,
             priority,
@@ -232,6 +250,7 @@ class TrainableCandidateValueScorer:
             downlink_feasible,
             downlink_queue_norm,
             *response_budget,
+            *temporal_windows,
         ], dtype=np.float32)
 
     def warm_start(

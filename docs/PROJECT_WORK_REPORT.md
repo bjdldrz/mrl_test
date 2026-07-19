@@ -8,7 +8,7 @@
 
 项目已经从早期 `cva_mappo_v2` 的固定槽位、规则候选分配路线，逐步转向 `das_cva_mappo` 主线。当前推荐的论文方法中心是 `das_cva_mappo/`，而 `cva_mappo_v2/` 主要作为候选生成、环境封装和兼容层继续被使用。
 
-当前主线版本为 `DAS-CVA-MAPPO V0.31.0`。
+当前主线版本为 `DAS-CVA-MAPPO V0.32.0`。
 
 ## 2. 已完成的主要工作
 
@@ -50,7 +50,7 @@
 - rollout advantage 辅助更新。
 - hard-negative candidate sampling。
 - conflict penalty 与 load penalty。
-- scorer feature 中加入任务动态性、等待压力、可执行性和未来窗口相关信息。
+- scorer feature 中加入任务动态性、等待压力、可执行性、响应预算、下传交付压力和未来窗口时序摘要。
 
 这为“候选生成不是静态规则，而是可学习调度价值估计”提供了实验基础。
 
@@ -89,9 +89,18 @@
 - 增加 dynamic current/future slot exposure 诊断指标。
 - 增加 dynamic-priority downlink replanning，让未开始的 routine downlink 可以被动态任务图像重排到后面。
 
-最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。V0.31 进一步把动态任务响应预算显式接入 actor 局部状态、动作实体特征和学习型候选 scorer 的边特征中。
+最近一轮 V0.29 验证表明，观测后再做 dynamic-priority downlink replanning 并没有稳定降低动态响应时间。V0.30 因此把下传队列和交付延迟前置到候选边价值中，让策略在选择观测任务前就能感知预计下传代价。V0.31 进一步把动态任务响应预算显式接入 actor 局部状态、动作实体特征和学习型候选 scorer 的边特征中。V0.32 在此基础上加入未来窗口时序摘要，并提供 GRU state-history encoder 对比版本，用于判断“显式未来窗口特征”和“学习式状态历史编码”哪条路线更有效。
 
-### 2.7 训练与评估一致性
+### 2.7 V0.32 时序模块
+
+当前 V0.32 已实现两条可对比的时序路线：
+
+- 未来窗口特征版：对每个卫星-任务候选抽取未来 top-K 可行观测窗口的摘要，包含等待时间、窗口质量、质量趋势、预计下传队列、交付延迟、下传可行性和响应/截止预算余量；这些特征同时进入 actor action entity 和学习型 candidate edge scorer。
+- GRU state-history 版：通过 `--temporal_state_encoder gru --temporal_state_history_len 4` 将最近若干步局部 state 拼成固定历史序列，由 GRU 编码后再进入 action-set actor。该版本不改变 PPO buffer 的主体结构，也不在多进程 worker 间维护 recurrent hidden state，因此适合先做模型侧时序对比。
+
+当前建议优先比较未来窗口特征版和 GRU state-history 版，而不是直接重构成完整 recurrent MAPPO。完整 recurrent MAPPO 需要改 rollout buffer、hidden state reset、done mask、并行采样和 eval 路径，工程风险明显更高。
+
+### 2.8 训练与评估一致性
 
 已经修复了一个对论文结果很关键的问题：早期 evaluation 默认启用了 eval-only repair/rescue，而 training 没有完全相同的处理。这会让评估结果带有规则后处理增益，不能严格代表策略本身。
 
@@ -103,7 +112,7 @@
 
 这提高了实验结论的可信度。
 
-### 2.8 并行训练、评估与性能诊断
+### 2.9 并行训练、评估与性能诊断
 
 已完成：
 
@@ -117,7 +126,7 @@
 
 从 profiling 结果看，eval 时间长的主要瓶颈不在 GPU 前向，而在 Python 环境步进、候选检查、任务/数传状态推进等模拟逻辑，尤其 `eval_env_step_time_s` 占比极高。
 
-### 2.9 实验脚本与结果汇总
+### 2.10 实验脚本与结果汇总
 
 已完成阶段化实验脚本：
 
@@ -289,7 +298,7 @@ Response-aware Dynamic Action-Set CVA-MAPPO
 
 ### 6.2 还需要补强的机制创新
 
-为了让方法不只停留在“已有实现加权重”，建议后续围绕三个机制继续强化，其中第一项已经完成第一版实现。
+为了让方法不只停留在“已有实现加权重”，建议后续围绕四个机制继续强化，其中前三项已经完成第一版实现。
 
 第一，downlink-aware edge value。V0.30 已完成第一版下传感知候选边价值，在候选评分阶段估计：
 
@@ -310,7 +319,9 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 策略和 scorer 都可以使用该预算作为特征。后续还可以在奖励或 critic feature 中对超出响应目标的动态任务递增建模，而不是只在完成后统计 `avg_dynamic_response_s`。这样论文可以说明方法是 response-aware，而不是事后报告响应时间。
 
-第三，候选 exposure 的可解释约束。对于每个动态任务，记录它从到达到完成之间被多少个卫星看到、看到时是否当前可执行、是否被 future slot 挤出、是否被 routine 下传阻塞。这可以形成一组可解释诊断指标，让方法改进与动态任务表现之间有因果链条。
+第三，future-window temporal feature / GRU state-history。V0.32 已把候选任务未来 top-K 可行窗口的等待、质量、下传队列、交付延迟和预算余量接入 actor action entity 与 candidate edge scorer，同时提供 GRU 局部状态历史编码作为对比版本。该机制用于回答“未来窗口序列是否值得等待”，补足 V0.31 只能表达“当前任务是否紧急”的不足。
+
+第四，候选 exposure 的可解释约束。对于每个动态任务，记录它从到达到完成之间被多少个卫星看到、看到时是否当前可执行、是否被 future slot 挤出、是否被 routine 下传阻塞。这可以形成一组可解释诊断指标，让方法改进与动态任务表现之间有因果链条。
 
 ### 6.3 论文实验需要证明的点
 
@@ -344,7 +355,7 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 2. 因此提出动态动作集策略，将每个可选调度决策表示为动作实体，由共享策略对动作实体打分。
 3. 候选集由 CVA scorer 生成，边价值同时考虑观测质量、任务紧迫性、可执行窗口、存储压力和下传交付压力。
 4. 通过 future macro 和 visible-candidate idle advancement，让策略既能利用未来窗口，又不跳过不可见的关键事件。
-5. 通过 dynamic-priority downlink replanning，把动态任务目标从“观测完成”扩展为“及时交付”。
+5. 通过下传感知边价值和未来窗口时序编码，把动态任务目标从“观测完成”扩展为“及时交付”。
 
 这样的叙事比单独强调某个 reward 权重更稳，也更容易解释为什么该方法适合动态任务场景。
 
@@ -362,14 +373,14 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 ## 7. 建议的后续路线
 
-### 7.1 优先完成 V0.31 验证
+### 7.1 优先完成 V0.32 时序对比
 
-建议先运行当前短验证：
+建议先运行当前短验证，对比未来窗口特征版、GRU state-history 版和关闭未来窗口特征的消融版：
 
 ```bash
 python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v031_response_budget_features \
-  --only abl_stage2_no_dynamic_downlink_priority abl_stage2_no_response_budget_features abl_stage2_no_downlink_aware_edge_value \
+  --suite_name das_v032_temporal_window_vs_gru \
+  --only cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
@@ -389,11 +400,13 @@ python3 scripts/run_stage_ablation_suite.py \
 - `avg_dynamic_downlink_replan_gain_s`
 - `dynamic_task_candidate_seen_rate`
 - `dynamic_task_policy_selected_rate`
+- `n_future_dynamic_task_executions`
+- `avg_future_task_wait_s`
 - `dynamic_task_downlink_queue_block_rate`
 - `dynamic_current_slot_exposure_rate`
 - `dynamic_future_slot_exposure_rate`
 
-如果关闭 response-budget features 后 `avg_dynamic_response_s`、`dynamic_task_policy_selected_rate` 或动态 feasible-normalized completion 明显变差，则 V0.31 的模型侧特征可以保留；如果关闭 downlink-aware edge value 后响应时间或下传队列明显变差，则 V0.30 的端到端交付前置评分仍可作为独立贡献点。
+如果关闭 future-window features 后 `avg_dynamic_response_s`、`dynamic_task_policy_selected_rate`、`n_future_dynamic_task_executions` 或动态 feasible-normalized completion 明显变差，则 V0.32 的显式未来窗口特征可以保留为主线模型设计。若 GRU state-history 版优于未来窗口特征版，再考虑把时序模块从固定摘要升级为更强的序列编码；若 GRU 不占优，则优先保留轻量 future-feature 版本。
 
 ### 7.2 动态任务指标单独成表
 
@@ -410,7 +423,7 @@ python3 scripts/run_stage_ablation_suite.py \
 
 ### 7.3 继续压低 downlink queue
 
-如果 V0.31 的 response-budget features 和 V0.30 的 downlink-aware edge value 收益仍有限，下一步应考虑：
+如果 V0.32 的时序特征仍不能显著压低下传队列或动态响应时间，下一步应考虑：
 
 - 为动态图像设置更强的 downlink deadline 或 priority key。
 - 将当前启发式预计 downlink finish time 升级为 learned delivery-value head。
@@ -435,7 +448,7 @@ python3 scripts/run_stage_ablation_suite.py \
 - 3 到 5 个随机种子。
 - 固定 scenario cache。
 - stage2 baseline、stage2_dynamic_priority、stage3 hybrid、stage4 storage/downlink。
-- 关键消融：no future task、no dynamic response pressure、no downlink-aware edge value、post-hoc dynamic downlink priority、heuristic vs hybrid。
+- 关键消融：no future task、no temporal window features、GRU state-history、no dynamic response pressure、no downlink-aware edge value、post-hoc dynamic downlink priority、heuristic vs hybrid。
 
 最终报告均值和标准差，避免单次结果波动影响结论。
 
@@ -443,4 +456,4 @@ python3 scripts/run_stage_ablation_suite.py \
 
 当前项目已经完成了从兼容层规则调度到 DAS-CVA-MAPPO 动态动作集策略的主体改造，并建立了较完整的阶段实验、消融、指标诊断和 train/eval 一致性保护。项目的主要优势是方法结构清晰、实验可诊断、动态任务问题被拆解得比较细；主要不足是动态任务 raw completion 仍不够强、stale owner 偏高、downlink queue 对响应时间影响大、评估成本仍偏高。
 
-从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，V0.31 已把 response budget 前置到模型输入中。下一步不建议大范围重构，而应先验证 response-budget features 与 downlink-aware edge value 是否能相对当前强 baseline 降低动态响应时间和下传队列阻塞率。
+从论文方法角度看，后续应把主张从“候选筛选优化”提升为“响应感知、交付感知、时序感知的动态动作集约束调度”。V0.30 已把 downlink finish time 前置到候选评分中，V0.31 已把 response budget 前置到模型输入中，V0.32 已加入未来窗口时序摘要并提供 GRU state-history 对比版本。下一步应优先跑 V0.32 三组短验证，确认显式未来窗口特征和 GRU 时序编码哪条路线对动态响应和交付闭环更有效。
