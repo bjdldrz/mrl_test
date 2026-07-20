@@ -350,7 +350,36 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 - 稳定性：`stale_owner_rate`、`owner_churn_rate`、`load_balance_cv`。
 - 效率：`eval_wall_time_s`、`eval_steps_per_wall_s`，作为工程复现信息，不作为主要算法指标。
 
-### 6.4 论文叙事建议
+### 6.4 主要实验与验证目的
+
+当前建议以 `paper_core` 作为论文主实验集合，先完成单 seed 或少量 seed 的结果筛选，再对关键结论补多 seed。主要实验和验证目的如下：
+
+| 实验类别 | 实验名 | 对照关系 | 验证目的 | 重点指标 |
+| --- | --- | --- | --- | --- |
+| 阶段推进 | `stage1_slot_diagnosis` | 诊断起点 | 验证固定候选槽位和基础候选暴露下，策略是否能看到足够的当前可执行动作；定位 invalid slot、idle 和 stale owner 问题。 | `avg_valid_slots`、`avg_filled_invalid_slots`、`eval_valid_decision_rate`、`stale_owner_rate` |
+| 阶段推进 | `stage2_candidate_owner_repair` | 对比 Stage 1 | 验证 typed slot、多 owner 广播、stale release、future-task metadata 和 V0.33 early-delivery temporal 默认配置是否改善候选可见性与动态任务完成。 | `total_reward`、`dynamic_completion_rate`、`dynamic_task_candidate_seen_rate`、`avg_dynamic_response_s` |
+| 阶段推进 | `stage2_dynamic_priority_recovery` | 对比 Stage 2 | 验证动态任务优先候选配置是否能提高动态任务被看到、被选择和完成的比例。 | `dynamic_completion_rate_raw`、`dynamic_current_slot_exposure_rate`、`dynamic_task_policy_selected_rate` |
+| 阶段推进 | `stage3_dynamic_hybrid` | 对比 Stage 2 dynamic | 验证 hybrid CVA scorer 相对纯启发式候选评分是否带来更好的任务选择和负载分配。 | `total_reward`、`load_balance_cv`、`owner_churn_rate`、`dynamic_completion_rate` |
+| 阶段推进 | `stage4_storage_pressure` | 对比 Stage 3 | 验证加入更强存储/下传压力后，是否缓解图像堆积和下传队列拥塞。 | `avg_downlink_queue_s`、`n_storage_expired_drops`、`dynamic_task_downlink_queue_block_rate` |
+| 时序对比 | `cmp_stage2_temporal_future_features` | 对比 `stage2_candidate_owner_repair` | 验证只有 V0.32-like 未来窗口摘要、没有早交付信号时，是否会提升最终交付但拉长动态响应。 | `dynamic_completion_rate`、`avg_dynamic_response_s`、`avg_future_task_wait_s` |
+| 时序对比 | `cmp_stage2_temporal_gru_state` | 对比 `stage2_candidate_owner_repair` | 验证 GRU 局部状态历史编码是否能利用过去状态变化，提供区别于未来窗口特征的时序收益。 | `dynamic_completion_rate_raw`、`avg_dynamic_response_s`、`eval_actor_forward_time_s` |
+| 时序消融 | `abl_stage2_no_temporal_window_features` | 对比 `stage2_candidate_owner_repair` | 验证未来窗口时序特征是否是当前主方法收益来源之一。 | `total_reward`、`dynamic_completion_rate`、`n_future_task_executions` |
+| 机制消融 | `abl_stage2_no_future_task_execution` | 对比 `stage2_candidate_owner_repair` | 验证 bounded future-task macro execution 是否有助于利用短期未来观测窗口。 | `n_future_task_executions`、`total_reward`、`observation_success_rate_raw` |
+| 机制消融 | `abl_stage2_no_dynamic_response_pressure` | 对比 `stage2_candidate_owner_repair` | 验证动态响应压力项是否能推动候选排序优先选择更紧急的动态任务。 | `avg_dynamic_response_s`、`dynamic_task_policy_selected_rate`、`dynamic_completion_rate` |
+| 机制消融 | `abl_stage2_no_response_budget_features` | 对比 `stage2_candidate_owner_repair` | 验证显式响应预算特征进入 actor/scorer 后，是否有助于区分仍可及时交付和已经接近超时的动态任务。 | `avg_dynamic_response_s`、`dynamic_completion_rate_raw`、`dynamic_feasible_ratio` |
+| 机制消融 | `abl_stage2_no_downlink_aware_edge_value` | 对比 `stage2_candidate_owner_repair` | 验证把下传队列、预计交付延迟和交付可行性前置到候选边价值中是否必要。 | `avg_downlink_queue_s`、`dynamic_task_downlinked_after_observed_rate`、`dynamic_task_downlink_queue_block_rate` |
+| 机制消融 | `abl_stage2_posthoc_dynamic_downlink_priority` | 对比 `stage2_candidate_owner_repair` | 验证事后动态下传重排是否优于当前的观测前下传感知边价值路线。 | `avg_dynamic_response_s`、`n_downlink_priority_replans`、`avg_dynamic_downlink_replan_gain_s` |
+| 模型消融 | `abl_v2_heuristic_scorer` | 对比 `stage4_storage_pressure` | 验证 hybrid/learned CVA scorer 相比纯启发式 scorer 是否提供稳定增益。 | `total_reward`、`dynamic_completion_rate`、`load_balance_cv` |
+| 模型消融 | `abl_no_candidate_aux_update` | 对比 `stage4_storage_pressure` | 验证 rollout advantage 辅助更新和 hard-negative 排序训练是否改善 scorer 的候选排序能力。 | `total_reward`、`eval_valid_decision_rate`、`avg_valid_slots` |
+| 模型消融 | `abl_no_action_type_gate` | 对比 `stage4_storage_pressure` | 验证 action-type gate 是否有助于区分观测、转发、idle 等不同动作实体类型。 | `total_reward`、`eval_idle_action_rate`、`dynamic_completion_rate` |
+| 模型消融 | `abl_no_set_context` | 对比 `stage4_storage_pressure` | 验证 action-set context 是否能缓解动态动作集中候选之间的相互竞争和语义错位。 | `total_reward`、`eval_valid_decision_rate`、`load_balance_cv` |
+| 模型消融 | `abl_no_idle_aux` | 对比 `stage4_storage_pressure` | 验证 idle auxiliary loss 是否减少“有可行动作仍选择 idle”的无效等待。 | `eval_idle_when_valid_rate`、`eval_idle_action_rate`、`total_reward` |
+| 模型消融 | `abl_no_future_task_execution` | 对比 `stage4_storage_pressure` | 在 Stage-4 强配置下复验 future macro 对最终方法是否仍有贡献。 | `n_future_task_executions`、`total_reward`、`dynamic_completion_rate` |
+| 模型消融 | `abl_no_storage_pressure` | 对比 `stage4_storage_pressure` | 在 Stage-4 强配置下验证存储/下传压力项是否降低过期丢弃和队列阻塞。 | `avg_downlink_queue_s`、`n_storage_expired_drops`、`dynamic_task_downlink_queue_block_rate` |
+
+表格使用时应注意：`stage2_candidate_owner_repair` 在当前默认参数下可作为 V0.33 early-delivery temporal 主基线；`paper_full` 中保留的 `cmp_stage2_temporal_early_delivery_features`、`abl_stage2_no_dynamic_downlink_priority` 和 `abl_stage2_no_early_delivery_temporal_features` 更多用于复现历史表或显式标注，不一定都需要进入论文主表。
+
+### 6.5 论文叙事建议
 
 论文中不要把方法写成“MAPPO 加规则候选筛选”。更强的叙事是：
 
@@ -362,7 +391,7 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 
 这样的叙事比单独强调某个 reward 权重更稳，也更容易解释为什么该方法适合动态任务场景。
 
-### 6.5 不建议作为主要创新点的内容
+### 6.6 不建议作为主要创新点的内容
 
 以下内容可以放在实现细节或实验设置里，但不建议作为主要创新点：
 
