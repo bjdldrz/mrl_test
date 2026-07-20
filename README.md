@@ -607,3 +607,47 @@ python3 scripts/run_stage_ablation_suite.py \
   --device cuda:0 \
   --no_progress
 ```
+
+For paper-oriented runs, use the wrapper below. It groups the currently
+runnable experiments by paper question, calls `run_stage_ablation_suite.py`, and
+saves `summary.csv`, `summary.md`, logs, plus `paper_experiment_plan.json` and
+`paper_experiment_plan.md` under the selected suite directory.
+
+Quick temporal check:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan quick_temporal \
+  --suite_name das_v033_quick_temporal \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --no_progress
+```
+
+Recommended core paper suite. This plan avoids rerunning known duplicate Stage-2
+labels; `stage2_candidate_owner_repair` is the V0.33 early-delivery temporal
+baseline when the progression rows are included.
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan paper_core \
+  --suite_name das_paper_core_v033 \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+Available plans can be inspected with:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py --list_plans
+```

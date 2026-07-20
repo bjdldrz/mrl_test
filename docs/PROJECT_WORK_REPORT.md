@@ -1,6 +1,6 @@
 # 当前项目工作报告
 
-更新时间：2026-07-19
+更新时间：2026-07-20
 
 ## 1. 项目定位
 
@@ -20,6 +20,7 @@
 - `cva_mappo_v2/`：兼容层，负责候选生成、任务 owner 分配、可执行性判断和部分环境逻辑。
 - `envs/`：单星与多星调度环境。
 - `scripts/run_stage_ablation_suite.py`：阶段化实验与消融汇总脚本。
+- `scripts/run_paper_experiment_suite.py`：论文实验总入口，按论文问题组织当前可运行的实验组合，并保存实验计划和汇总结果。
 - `docs/`：设计总结与版本历史。
 
 这一点对论文叙事很重要：方法主体已经不再依赖旧的固定 slot actor 作为主要贡献，而是围绕动态动作集、候选集选择和调度环境一致性展开。
@@ -135,6 +136,7 @@
 - 支持只运行指定阶段或消融。
 - 默认 `train_iters=50`、`eval_episodes=10`、`eval_workers=24`、`train_env_workers=16`、训练设备 `cuda:0`、评估设备 `cpu`。
 - 自动生成 `summary.csv` 和 markdown 汇总表。
+- 新增论文实验 wrapper：`scripts/run_paper_experiment_suite.py`，可用 `--plan quick_temporal`、`--plan progression`、`--plan mechanism_core`、`--plan paper_core` 或 `--plan paper_full` 运行当前可做的论文实验列表，并在 suite 目录保存 `paper_experiment_plan.json` 与 `paper_experiment_plan.md`。其中 `paper_core` 会避开当前已知的 Stage-2 重复标签，使用 `stage2_candidate_owner_repair` 作为 V0.33 early-delivery temporal 基线；`paper_full` 保留历史标签，便于复现旧结果表。
 - 已加入多个关键消融：
   - 禁用未来任务执行。
   - future macro with current valid。
@@ -379,9 +381,9 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 建议先运行当前短验证，对比 early-delivery temporal、V0.32-like 未来窗口特征版、GRU state-history 版和关闭未来窗口特征的消融版：
 
 ```bash
-python3 scripts/run_stage_ablation_suite.py \
-  --suite_name das_v033_early_delivery_temporal \
-  --only cmp_stage2_temporal_early_delivery_features cmp_stage2_temporal_future_features cmp_stage2_temporal_gru_state abl_stage2_no_temporal_window_features \
+python3 scripts/run_paper_experiment_suite.py \
+  --plan quick_temporal \
+  --suite_name das_v033_quick_temporal \
   --train_iters 50 \
   --val_episodes 10 \
   --eval_workers 10 \
@@ -452,6 +454,24 @@ python3 scripts/run_stage_ablation_suite.py \
 - 关键消融：no future task、no temporal window features、GRU state-history、no dynamic response pressure、no downlink-aware edge value、post-hoc dynamic downlink priority、heuristic vs hybrid。
 
 最终报告均值和标准差，避免单次结果波动影响结论。
+
+当前已提供论文核心实验总入口：
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan paper_core \
+  --suite_name das_paper_core_v033 \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+`paper_core` 覆盖阶段推进、V0.33 时序对比、Stage-2 响应/交付机制消融和 Stage-4 模型组件消融，并跳过当前参数下等价的 Stage-2 重复标签；`paper_full` 会额外加入历史标签和探索性诊断消融，耗时明显更长。运行完成后优先读取对应 suite 下的 `summary.md`、`summary.csv` 和 `paper_experiment_plan.md`。
 
 ## 8. 当前结论
 

@@ -126,6 +126,25 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "EDGE_FEATURE_DIM = 28 + TEMPORAL_WINDOW_FEATURE_DIM" in das_scorer
 
 
+def test_paper_experiment_suite_wraps_stage_suite() -> None:
+    text = (ROOT / "scripts" / "run_paper_experiment_suite.py").read_text(
+        encoding="utf-8"
+    )
+    assert "run_stage_ablation_suite.py" in text
+    assert '"paper_core"' in text
+    assert '"quick_temporal"' in text
+    assert '"paper_full"' in text
+    assert "paper_experiment_plan.json" in text
+    assert "paper_experiment_plan.md" in text
+    assert "summary.csv" in text
+    assert "summary.md" in text
+    assert "cmp_stage2_temporal_early_delivery_features" in text
+    assert "cmp_stage2_temporal_future_features" in text
+    assert "cmp_stage2_temporal_gru_state" in text
+    assert "abl_stage2_no_temporal_window_features" in text
+    assert "abl_stage2_no_downlink_aware_edge_value" in text
+
+
 if __name__ == "__main__":
     test_das_eval_mode_defaults_to_train_path()
     test_compat_runner_eval_mode_defaults_to_train_path()
@@ -134,3 +153,4 @@ if __name__ == "__main__":
     test_multi_env_uses_low_level_fast_step()
     test_eval_device_defaults_to_cpu()
     test_dynamic_iteration_controls_are_exposed()
+    test_paper_experiment_suite_wraps_stage_suite()
