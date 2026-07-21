@@ -511,9 +511,30 @@ python3 scripts/run_paper_experiment_suite.py \
 - `n_routine=1200`
 - `n_dynamic=300`
 - `eval_max_steps=12000`
+- `scenario_cache_dir=runs/scenario_cache/das_cva_stress_12sat_double_seed42`
+- `vtw_cache_dir=runs/scenario_cache/das_cva_stress_12sat_double_seed42/vtw_cache`
 - `n_ground_stations=4`
 
-其中地面站数量保持 4 个不变，是为了刻意保留共享下传瓶颈，检验下传感知边价值和存储压力机制在高压场景下是否仍有作用。建议运行：
+理论上应先预生成压力场景和 VTW cache，再让后续训练/评估都从该 cache 采样。这样可以保证不同实验共享同一组 train/eval 场景，避免一边生成一边训练造成额外耗时和对照不公平。
+
+先生成压力环境：
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 10 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 12 \
+  --out_dir runs/scenario_cache/das_cva_stress_12sat_double_seed42
+```
+
+然后运行压力测试。其中地面站数量保持 4 个不变，是为了刻意保留共享下传瓶颈，检验下传感知边价值和存储压力机制在高压场景下是否仍有作用：
 
 ```bash
 python3 scripts/run_paper_experiment_suite.py \

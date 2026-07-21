@@ -646,8 +646,26 @@ python3 scripts/run_paper_experiment_suite.py \
   --no_progress
 ```
 
-12-satellite doubled-task stress test. This keeps the ground-station count at
-4 intentionally, so the run stresses shared downlink and storage pressure rather
+12-satellite doubled-task stress test. First generate the reusable pressure
+scenario/VTW cache:
+
+```bash
+python precompute_scenarios.py \
+  --acled_path ./DynamicMission/DynamicMission.shp \
+  --n_satellites 12 \
+  --n_train_scenarios 200 \
+  --n_eval_scenarios 10 \
+  --n_routine 1200 \
+  --n_dynamic 300 \
+  --n_ground_stations 4 \
+  --curriculum_stages 300:75,600:150,900:225,1200:300 \
+  --vtw_time_step_s 60 \
+  --vtw_workers 12 \
+  --out_dir runs/scenario_cache/das_cva_stress_12sat_double_seed42
+```
+
+Then run the focused stress suite. This keeps the ground-station count at 4
+intentionally, so the run stresses shared downlink and storage pressure rather
 than only scaling capacity with the constellation:
 
 ```bash

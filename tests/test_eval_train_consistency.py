@@ -138,6 +138,7 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert '"n_satellites": 12' in text
     assert '"n_routine": 1200' in text
     assert '"n_dynamic": 300' in text
+    assert "das_cva_stress_12sat_double_seed42" in text
     assert "paper_experiment_plan.json" in text
     assert "paper_experiment_plan.md" in text
     assert "summary.csv" in text

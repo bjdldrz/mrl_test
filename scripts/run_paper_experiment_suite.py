@@ -130,6 +130,8 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
             "n_routine": 1200,
             "n_dynamic": 300,
             "eval_max_steps": 12000,
+            "scenario_cache_dir": "runs/scenario_cache/das_cva_stress_12sat_double_seed42",
+            "vtw_cache_dir": "runs/scenario_cache/das_cva_stress_12sat_double_seed42/vtw_cache",
         },
     },
 }
