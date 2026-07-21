@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from .feature_builder import ActionSetFeatureBuilder
+from .action_entities import ACTION_OBSERVE, ACTION_RELAY, ACTION_WAIT, EdgeDecisionRecord
 from .rollout_buffer import ActionSetRolloutBuffer
 
 
@@ -21,6 +22,7 @@ class CandidateAuxSamples:
     n_conflict_edges: int = 0
     conflict_penalty_sum: float = 0.0
     load_penalty_sum: float = 0.0
+    edge_records: List[EdgeDecisionRecord] = field(default_factory=list)
 
 
 class ActionSetMAPPOTrainer:
@@ -86,6 +88,7 @@ class ActionSetMAPPOTrainer:
                     action_mask=masks[aid],
                     action=actions[aid],
                     log_prob=log_probs[aid],
+                    decision_time_s=float(env.envs[aid].current_time_s),
                 )
 
             step_results = env.step(actions)
@@ -172,6 +175,7 @@ class ActionSetMAPPOTrainer:
         targets: List[float] = []
         negative_rows: List[np.ndarray] = []
         negative_anchors: List[int] = []
+        edge_records: List[EdgeDecisionRecord] = []
         selected_task_counts = self._selected_task_counts(buffer)
         n_conflict_edges = 0
         conflict_penalty_sum = 0.0
@@ -198,6 +202,18 @@ class ActionSetMAPPOTrainer:
                     n_conflict_edges += 1
                     conflict_penalty_sum += float(conflict_cost)
                 load_penalty_sum += float(load_cost)
+                edge_records.append(
+                    EdgeDecisionRecord(
+                        decision_id=len(edge_records),
+                        time_s=self._decision_time(buffer, aid, t),
+                        agent_id=aid,
+                        action_idx=int(action),
+                        action_type=self._action_entity_type(buffer.action_features[aid][t][int(action)]),
+                        target_id=task_id,
+                        edge_features=edge,
+                        target=target,
+                    )
+                )
                 positive_idx = len(edge_rows)
                 edge_rows.append(edge)
                 targets.append(target)
@@ -227,6 +243,7 @@ class ActionSetMAPPOTrainer:
             n_conflict_edges=int(n_conflict_edges),
             conflict_penalty_sum=float(conflict_penalty_sum),
             load_penalty_sum=float(load_penalty_sum),
+            edge_records=edge_records,
         )
 
     @staticmethod
@@ -237,6 +254,22 @@ class ActionSetMAPPOTrainer:
             negative_features=np.zeros((0, 0), dtype=np.float32),
             negative_anchor_indices=np.zeros(0, dtype=np.int64),
         )
+
+    @staticmethod
+    def _decision_time(buffer: ActionSetRolloutBuffer, aid: str, t: int) -> float:
+        times = buffer.decision_times.get(aid, [])
+        if 0 <= int(t) < len(times):
+            return float(times[int(t)])
+        return float(t)
+
+    @staticmethod
+    def _action_entity_type(row: np.ndarray) -> int:
+        row = np.asarray(row, dtype=np.float32)
+        if row.shape[0] > 2 and row[2] > 0.5:
+            return ACTION_WAIT
+        if row.shape[0] > 1 and row[1] > 0.5:
+            return ACTION_RELAY
+        return ACTION_OBSERVE
 
     @staticmethod
     def _selected_task_counts(buffer: ActionSetRolloutBuffer) -> List[Dict[int, int]]:

@@ -15,6 +15,7 @@ class ActionSetRolloutBuffer:
     candidate_edge_features: Dict[str, List[np.ndarray]] = field(default_factory=dict)
     candidate_task_ids: Dict[str, List[np.ndarray]] = field(default_factory=dict)
     action_masks: Dict[str, List[np.ndarray]] = field(default_factory=dict)
+    decision_times: Dict[str, List[float]] = field(default_factory=dict)
     actions: Dict[str, List[int]] = field(default_factory=dict)
     log_probs: Dict[str, List[float]] = field(default_factory=dict)
     rewards: Dict[str, List[float]] = field(default_factory=dict)
@@ -29,6 +30,7 @@ class ActionSetRolloutBuffer:
             self.candidate_edge_features[aid] = []
             self.candidate_task_ids[aid] = []
             self.action_masks[aid] = []
+            self.decision_times[aid] = []
             self.actions[aid] = []
             self.log_probs[aid] = []
             self.rewards[aid] = []
@@ -48,6 +50,7 @@ class ActionSetRolloutBuffer:
         action_mask: np.ndarray,
         action: int,
         log_prob: float,
+        decision_time_s: float = 0.0,
         reward: float = 0.0,
         done: bool = False,
     ) -> None:
@@ -56,6 +59,7 @@ class ActionSetRolloutBuffer:
         self.candidate_edge_features[agent_id].append(np.asarray(candidate_edge_features, dtype=np.float32))
         self.candidate_task_ids[agent_id].append(np.asarray(candidate_task_ids, dtype=np.int64))
         self.action_masks[agent_id].append(np.asarray(action_mask, dtype=np.float32))
+        self.decision_times[agent_id].append(float(decision_time_s))
         self.actions[agent_id].append(int(action))
         self.log_probs[agent_id].append(float(log_prob))
         self.rewards[agent_id].append(float(reward))

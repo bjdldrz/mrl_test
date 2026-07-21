@@ -61,6 +61,7 @@ from utils.scenario_cache import (
 )
 
 from .action_set_actor import ActionSetActorCritic
+from .action_entities import EdgeDecisionRecord
 from .candidate_scorer import TrainableCandidateValueScorer
 from .config import DASConfig
 from .env_adapter import V2CandidateAdapter
@@ -175,6 +176,9 @@ def _build_das_config(args) -> DASConfig:
         candidate_dropout_prob=args.candidate_dropout_prob,
         candidate_scorer_mode=args.candidate_scorer_mode,
         candidate_scorer_mix=args.candidate_scorer_mix,
+        candidate_scorer_mix_start=args.candidate_scorer_mix_start,
+        candidate_scorer_mix_end=args.candidate_scorer_mix_end,
+        candidate_scorer_mix_anneal_epochs=args.candidate_scorer_mix_anneal_epochs,
         candidate_scorer_hidden_dim=args.candidate_scorer_hidden_dim,
         candidate_scorer_lr=args.candidate_scorer_lr,
         candidate_warmup_edges=args.candidate_warmup_edges,
@@ -303,18 +307,48 @@ def _candidate_scorer_model_state(
     return _torch_state_to_numpy(candidate_scorer.model.state_dict())
 
 
+def _candidate_scorer_mix_for_iter(das_cfg: DASConfig, iteration: int) -> float:
+    if das_cfg.candidate_scorer_mix_anneal_epochs <= 0:
+        return float(das_cfg.candidate_scorer_mix)
+    start = (
+        float(das_cfg.candidate_scorer_mix)
+        if das_cfg.candidate_scorer_mix_start is None
+        else float(das_cfg.candidate_scorer_mix_start)
+    )
+    end = (
+        float(das_cfg.candidate_scorer_mix)
+        if das_cfg.candidate_scorer_mix_end is None
+        else float(das_cfg.candidate_scorer_mix_end)
+    )
+    denom = max(float(das_cfg.candidate_scorer_mix_anneal_epochs - 1), 1.0)
+    frac = min(max(float(iteration) / denom, 0.0), 1.0)
+    return float(start + frac * (end - start))
+
+
+def _apply_candidate_scorer_mix(
+    candidate_scorer: Optional[TrainableCandidateValueScorer],
+    das_cfg: DASConfig,
+    iteration: int,
+) -> float:
+    mix = _candidate_scorer_mix_for_iter(das_cfg, iteration)
+    if candidate_scorer is not None:
+        candidate_scorer.mix = mix
+    return mix
+
+
 def _build_worker_candidate_scorer(
     v2_cfg: CVAMAPPOV2Config,
     das_cfg: DASConfig,
     state: Optional[Dict[str, np.ndarray]],
     device: str = "cpu",
+    mix_override: Optional[float] = None,
 ) -> Optional[TrainableCandidateValueScorer]:
     if state is None or das_cfg.candidate_scorer_mode == "v2_heuristic":
         return None
     scorer = TrainableCandidateValueScorer(
         v2_cfg,
         mode=das_cfg.candidate_scorer_mode,
-        mix=das_cfg.candidate_scorer_mix,
+        mix=das_cfg.candidate_scorer_mix if mix_override is None else float(mix_override),
         hidden_dim=das_cfg.candidate_scorer_hidden_dim,
         lr=das_cfg.candidate_scorer_lr,
         device=device,
@@ -494,6 +528,7 @@ def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> Candidat
     targets: List[np.ndarray] = []
     negative_rows: List[np.ndarray] = []
     negative_anchors: List[np.ndarray] = []
+    edge_records: List[EdgeDecisionRecord] = []
     positive_offset = 0
     n_conflict_edges = 0
     conflict_penalty_sum = 0.0
@@ -503,6 +538,20 @@ def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> Candidat
         n_conflict_edges += int(sample.n_conflict_edges)
         conflict_penalty_sum += float(sample.conflict_penalty_sum)
         load_penalty_sum += float(sample.load_penalty_sum)
+        for record in sample.edge_records:
+            edge_records.append(
+                EdgeDecisionRecord(
+                    decision_id=len(edge_records),
+                    time_s=record.time_s,
+                    agent_id=record.agent_id,
+                    action_idx=record.action_idx,
+                    action_type=record.action_type,
+                    target_id=record.target_id,
+                    edge_features=record.edge_features,
+                    target=record.target,
+                    predicted_value=record.predicted_value,
+                )
+            )
 
         edges = np.asarray(sample.edge_features, dtype=np.float32)
         advantages = np.asarray(sample.advantages, dtype=np.float32).reshape(-1)
@@ -536,6 +585,7 @@ def _merge_candidate_aux_samples(samples: List[CandidateAuxSamples]) -> Candidat
         n_conflict_edges=int(n_conflict_edges),
         conflict_penalty_sum=float(conflict_penalty_sum),
         load_penalty_sum=float(load_penalty_sum),
+        edge_records=edge_records,
     )
 
 
@@ -555,6 +605,7 @@ def _eval_worker(payload):
         das_cfg,
         payload.get("candidate_scorer_state"),
         device=str(eval_device),
+        mix_override=payload.get("candidate_scorer_mix"),
     )
 
     env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
@@ -744,6 +795,7 @@ def _batched_eval_single_process(
     candidate_scorer_state: Optional[Dict[str, np.ndarray]],
     eval_device: str,
     batch_envs: int,
+    candidate_scorer_mix: Optional[float],
     show_progress: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, float]]]:
     device = torch.device(eval_device)
@@ -755,6 +807,7 @@ def _batched_eval_single_process(
         das_cfg,
         candidate_scorer_state,
         device=str(device),
+        mix_override=candidate_scorer_mix,
     )
     _profile_stop(profile, "setup", setup_started)
     runtimes: List[Dict[str, Any]] = []
@@ -890,6 +943,9 @@ def _parallel_eval(
             candidate_scorer_state=candidate_scorer_state,
             eval_device=eval_device,
             batch_envs=n_workers,
+            candidate_scorer_mix=(
+                None if candidate_scorer is None else float(candidate_scorer.mix)
+            ),
             show_progress=show_progress,
         )
         raw = sorted(raw, key=lambda row: row["idx"])
@@ -915,6 +971,9 @@ def _parallel_eval(
             "scenario": scenario,
             "model_state": model_state,
             "candidate_scorer_state": candidate_scorer_state,
+            "candidate_scorer_mix": (
+                None if candidate_scorer is None else float(candidate_scorer.mix)
+            ),
             "eval_device": eval_device,
             "eval_deterministic": args.eval_deterministic,
             "eval_profile": bool(getattr(args, "eval_profile", False)),
@@ -1014,6 +1073,7 @@ def _collect_rollout_worker(payload):
         das_cfg,
         payload.get("candidate_scorer_state"),
         device="cpu",
+        mix_override=payload.get("candidate_scorer_mix"),
     )
 
     env = _make_env(cfg, args, v2_cfg, candidate_scorer=candidate_scorer)
@@ -1130,6 +1190,7 @@ def train_and_eval(
     )
     try:
         for it in iterator:
+            current_candidate_mix = _apply_candidate_scorer_mix(candidate_scorer, das_cfg, it)
             if max_train_workers > 1:
                 model_state = _torch_state_to_numpy(model.state_dict())
                 scorer_state = _candidate_scorer_model_state(candidate_scorer)
@@ -1152,6 +1213,7 @@ def train_and_eval(
                         "scenario": (routine, dynamic),
                         "model_state": model_state,
                         "candidate_scorer_state": scorer_state,
+                        "candidate_scorer_mix": current_candidate_mix,
                         "rollout_steps": worker_steps,
                         "seed": int(rng.randint(0, 2**31 - 1)),
                     })
@@ -1228,6 +1290,7 @@ def train_and_eval(
                 "reward": float(reward),
                 "rollout_steps": int(rollout_steps_done),
                 "train_env_workers": int(max_train_workers),
+                "candidate_scorer_mix": float(current_candidate_mix),
                 **{k: float(v) for k, v in metrics.items()},
             }
             logs.append(row)
@@ -1320,6 +1383,9 @@ def _build_candidate_scorer(cfg, args, v2_cfg, das_cfg, train_payload, mission_g
     return scorer, {
         "mode": das_cfg.candidate_scorer_mode,
         "mix": das_cfg.candidate_scorer_mix,
+        "mix_start": das_cfg.candidate_scorer_mix_start,
+        "mix_end": das_cfg.candidate_scorer_mix_end,
+        "mix_anneal_epochs": das_cfg.candidate_scorer_mix_anneal_epochs,
         "hidden_dim": das_cfg.candidate_scorer_hidden_dim,
         "lr": das_cfg.candidate_scorer_lr,
         "warmup_edges": int(stats.n_edges),
@@ -1352,6 +1418,7 @@ def _save_candidate_scorer(
         path,
     )
     info["checkpoint"] = path.name
+    info["final_mix"] = float(candidate_scorer.mix)
     info["aux_update_count"] = int(candidate_scorer.aux_update_count)
     info["aux_edges_seen"] = int(candidate_scorer.aux_edges_seen)
     info["last_aux_update"] = candidate_scorer.last_aux_update_stats.__dict__
@@ -1561,6 +1628,9 @@ def main() -> None:
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
     parser.add_argument("--candidate_scorer_mode", choices=["v2_heuristic", "learned", "hybrid"], default="hybrid")
     parser.add_argument("--candidate_scorer_mix", type=float, default=0.35)
+    parser.add_argument("--candidate_scorer_mix_start", type=float, default=None)
+    parser.add_argument("--candidate_scorer_mix_end", type=float, default=None)
+    parser.add_argument("--candidate_scorer_mix_anneal_epochs", type=int, default=0)
     parser.add_argument("--candidate_scorer_hidden_dim", type=int, default=64)
     parser.add_argument("--candidate_scorer_lr", type=float, default=1e-3)
     parser.add_argument("--candidate_warmup_edges", type=int, default=4096)
@@ -1681,6 +1751,9 @@ def main() -> None:
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,
             "candidate_scorer_mode": das_cfg.candidate_scorer_mode,
             "candidate_scorer_mix": das_cfg.candidate_scorer_mix,
+            "candidate_scorer_mix_start": das_cfg.candidate_scorer_mix_start,
+            "candidate_scorer_mix_end": das_cfg.candidate_scorer_mix_end,
+            "candidate_scorer_mix_anneal_epochs": das_cfg.candidate_scorer_mix_anneal_epochs,
             "candidate_scorer_hidden_dim": das_cfg.candidate_scorer_hidden_dim,
             "candidate_scorer_lr": das_cfg.candidate_scorer_lr,
             "candidate_warmup_edges": das_cfg.candidate_warmup_edges,

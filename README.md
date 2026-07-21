@@ -155,6 +155,9 @@ Primary DAS ablation knobs:
 - `--candidate_dropout_prob`
 - `--candidate_scorer_mode v2_heuristic|learned|hybrid`
 - `--candidate_scorer_mix`
+- `--candidate_scorer_mix_start`
+- `--candidate_scorer_mix_end`
+- `--candidate_scorer_mix_anneal_epochs`
 - `--candidate_warmup_edges`
 - `--candidate_warmup_epochs`
 - `--no_candidate_aux_update`
@@ -202,6 +205,8 @@ Primary DAS ablation knobs:
 Auxiliary scorer updates apply to `learned` and `hybrid` scorer modes. Runs
 with `--candidate_scorer_mode v2_heuristic` automatically record the auxiliary
 path as disabled.
+`--candidate_scorer_mix*` is the learned-value weight in hybrid mode:
+`0.0` is pure heuristic scoring and `1.0` is pure learned edge value.
 
 ## Staged Optimization Runs
 

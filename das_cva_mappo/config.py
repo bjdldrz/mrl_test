@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Optional, Tuple
 
 from .temporal_features import TEMPORAL_WINDOW_FEATURE_DIM
 
@@ -43,6 +43,9 @@ class DASConfig:
 
     candidate_scorer_mode: str = "hybrid"
     candidate_scorer_mix: float = 0.35
+    candidate_scorer_mix_start: Optional[float] = None
+    candidate_scorer_mix_end: Optional[float] = None
+    candidate_scorer_mix_anneal_epochs: int = 0
     candidate_scorer_hidden_dim: int = 64
     candidate_scorer_lr: float = 1e-3
     candidate_warmup_edges: int = 4096
@@ -98,6 +101,12 @@ class DASConfig:
             raise ValueError("idle_aux_coeff must be non-negative")
         if not 0.0 <= float(self.candidate_scorer_mix) <= 1.0:
             raise ValueError("candidate_scorer_mix must be in [0, 1]")
+        for name in ("candidate_scorer_mix_start", "candidate_scorer_mix_end"):
+            value = getattr(self, name)
+            if value is not None and not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+        if self.candidate_scorer_mix_anneal_epochs < 0:
+            raise ValueError("candidate_scorer_mix_anneal_epochs must be non-negative")
         if self.candidate_scorer_hidden_dim <= 0:
             raise ValueError("candidate_scorer_hidden_dim must be positive")
         if self.candidate_scorer_lr <= 0:

@@ -139,6 +139,10 @@ def kv(flag: str, value: Any) -> list[str]:
     return [flag, str(value)]
 
 
+def optional_kv(flag: str, value: Any) -> list[str]:
+    return [] if value is None else kv(flag, value)
+
+
 def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
     return [
         sys.executable,
@@ -191,6 +195,9 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--temporal_early_delivery_weight", args.temporal_early_delivery_weight),
         *kv("--temporal_state_encoder", args.temporal_state_encoder),
         *kv("--temporal_state_history_len", args.temporal_state_history_len),
+        *optional_kv("--candidate_scorer_mix_start", args.candidate_scorer_mix_start),
+        *optional_kv("--candidate_scorer_mix_end", args.candidate_scorer_mix_end),
+        *kv("--candidate_scorer_mix_anneal_epochs", args.candidate_scorer_mix_anneal_epochs),
         *kv("--idle_aux_coeff", "0.05"),
         *kv("--action_feature_mode", "full"),
         *kv("--candidate_adapter_mode", "v2_compat"),
@@ -946,6 +953,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temporal_early_delivery_weight", type=float, default=0.35)
     parser.add_argument("--temporal_state_encoder", choices=["mlp", "gru"], default="mlp")
     parser.add_argument("--temporal_state_history_len", type=int, default=1)
+    parser.add_argument("--candidate_scorer_mix_start", type=float, default=None)
+    parser.add_argument("--candidate_scorer_mix_end", type=float, default=None)
+    parser.add_argument("--candidate_scorer_mix_anneal_epochs", type=int, default=0)
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

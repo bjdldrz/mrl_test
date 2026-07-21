@@ -102,11 +102,17 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--temporal_early_delivery_weight" in runner
     assert "--temporal_state_encoder" in runner
     assert "--temporal_state_history_len" in runner
+    assert "--candidate_scorer_mix_start" in runner
+    assert "--candidate_scorer_mix_end" in runner
+    assert "--candidate_scorer_mix_anneal_epochs" in runner
     assert "--no_response_budget_features" in suite
     assert "--no_temporal_window_features" in suite
     assert "--no_early_delivery_temporal_features" in suite
     assert "--temporal_early_delivery_weight" in suite
     assert "--temporal_state_encoder" in suite
+    assert "--candidate_scorer_mix_start" in suite
+    assert "--candidate_scorer_mix_end" in suite
+    assert "--candidate_scorer_mix_anneal_epochs" in suite
     assert "avg_dynamic_downlink_replan_gain_s" in suite
     assert "abl_stage2_no_response_budget_features" in suite
     assert "abl_stage2_no_temporal_window_features" in suite
@@ -132,6 +138,12 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "_write_eval_dynamic_task_diagnostics" in runner
     assert "estimated_downlink_queue_s" in scorer
     assert "EDGE_FEATURE_DIM = 28 + TEMPORAL_WINDOW_FEATURE_DIM" in das_scorer
+    assert "EdgeDecisionRecord" in (ROOT / "das_cva_mappo" / "action_entities.py").read_text(
+        encoding="utf-8"
+    )
+    assert "test_action_set_actor_permutation_equivariance" in (
+        ROOT / "tests" / "test_action_set_actor_equivariance.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_paper_experiment_suite_wraps_stage_suite() -> None:
