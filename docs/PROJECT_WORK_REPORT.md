@@ -503,7 +503,33 @@ python3 scripts/run_paper_experiment_suite.py \
 
 `paper_core` 覆盖阶段推进、V0.33 时序对比、Stage-2 响应/交付机制消融和 Stage-4 模型组件消融，并跳过当前参数下等价的 Stage-2 重复标签；`paper_full` 会额外加入历史标签和探索性诊断消融，耗时明显更长。运行完成后优先读取对应 suite 下的 `summary.md`、`summary.csv` 和 `paper_experiment_plan.md`。
 
-### 7.6 12 星任务翻倍压力测试
+### 7.6 V0.34 候选组合搜索
+
+基于 `das_paper_core_v033` 的单 seed 结果，下一步不应马上把所有看起来有效的单项改成默认主方法，而应先做一个小型组合搜索。当前新增计划 `v034_candidate`，重点验证：
+
+- GRU state-history 是否在 Stage-4 强配置下仍优于 MLP state encoder。
+- 去掉 `candidate_aux_update` 与 `idle_aux` 后，组合收益是否仍稳定。
+- storage pressure 是应该去掉、减弱到 `0.08`，还是保留 Stage-4 的 `0.16`。
+
+建议运行：
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan v034_candidate \
+  --suite_name das_v034_candidate_search \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+该计划包含 `stage4_storage_pressure` 作为 V0.33 对照，以及四个 V0.34 候选组合：`cmp_v034_gru_no_storage_no_aux_no_idle`、`cmp_v034_mlp_no_storage_no_aux_no_idle`、`cmp_v034_gru_weak_storage_no_aux_no_idle` 和 `cmp_v034_gru_storage_no_aux_no_idle`。如果最优组合相比 `stage4_storage_pressure` 在 `total_reward`、`dynamic_completion_rate_raw`、`avg_dynamic_response_s` 和 `avg_downlink_queue_s` 上同时更好或至少没有明显退化，再把它升级为下一版主方法。
+
+### 7.7 12 星任务翻倍压力测试
 
 为了验证方法在更高负载下是否仍然稳定，新增一个聚焦压力测试计划 `stress_12sat_double_tasks`。该计划自动使用：
 

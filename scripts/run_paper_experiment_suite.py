@@ -86,6 +86,14 @@ STRESS_SCALE_EXPERIMENTS = [
     "abl_stage2_no_downlink_aware_edge_value",
 ]
 
+V034_CANDIDATE_EXPERIMENTS = [
+    "stage4_storage_pressure",
+    "cmp_v034_gru_no_storage_no_aux_no_idle",
+    "cmp_v034_mlp_no_storage_no_aux_no_idle",
+    "cmp_v034_gru_weak_storage_no_aux_no_idle",
+    "cmp_v034_gru_storage_no_aux_no_idle",
+]
+
 
 PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
     "quick_temporal": {
@@ -134,6 +142,10 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
             "vtw_cache_dir": "runs/scenario_cache/das_cva_stress_12sat_double_seed42/vtw_cache",
         },
     },
+    "v034_candidate": {
+        "description": "Focused V0.34 candidate search after paper-core ablation results.",
+        "experiments": V034_CANDIDATE_EXPERIMENTS,
+    },
 }
 
 
@@ -171,6 +183,10 @@ EXPERIMENT_NOTES = {
     "abl_no_stale_rescue": "Remove stale-owner rescue bonus.",
     "abl_no_wait_penalty": "Remove candidate and allocator wait penalties.",
     "abl_no_invalid_hard_negatives": "Exclude invalid hard negatives from hybrid scorer auxiliary ranking.",
+    "cmp_v034_gru_no_storage_no_aux_no_idle": "Candidate V0.34: GRU temporal encoder, no storage pressure, no candidate aux update, no idle aux.",
+    "cmp_v034_mlp_no_storage_no_aux_no_idle": "Ablate GRU from the V0.34 candidate combination.",
+    "cmp_v034_gru_weak_storage_no_aux_no_idle": "Candidate V0.34 with weaker storage pressure instead of removing it.",
+    "cmp_v034_gru_storage_no_aux_no_idle": "Candidate V0.34 with original Stage-4 storage pressure kept.",
 }
 
 

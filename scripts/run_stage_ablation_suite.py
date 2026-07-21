@@ -362,6 +362,21 @@ def hybrid_scorer_args(candidate_aux_load_penalty: str) -> list[str]:
     ]
 
 
+def v034_candidate_args(candidate_storage_penalty: str, use_gru: bool = True) -> list[str]:
+    args = [
+        *stage4_common(candidate_storage_penalty=candidate_storage_penalty),
+        *hybrid_scorer_args(candidate_aux_load_penalty="0.00"),
+        "--no_candidate_aux_update",
+        *kv("--idle_aux_coeff", "0.00"),
+    ]
+    if use_gru:
+        args.extend([
+            *kv("--temporal_state_encoder", "gru"),
+            *kv("--temporal_state_history_len", 4),
+        ])
+    return args
+
+
 def ablation_specs() -> list[dict[str, Any]]:
     stage2_base = [*stage2_common()]
     stage2_dynamic_base = [*stage2_dynamic_priority_common()]
@@ -643,6 +658,38 @@ def ablation_specs() -> list[dict[str, Any]]:
                 *base,
                 *kv("--idle_aux_coeff", "0.00"),
                 *hybrid,
+            ],
+        },
+        {
+            "name": "cmp_v034_gru_no_storage_no_aux_no_idle",
+            "group": "v034_candidate",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(candidate_storage_penalty="0.00", use_gru=True),
+            ],
+        },
+        {
+            "name": "cmp_v034_mlp_no_storage_no_aux_no_idle",
+            "group": "v034_candidate",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(candidate_storage_penalty="0.00", use_gru=False),
+            ],
+        },
+        {
+            "name": "cmp_v034_gru_weak_storage_no_aux_no_idle",
+            "group": "v034_candidate",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(candidate_storage_penalty="0.08", use_gru=True),
+            ],
+        },
+        {
+            "name": "cmp_v034_gru_storage_no_aux_no_idle",
+            "group": "v034_candidate",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(candidate_storage_penalty="0.16", use_gru=True),
             ],
         },
     ]

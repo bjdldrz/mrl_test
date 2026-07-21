@@ -646,6 +646,25 @@ python3 scripts/run_paper_experiment_suite.py \
   --no_progress
 ```
 
+Focused V0.34 candidate search after the paper-core ablation results. This
+checks whether combining GRU temporal state with disabled candidate auxiliary
+updates, disabled idle auxiliary loss, and weaker/no storage pressure should
+become the next main method:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan v034_candidate \
+  --suite_name das_v034_candidate_search \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
 12-satellite doubled-task stress test. First generate the reusable pressure
 scenario/VTW cache:
 
