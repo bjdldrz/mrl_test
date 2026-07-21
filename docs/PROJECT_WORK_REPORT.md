@@ -529,7 +529,35 @@ python3 scripts/run_paper_experiment_suite.py \
 
 该计划包含 `stage4_storage_pressure` 作为 V0.33 对照，以及四个 V0.34 候选组合：`cmp_v034_gru_no_storage_no_aux_no_idle`、`cmp_v034_mlp_no_storage_no_aux_no_idle`、`cmp_v034_gru_weak_storage_no_aux_no_idle` 和 `cmp_v034_gru_storage_no_aux_no_idle`。如果最优组合相比 `stage4_storage_pressure` 在 `total_reward`、`dynamic_completion_rate_raw`、`avg_dynamic_response_s` 和 `avg_downlink_queue_s` 上同时更好或至少没有明显退化，再把它升级为下一版主方法。
 
-### 7.7 12 星任务翻倍压力测试
+### 7.7 V0.35 idle auxiliary 小权重扫描
+
+V0.34 结果显示 `cmp_v034_gru_weak_storage_no_aux_no_idle` 是当前最强候选，但 `eval_idle_when_valid_rate` 明显升高。这说明完全关闭 idle auxiliary 虽然提升了 reward 和响应，但论文解释上会留下风险。下一版实验不改变其它机制，只扫描 idle auxiliary 小权重：
+
+- `cmp_v034_gru_weak_storage_no_aux_no_idle`：`idle_aux_coeff=0.00`
+- `cmp_v035_gru_weak_storage_no_aux_idle_0p005`：`idle_aux_coeff=0.005`
+- `cmp_v035_gru_weak_storage_no_aux_idle_0p01`：`idle_aux_coeff=0.01`
+- `cmp_v035_gru_weak_storage_no_aux_idle_0p02`：`idle_aux_coeff=0.02`
+- `cmp_v035_gru_weak_storage_no_aux_idle_0p05`：`idle_aux_coeff=0.05`
+
+建议运行：
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan v035_idle_sweep \
+  --suite_name das_v035_idle_sweep \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+选择标准：优先找 `eval_idle_when_valid_rate` 明显低于 V0.34 no-idle 版本，同时 `total_reward`、`dynamic_completion_rate_raw`、`avg_dynamic_response_s` 和 `avg_downlink_queue_s` 不明显退化的配置。如果 `0.005` 或 `0.01` 能压低 idle 且保持收益，则将其作为 V0.35 主方法候选；如果所有非零权重都损害收益，则保留 `idle_aux_coeff=0.00`，但论文中需把 idle 指标作为局限说明。
+
+### 7.8 12 星任务翻倍压力测试
 
 为了验证方法在更高负载下是否仍然稳定，新增一个聚焦压力测试计划 `stress_12sat_double_tasks`。该计划自动使用：
 

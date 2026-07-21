@@ -94,6 +94,15 @@ V034_CANDIDATE_EXPERIMENTS = [
     "cmp_v034_gru_storage_no_aux_no_idle",
 ]
 
+V035_IDLE_SWEEP_EXPERIMENTS = [
+    "stage4_storage_pressure",
+    "cmp_v034_gru_weak_storage_no_aux_no_idle",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p005",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p01",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p02",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p05",
+]
+
 
 PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
     "quick_temporal": {
@@ -146,6 +155,10 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
         "description": "Focused V0.34 candidate search after paper-core ablation results.",
         "experiments": V034_CANDIDATE_EXPERIMENTS,
     },
+    "v035_idle_sweep": {
+        "description": "Idle auxiliary coefficient sweep around the best V0.34 weak-storage GRU candidate.",
+        "experiments": V035_IDLE_SWEEP_EXPERIMENTS,
+    },
 }
 
 
@@ -187,6 +200,10 @@ EXPERIMENT_NOTES = {
     "cmp_v034_mlp_no_storage_no_aux_no_idle": "Ablate GRU from the V0.34 candidate combination.",
     "cmp_v034_gru_weak_storage_no_aux_no_idle": "Candidate V0.34 with weaker storage pressure instead of removing it.",
     "cmp_v034_gru_storage_no_aux_no_idle": "Candidate V0.34 with original Stage-4 storage pressure kept.",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p005": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.005.",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p01": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.01.",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p02": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.02.",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p05": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.05.",
 }
 
 

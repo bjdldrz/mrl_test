@@ -121,6 +121,10 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "cmp_v034_mlp_no_storage_no_aux_no_idle" in suite
     assert "cmp_v034_gru_weak_storage_no_aux_no_idle" in suite
     assert "cmp_v034_gru_storage_no_aux_no_idle" in suite
+    assert "cmp_v035_gru_weak_storage_no_aux_idle_0p005" in suite
+    assert "cmp_v035_gru_weak_storage_no_aux_idle_0p01" in suite
+    assert "cmp_v035_gru_weak_storage_no_aux_idle_0p02" in suite
+    assert "cmp_v035_gru_weak_storage_no_aux_idle_0p05" in suite
     assert "dynamic_downlink_priority: bool = False" in config
     assert "downlink_aware_candidate_score: bool = True" in config
     assert "_rebatch_all_downlinks_priority" in env
@@ -139,6 +143,7 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert '"quick_temporal"' in text
     assert '"paper_full"' in text
     assert '"v034_candidate"' in text
+    assert '"v035_idle_sweep"' in text
     assert '"stress_12sat_double_tasks"' in text
     assert '"n_satellites": 12' in text
     assert '"n_routine": 1200' in text
@@ -154,6 +159,7 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert "abl_stage2_no_temporal_window_features" in text
     assert "abl_stage2_no_downlink_aware_edge_value" in text
     assert "cmp_v034_gru_no_storage_no_aux_no_idle" in text
+    assert "cmp_v035_gru_weak_storage_no_aux_idle_0p01" in text
 
 
 if __name__ == "__main__":

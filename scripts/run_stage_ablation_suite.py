@@ -362,12 +362,16 @@ def hybrid_scorer_args(candidate_aux_load_penalty: str) -> list[str]:
     ]
 
 
-def v034_candidate_args(candidate_storage_penalty: str, use_gru: bool = True) -> list[str]:
+def v034_candidate_args(
+    candidate_storage_penalty: str,
+    use_gru: bool = True,
+    idle_aux_coeff: str = "0.00",
+) -> list[str]:
     args = [
         *stage4_common(candidate_storage_penalty=candidate_storage_penalty),
         *hybrid_scorer_args(candidate_aux_load_penalty="0.00"),
         "--no_candidate_aux_update",
-        *kv("--idle_aux_coeff", "0.00"),
+        *kv("--idle_aux_coeff", idle_aux_coeff),
     ]
     if use_gru:
         args.extend([
@@ -690,6 +694,54 @@ def ablation_specs() -> list[dict[str, Any]]:
             "base_stage": "stage4",
             "args": [
                 *v034_candidate_args(candidate_storage_penalty="0.16", use_gru=True),
+            ],
+        },
+        {
+            "name": "cmp_v035_gru_weak_storage_no_aux_idle_0p005",
+            "group": "v035_idle_sweep",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(
+                    candidate_storage_penalty="0.08",
+                    use_gru=True,
+                    idle_aux_coeff="0.005",
+                ),
+            ],
+        },
+        {
+            "name": "cmp_v035_gru_weak_storage_no_aux_idle_0p01",
+            "group": "v035_idle_sweep",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(
+                    candidate_storage_penalty="0.08",
+                    use_gru=True,
+                    idle_aux_coeff="0.01",
+                ),
+            ],
+        },
+        {
+            "name": "cmp_v035_gru_weak_storage_no_aux_idle_0p02",
+            "group": "v035_idle_sweep",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(
+                    candidate_storage_penalty="0.08",
+                    use_gru=True,
+                    idle_aux_coeff="0.02",
+                ),
+            ],
+        },
+        {
+            "name": "cmp_v035_gru_weak_storage_no_aux_idle_0p05",
+            "group": "v035_idle_sweep",
+            "base_stage": "stage4",
+            "args": [
+                *v034_candidate_args(
+                    candidate_storage_penalty="0.08",
+                    use_gru=True,
+                    idle_aux_coeff="0.05",
+                ),
             ],
         },
     ]

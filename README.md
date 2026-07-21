@@ -665,6 +665,25 @@ python3 scripts/run_paper_experiment_suite.py \
   --no_progress
 ```
 
+V0.35 idle auxiliary sweep. Run this after V0.34 candidate results if the best
+weak-storage GRU candidate improves reward/response but raises
+`eval_idle_when_valid_rate`; it searches for the smallest idle auxiliary weight
+that controls idle without losing the V0.34 gains:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan v035_idle_sweep \
+  --suite_name das_v035_idle_sweep \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
 12-satellite doubled-task stress test. First generate the reusable pressure
 scenario/VTW cache:
 
