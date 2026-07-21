@@ -79,6 +79,13 @@ PAPER_FULL_EXTRA_ABLATIONS = [
     "abl_no_invalid_hard_negatives",
 ]
 
+STRESS_SCALE_EXPERIMENTS = [
+    "stage2_candidate_owner_repair",
+    "stage4_storage_pressure",
+    "abl_no_storage_pressure",
+    "abl_stage2_no_downlink_aware_edge_value",
+]
+
 
 PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
     "quick_temporal": {
@@ -114,6 +121,16 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
             *STAGE4_MODEL_ABLATIONS,
             *PAPER_FULL_EXTRA_ABLATIONS,
         ],
+    },
+    "stress_12sat_double_tasks": {
+        "description": "Focused stress test with 12 satellites and doubled routine/dynamic tasks.",
+        "experiments": STRESS_SCALE_EXPERIMENTS,
+        "default_overrides": {
+            "n_satellites": 12,
+            "n_routine": 1200,
+            "n_dynamic": 300,
+            "eval_max_steps": 12000,
+        },
     },
 }
 
@@ -179,6 +196,24 @@ def selected_experiments(args: argparse.Namespace) -> list[str]:
     if args.experiments:
         return unique_order(args.experiments)
     return unique_order(list(PLAN_DEFINITIONS[args.plan]["experiments"]))
+
+
+def provided_option_names(argv: list[str]) -> set[str]:
+    provided = set()
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        provided.add(token.split("=", 1)[0])
+    return provided
+
+
+def apply_plan_defaults(args: argparse.Namespace, provided_options: set[str]) -> None:
+    defaults = PLAN_DEFINITIONS[args.plan].get("default_overrides", {})
+    for key, value in defaults.items():
+        flag_variants = {f"--{key}", f"--{key.replace('_', '-')}"}
+        if flag_variants & provided_options:
+            continue
+        setattr(args, key, value)
 
 
 def build_stage_command(args: argparse.Namespace, experiments: list[str], unknown_args: list[str]) -> list[str]:
@@ -250,6 +285,10 @@ def build_stage_command(args: argparse.Namespace, experiments: list[str], unknow
 def print_plans() -> None:
     for name, spec in PLAN_DEFINITIONS.items():
         print(f"{name}: {spec['description']}")
+        defaults = spec.get("default_overrides", {})
+        if defaults:
+            default_text = ", ".join(f"{key}={value}" for key, value in defaults.items())
+            print(f"  defaults: {default_text}")
         for experiment in unique_order(list(spec["experiments"])):
             print(f"  - {experiment}: {EXPERIMENT_NOTES.get(experiment, '')}")
 
@@ -270,6 +309,7 @@ def write_plan_files(
         "suite_name": args.suite_name,
         "elapsed_s": elapsed_s,
         "returncode": returncode,
+        "plan_default_overrides": PLAN_DEFINITIONS[args.plan].get("default_overrides", {}),
         "experiments": [
             {
                 "name": experiment,
@@ -363,11 +403,13 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args, unknown_args = parse_args(sys.argv[1:] if argv is None else argv)
+    raw_argv = sys.argv[1:] if argv is None else argv
+    args, unknown_args = parse_args(raw_argv)
     if args.list_plans:
         print_plans()
         return 0
 
+    apply_plan_defaults(args, provided_option_names(raw_argv))
     experiments = selected_experiments(args)
     if not args.suite_name:
         args.suite_name = safe_name(f"{args.plan}_{timestamp()}")

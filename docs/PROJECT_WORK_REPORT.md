@@ -376,6 +376,7 @@ response_budget = dynamic_response_target_s - (current_time_s - arrival_time_s)
 | 模型消融 | `abl_no_idle_aux` | 对比 `stage4_storage_pressure` | 验证 idle auxiliary loss 是否减少“有可行动作仍选择 idle”的无效等待。 | `eval_idle_when_valid_rate`、`eval_idle_action_rate`、`total_reward` |
 | 模型消融 | `abl_no_future_task_execution` | 对比 `stage4_storage_pressure` | 在 Stage-4 强配置下复验 future macro 对最终方法是否仍有贡献。 | `n_future_task_executions`、`total_reward`、`dynamic_completion_rate` |
 | 模型消融 | `abl_no_storage_pressure` | 对比 `stage4_storage_pressure` | 在 Stage-4 强配置下验证存储/下传压力项是否降低过期丢弃和队列阻塞。 | `avg_downlink_queue_s`、`n_storage_expired_drops`、`dynamic_task_downlink_queue_block_rate` |
+| 压力测试 | `stress_12sat_double_tasks` | 12 星、routine 1200、dynamic 300；内部对比 `stage2_candidate_owner_repair`、`stage4_storage_pressure`、`abl_no_storage_pressure`、`abl_stage2_no_downlink_aware_edge_value` | 验证主方法在星座规模和任务负载同时增大时，是否仍能维持候选有效性、动态响应和下传闭环；同时检验 storage/downlink-aware 机制在高压场景下是否更关键。 | `total_reward`、`dynamic_completion_rate_raw`、`avg_dynamic_response_s`、`avg_downlink_queue_s`、`eval_wall_time_s` |
 
 表格使用时应注意：`stage2_candidate_owner_repair` 在当前默认参数下可作为 V0.33 early-delivery temporal 主基线；`paper_full` 中保留的 `cmp_stage2_temporal_early_delivery_features`、`abl_stage2_no_dynamic_downlink_priority` 和 `abl_stage2_no_early_delivery_temporal_features` 更多用于复现历史表或显式标注，不一定都需要进入论文主表。
 
@@ -501,6 +502,34 @@ python3 scripts/run_paper_experiment_suite.py \
 ```
 
 `paper_core` 覆盖阶段推进、V0.33 时序对比、Stage-2 响应/交付机制消融和 Stage-4 模型组件消融，并跳过当前参数下等价的 Stage-2 重复标签；`paper_full` 会额外加入历史标签和探索性诊断消融，耗时明显更长。运行完成后优先读取对应 suite 下的 `summary.md`、`summary.csv` 和 `paper_experiment_plan.md`。
+
+### 7.6 12 星任务翻倍压力测试
+
+为了验证方法在更高负载下是否仍然稳定，新增一个聚焦压力测试计划 `stress_12sat_double_tasks`。该计划自动使用：
+
+- `n_satellites=12`
+- `n_routine=1200`
+- `n_dynamic=300`
+- `eval_max_steps=12000`
+- `n_ground_stations=4`
+
+其中地面站数量保持 4 个不变，是为了刻意保留共享下传瓶颈，检验下传感知边价值和存储压力机制在高压场景下是否仍有作用。建议运行：
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan stress_12sat_double_tasks \
+  --suite_name das_stress_12sat_double_tasks_v033 \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+该压力测试默认只跑四组关键对照：`stage2_candidate_owner_repair`、`stage4_storage_pressure`、`abl_no_storage_pressure` 和 `abl_stage2_no_downlink_aware_edge_value`。重点观察 `avg_downlink_queue_s`、`dynamic_task_downlink_queue_block_rate`、`avg_dynamic_response_s`、`n_storage_expired_drops` 和 `eval_wall_time_s`。
 
 ## 8. 当前结论
 

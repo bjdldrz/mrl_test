@@ -646,6 +646,24 @@ python3 scripts/run_paper_experiment_suite.py \
   --no_progress
 ```
 
+12-satellite doubled-task stress test. This keeps the ground-station count at
+4 intentionally, so the run stresses shared downlink and storage pressure rather
+than only scaling capacity with the constellation:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan stress_12sat_double_tasks \
+  --suite_name das_stress_12sat_double_tasks_v033 \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
 Available plans can be inspected with:
 
 ```bash
