@@ -105,6 +105,11 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--candidate_scorer_mix_start" in runner
     assert "--candidate_scorer_mix_end" in runner
     assert "--candidate_scorer_mix_anneal_epochs" in runner
+    compat_runner = (ROOT / "cva_mappo_v2" / "run_experiment.py").read_text(encoding="utf-8")
+    assert "--candidate_storage_penalty" in compat_runner
+    assert "--candidate_dynamic_response_bonus" in compat_runner
+    assert "--no_downlink_aware_candidate_score" in compat_runner
+    assert "--dynamic_current_slot_bonus" in compat_runner
     assert "--no_response_budget_features" in suite
     assert "--no_temporal_window_features" in suite
     assert "--no_early_delivery_temporal_features" in suite
@@ -174,6 +179,18 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert "cmp_v035_gru_weak_storage_no_aux_idle_0p01" in text
 
 
+def test_paper_baseline_suite_runs_fixed_slot_mappo() -> None:
+    text = (ROOT / "scripts" / "run_paper_baseline_suite.py").read_text(
+        encoding="utf-8"
+    )
+    assert "cva_mappo_v2.run_experiment" in text
+    assert "fixed_slot_mappo_v2_stage1" in text
+    assert "fixed_slot_mappo_v2_stage2" in text
+    assert "fixed_slot_mappo_v2_stage4_heuristic" in text
+    assert "paper_baseline_plan.md" in text
+    assert "summary.csv" in text
+
+
 if __name__ == "__main__":
     test_das_eval_mode_defaults_to_train_path()
     test_compat_runner_eval_mode_defaults_to_train_path()
@@ -183,3 +200,4 @@ if __name__ == "__main__":
     test_eval_device_defaults_to_cpu()
     test_dynamic_iteration_controls_are_exposed()
     test_paper_experiment_suite_wraps_stage_suite()
+    test_paper_baseline_suite_runs_fixed_slot_mappo()

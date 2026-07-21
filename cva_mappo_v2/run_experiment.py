@@ -78,10 +78,25 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         ownership_mask_mode=args.ownership_mask_mode,
         candidate_owner_bonus=args.candidate_owner_bonus,
         slot_selection_mode=args.slot_selection_mode,
+        executable_slot_reserve_ratio=args.executable_slot_reserve_ratio,
+        allow_future_task_execution=not args.no_future_task_execution,
+        future_task_requires_no_current_valid=(
+            args.future_task_requires_no_current_valid
+            and not args.future_task_allow_with_current_valid
+        ),
+        future_task_max_wait_s=args.future_task_max_wait_s,
+        future_routine_max_wait_s=args.future_routine_max_wait_s,
+        routine_future_dynamic_guard_s=args.routine_future_dynamic_guard_s,
+        routine_future_dynamic_penalty=args.routine_future_dynamic_penalty,
+        dynamic_future_bonus=args.dynamic_future_bonus,
+        dynamic_current_slot_bonus=args.dynamic_current_slot_bonus,
+        dynamic_window_wait_weight=args.dynamic_window_wait_weight,
+        drop_ineligible_future_candidates=not args.keep_ineligible_future_candidates,
         replan_interval_s=args.assignment_replan_interval_s,
         replan_horizon_s=args.assignment_replan_horizon_s,
         release_before_deadline_s=args.release_before_deadline_s,
         dynamic_broadcast_window_s=args.dynamic_broadcast_window_s,
+        dynamic_takeover_margin_s=args.dynamic_takeover_margin_s,
         lock_window_s=args.assignment_lock_window_s,
         max_switches_per_task=args.assignment_max_switches_per_task,
         triggers=triggers,
@@ -93,6 +108,25 @@ def _build_v2_config(args) -> CVAMAPPOV2Config:
         w_future_opportunity_loss=args.w_future_opportunity_loss,
         w_load=args.w_load,
         w_owner_stability=args.w_owner_stability,
+        w_wait=args.candidate_wait_penalty,
+        w_storage_pressure=args.candidate_storage_penalty,
+        w_dynamic_urgency=args.candidate_dynamic_urgency_bonus,
+        w_dynamic_response=args.candidate_dynamic_response_bonus,
+        w_dynamic_wait=args.candidate_dynamic_wait_penalty,
+        dynamic_response_target_s=args.dynamic_response_target_s,
+        downlink_aware_candidate_score=not args.no_downlink_aware_candidate_score,
+        downlink_queue_target_s=args.downlink_queue_target_s,
+        w_downlink_queue=args.candidate_downlink_queue_penalty,
+        w_downlink_miss=args.candidate_downlink_miss_penalty,
+        w_dynamic_delivery=args.candidate_dynamic_delivery_bonus,
+        w_dynamic_delivery_delay=args.candidate_dynamic_delivery_delay_penalty,
+        allocator_wait_penalty=args.allocator_wait_penalty,
+        allocator_stale_rescue_bonus=args.allocator_stale_rescue_bonus,
+        allocator_dynamic_urgency_bonus=args.allocator_dynamic_urgency_bonus,
+        allocator_dynamic_response_bonus=args.allocator_dynamic_response_bonus,
+        allocator_dynamic_wait_penalty=args.allocator_dynamic_wait_penalty,
+        dynamic_rescue_response_bonus=args.dynamic_rescue_response_bonus,
+        dynamic_downlink_priority=args.dynamic_downlink_priority,
     )
     cfg.validate()
     return cfg
@@ -685,6 +719,40 @@ def main():
                         help="soft 模式下候选 owner 的排序加分; 0 表示不使用 owner 软引导")
     parser.add_argument("--slot_selection_mode", choices=["mixed", "typed"], default="typed",
                         help="typed=固定 routine/dynamic/flex 槽位配额; mixed=共享 Top-K 候选池")
+    parser.add_argument("--executable_slot_reserve_ratio", type=float, default=0.5)
+    parser.add_argument("--no_future_task_execution", action="store_true")
+    parser.add_argument("--future_task_requires_no_current_valid", action="store_true")
+    parser.add_argument("--future_task_allow_with_current_valid", action="store_true")
+    parser.add_argument("--future_task_max_wait_s", type=float, default=600.0)
+    parser.add_argument("--future_routine_max_wait_s", type=float, default=180.0)
+    parser.add_argument("--routine_future_dynamic_guard_s", type=float, default=1800.0)
+    parser.add_argument("--routine_future_dynamic_penalty", type=float, default=0.35)
+    parser.add_argument("--dynamic_future_bonus", type=float, default=0.25)
+    parser.add_argument("--dynamic_current_slot_bonus", type=float, default=0.65)
+    parser.add_argument("--dynamic_window_wait_weight", type=float, default=0.75)
+    parser.add_argument("--keep_ineligible_future_candidates", action="store_true")
+    parser.add_argument("--candidate_wait_penalty", type=float, default=0.08)
+    parser.add_argument("--candidate_storage_penalty", type=float, default=0.08)
+    parser.add_argument("--candidate_dynamic_urgency_bonus", type=float, default=0.12)
+    parser.add_argument("--candidate_dynamic_response_bonus", type=float, default=0.24)
+    parser.add_argument("--candidate_dynamic_wait_penalty", type=float, default=0.20)
+    parser.add_argument("--dynamic_response_target_s", type=float, default=3600.0)
+    parser.add_argument("--no_downlink_aware_candidate_score", action="store_true")
+    parser.add_argument("--downlink_queue_target_s", type=float, default=3600.0)
+    parser.add_argument("--candidate_downlink_queue_penalty", type=float, default=0.10)
+    parser.add_argument("--candidate_downlink_miss_penalty", type=float, default=0.20)
+    parser.add_argument("--candidate_dynamic_delivery_bonus", type=float, default=0.24)
+    parser.add_argument("--candidate_dynamic_delivery_delay_penalty", type=float, default=0.20)
+    parser.add_argument("--allocator_wait_penalty", type=float, default=0.10)
+    parser.add_argument("--allocator_stale_rescue_bonus", type=float, default=0.25)
+    parser.add_argument("--allocator_dynamic_urgency_bonus", type=float, default=0.10)
+    parser.add_argument("--allocator_dynamic_response_bonus", type=float, default=0.24)
+    parser.add_argument("--allocator_dynamic_wait_penalty", type=float, default=0.20)
+    parser.add_argument("--dynamic_rescue_response_bonus", type=float, default=1.0)
+    parser.add_argument("--dynamic_takeover_margin_s", type=float, default=300.0)
+    parser.add_argument("--dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_true")
+    parser.add_argument("--no_dynamic_downlink_priority", dest="dynamic_downlink_priority", action="store_false")
+    parser.set_defaults(dynamic_downlink_priority=False)
     parser.add_argument("--assignment_lock_window_s", type=float, default=600.0)
     parser.add_argument("--assignment_max_switches_per_task", type=int, default=2)
     parser.add_argument("--torch_num_threads", type=int, default=None)
@@ -812,7 +880,38 @@ def main():
             "ownership_mask_mode": v2_cfg.ownership_mask_mode,
             "candidate_owner_bonus": v2_cfg.candidate_owner_bonus,
             "slot_selection_mode": v2_cfg.slot_selection_mode,
+            "executable_slot_reserve_ratio": v2_cfg.executable_slot_reserve_ratio,
+            "allow_future_task_execution": v2_cfg.allow_future_task_execution,
+            "future_task_requires_no_current_valid": v2_cfg.future_task_requires_no_current_valid,
+            "future_task_max_wait_s": v2_cfg.future_task_max_wait_s,
+            "future_routine_max_wait_s": v2_cfg.future_routine_max_wait_s,
+            "routine_future_dynamic_guard_s": v2_cfg.routine_future_dynamic_guard_s,
+            "routine_future_dynamic_penalty": v2_cfg.routine_future_dynamic_penalty,
+            "dynamic_future_bonus": v2_cfg.dynamic_future_bonus,
+            "dynamic_current_slot_bonus": v2_cfg.dynamic_current_slot_bonus,
+            "dynamic_window_wait_weight": v2_cfg.dynamic_window_wait_weight,
+            "drop_ineligible_future_candidates": v2_cfg.drop_ineligible_future_candidates,
             "dynamic_broadcast_window_s": v2_cfg.dynamic_broadcast_window_s,
+            "dynamic_takeover_margin_s": v2_cfg.dynamic_takeover_margin_s,
+            "dynamic_downlink_priority": v2_cfg.dynamic_downlink_priority,
+            "downlink_aware_candidate_score": v2_cfg.downlink_aware_candidate_score,
+            "downlink_queue_target_s": v2_cfg.downlink_queue_target_s,
+            "candidate_downlink_queue_penalty": v2_cfg.w_downlink_queue,
+            "candidate_downlink_miss_penalty": v2_cfg.w_downlink_miss,
+            "candidate_dynamic_delivery_bonus": v2_cfg.w_dynamic_delivery,
+            "candidate_dynamic_delivery_delay_penalty": v2_cfg.w_dynamic_delivery_delay,
+            "candidate_wait_penalty": v2_cfg.w_wait,
+            "candidate_storage_penalty": v2_cfg.w_storage_pressure,
+            "candidate_dynamic_urgency_bonus": v2_cfg.w_dynamic_urgency,
+            "candidate_dynamic_response_bonus": v2_cfg.w_dynamic_response,
+            "candidate_dynamic_wait_penalty": v2_cfg.w_dynamic_wait,
+            "dynamic_response_target_s": v2_cfg.dynamic_response_target_s,
+            "allocator_wait_penalty": v2_cfg.allocator_wait_penalty,
+            "allocator_stale_rescue_bonus": v2_cfg.allocator_stale_rescue_bonus,
+            "allocator_dynamic_urgency_bonus": v2_cfg.allocator_dynamic_urgency_bonus,
+            "allocator_dynamic_response_bonus": v2_cfg.allocator_dynamic_response_bonus,
+            "allocator_dynamic_wait_penalty": v2_cfg.allocator_dynamic_wait_penalty,
+            "dynamic_rescue_response_bonus": v2_cfg.dynamic_rescue_response_bonus,
             "score_weights": {
                 "w_quality": v2_cfg.w_quality,
                 "w_priority": v2_cfg.w_priority,

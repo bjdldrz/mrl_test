@@ -651,6 +651,25 @@ python3 scripts/run_paper_experiment_suite.py \
   --no_progress
 ```
 
+Fixed-slot MAPPO comparison baselines:
+
+```bash
+python3 scripts/run_paper_baseline_suite.py \
+  --suite_name fixed_slot_mappo_baselines_v036 \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
+
+This runs the existing `cva_mappo_v2` fixed-slot MAPPO actor under v2,
+Stage-2-like, and Stage-4-like heuristic candidate settings, then writes
+`summary.csv`, `summary.md`, and `paper_baseline_plan.md`.
+
 Focused V0.34 candidate search after the paper-core ablation results. This
 checks whether combining GRU temporal state with disabled candidate auxiliary
 updates, disabled idle auxiliary loss, and weaker/no storage pressure should
