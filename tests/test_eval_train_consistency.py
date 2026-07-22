@@ -199,6 +199,10 @@ def test_paper_baseline_suite_runs_fixed_slot_mappo() -> None:
         encoding="utf-8"
     )
     assert "cva_mappo_v2.run_experiment" in text
+    assert "plain_fixed_slot_mappo_v2_mixed" in text
+    assert "plain_fixed_slot_mappo_v2_typed" in text
+    assert "--no_future_task_execution" in text
+    assert "--no_downlink_aware_candidate_score" in text
     assert "fixed_slot_mappo_v2_stage1" in text
     assert "fixed_slot_mappo_v2_stage2" in text
     assert "fixed_slot_mappo_v2_stage4_heuristic" in text

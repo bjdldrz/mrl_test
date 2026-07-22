@@ -45,6 +45,54 @@ def fixed_slot_stage1_args() -> list[str]:
     ]
 
 
+def fixed_slot_plain_args(slot_mode: str = "mixed") -> list[str]:
+    return [
+        *kv("--routine_slots", 64),
+        *kv("--dynamic_slots", 32),
+        *kv("--flex_slots", 32),
+        *kv("--slot_selection_mode", slot_mode),
+        *kv("--ownership_mask_mode", "hard"),
+        *kv("--routine_candidate_owners", 1),
+        *kv("--dynamic_candidate_owners", 1),
+        *kv("--urgent_candidate_owners", 1),
+        *kv("--stale_candidate_owners", 1),
+        *kv("--candidate_owner_bonus", "0.00"),
+        *kv("--executable_slot_reserve_ratio", "0.00"),
+        *kv("--assignment_replan_trigger", "periodic"),
+        *kv("--assignment_switch_penalty", "0.00"),
+        *kv("--owner_switch_margin", "0.00"),
+        *kv("--dynamic_broadcast_window_s", 0),
+        *kv("--dynamic_takeover_margin_s", 0),
+        *kv("--routine_future_dynamic_penalty", "0.00"),
+        *kv("--dynamic_future_bonus", "0.00"),
+        *kv("--dynamic_current_slot_bonus", "0.00"),
+        *kv("--dynamic_window_wait_weight", "0.00"),
+        "--no_future_task_execution",
+        "--no_downlink_aware_candidate_score",
+        *kv("--cva_load_penalty", "0.00"),
+        *kv("--w_dynamic", "0.00"),
+        *kv("--w_scarcity", "0.00"),
+        *kv("--w_future_opportunity_loss", "0.00"),
+        *kv("--w_load", "0.00"),
+        *kv("--w_owner_stability", "0.00"),
+        *kv("--candidate_wait_penalty", "0.00"),
+        *kv("--candidate_storage_penalty", "0.00"),
+        *kv("--candidate_dynamic_urgency_bonus", "0.00"),
+        *kv("--candidate_dynamic_response_bonus", "0.00"),
+        *kv("--candidate_dynamic_wait_penalty", "0.00"),
+        *kv("--candidate_downlink_queue_penalty", "0.00"),
+        *kv("--candidate_downlink_miss_penalty", "0.00"),
+        *kv("--candidate_dynamic_delivery_bonus", "0.00"),
+        *kv("--candidate_dynamic_delivery_delay_penalty", "0.00"),
+        *kv("--allocator_wait_penalty", "0.00"),
+        *kv("--allocator_stale_rescue_bonus", "0.00"),
+        *kv("--allocator_dynamic_urgency_bonus", "0.00"),
+        *kv("--allocator_dynamic_response_bonus", "0.00"),
+        *kv("--allocator_dynamic_wait_penalty", "0.00"),
+        *kv("--dynamic_rescue_response_bonus", "0.00"),
+    ]
+
+
 def fixed_slot_stage2_args() -> list[str]:
     return [
         *kv("--routine_slots", 48),
@@ -94,6 +142,20 @@ def fixed_slot_stage4_args() -> list[str]:
 
 
 BASELINE_SPECS: list[dict[str, Any]] = [
+    {
+        "name": "plain_fixed_slot_mappo_v2_mixed",
+        "group": "plain_fixed_slot_mappo",
+        "base_stage": "plain_mixed",
+        "paper_use": "Strict fixed-slot MAPPO with shared Top-K slots and no DAS/CVA heuristic priors.",
+        "args": fixed_slot_plain_args("mixed"),
+    },
+    {
+        "name": "plain_fixed_slot_mappo_v2_typed",
+        "group": "plain_fixed_slot_mappo",
+        "base_stage": "plain_typed",
+        "paper_use": "Fixed-slot MAPPO with typed slot quotas only; dynamic/downlink/future heuristic priors disabled.",
+        "args": fixed_slot_plain_args("typed"),
+    },
     {
         "name": "fixed_slot_mappo_v2_stage1",
         "group": "fixed_slot_mappo",
