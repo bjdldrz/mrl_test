@@ -198,6 +198,9 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *optional_kv("--candidate_scorer_mix_start", args.candidate_scorer_mix_start),
         *optional_kv("--candidate_scorer_mix_end", args.candidate_scorer_mix_end),
         *kv("--candidate_scorer_mix_anneal_epochs", args.candidate_scorer_mix_anneal_epochs),
+        *kv("--dynamic_task_logit_bonus", args.dynamic_task_logit_bonus),
+        *kv("--dynamic_current_logit_bonus", args.dynamic_current_logit_bonus),
+        *kv("--routine_task_logit_penalty", args.routine_task_logit_penalty),
         *kv("--idle_aux_coeff", "0.05"),
         *kv("--action_feature_mode", "full"),
         *kv("--candidate_adapter_mode", "v2_compat"),
@@ -386,6 +389,23 @@ def v034_candidate_args(
             *kv("--temporal_state_history_len", 4),
         ])
     return args
+
+
+def v037_dynamic_recovery_args(
+    dynamic_bonus: str,
+    current_bonus: str,
+    routine_penalty: str = "0.00",
+) -> list[str]:
+    return [
+        *v034_candidate_args(
+            candidate_storage_penalty="0.08",
+            use_gru=True,
+            idle_aux_coeff="0.05",
+        ),
+        *kv("--dynamic_task_logit_bonus", dynamic_bonus),
+        *kv("--dynamic_current_logit_bonus", current_bonus),
+        *kv("--routine_task_logit_penalty", routine_penalty),
+    ]
 
 
 def ablation_specs() -> list[dict[str, Any]]:
@@ -751,6 +771,38 @@ def ablation_specs() -> list[dict[str, Any]]:
                 ),
             ],
         },
+        {
+            "name": "cmp_v037_dynamic_bias_0p25_current_0p25",
+            "group": "v037_dynamic_recovery",
+            "base_stage": "stage4",
+            "args": [
+                *v037_dynamic_recovery_args("0.25", "0.25"),
+            ],
+        },
+        {
+            "name": "cmp_v037_dynamic_bias_0p50_current_0p25",
+            "group": "v037_dynamic_recovery",
+            "base_stage": "stage4",
+            "args": [
+                *v037_dynamic_recovery_args("0.50", "0.25"),
+            ],
+        },
+        {
+            "name": "cmp_v037_dynamic_bias_0p50_current_0p50",
+            "group": "v037_dynamic_recovery",
+            "base_stage": "stage4",
+            "args": [
+                *v037_dynamic_recovery_args("0.50", "0.50"),
+            ],
+        },
+        {
+            "name": "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10",
+            "group": "v037_dynamic_recovery",
+            "base_stage": "stage4",
+            "args": [
+                *v037_dynamic_recovery_args("0.50", "0.50", "0.10"),
+            ],
+        },
     ]
 
 
@@ -956,6 +1008,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate_scorer_mix_start", type=float, default=None)
     parser.add_argument("--candidate_scorer_mix_end", type=float, default=None)
     parser.add_argument("--candidate_scorer_mix_anneal_epochs", type=int, default=0)
+    parser.add_argument("--dynamic_task_logit_bonus", type=float, default=0.0)
+    parser.add_argument("--dynamic_current_logit_bonus", type=float, default=0.0)
+    parser.add_argument("--routine_task_logit_penalty", type=float, default=0.0)
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

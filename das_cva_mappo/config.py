@@ -39,6 +39,9 @@ class DASConfig:
     temporal_state_history_len: int = 1
     idle_valid_penalty: float = 0.0
     idle_aux_coeff: float = 0.05
+    dynamic_task_logit_bonus: float = 0.0
+    dynamic_current_logit_bonus: float = 0.0
+    routine_task_logit_penalty: float = 0.0
     candidate_dropout_prob: float = 0.0
 
     candidate_scorer_mode: str = "hybrid"
@@ -99,6 +102,12 @@ class DASConfig:
             raise ValueError("idle_valid_penalty must be non-negative")
         if float(self.idle_aux_coeff) < 0:
             raise ValueError("idle_aux_coeff must be non-negative")
+        if float(self.dynamic_task_logit_bonus) < 0:
+            raise ValueError("dynamic_task_logit_bonus must be non-negative")
+        if float(self.dynamic_current_logit_bonus) < 0:
+            raise ValueError("dynamic_current_logit_bonus must be non-negative")
+        if float(self.routine_task_logit_penalty) < 0:
+            raise ValueError("routine_task_logit_penalty must be non-negative")
         if not 0.0 <= float(self.candidate_scorer_mix) <= 1.0:
             raise ValueError("candidate_scorer_mix must be in [0, 1]")
         for name in ("candidate_scorer_mix_start", "candidate_scorer_mix_end"):

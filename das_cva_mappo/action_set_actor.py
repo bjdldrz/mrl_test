@@ -32,6 +32,9 @@ class ActionSetActor(nn.Module):
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
         idle_valid_penalty: float = 2.0,
+        dynamic_task_logit_bonus: float = 0.0,
+        dynamic_current_logit_bonus: float = 0.0,
+        routine_task_logit_penalty: float = 0.0,
         temporal_state_encoder: str = "mlp",
         temporal_state_history_len: int = 1,
     ):
@@ -40,6 +43,9 @@ class ActionSetActor(nn.Module):
         self.use_set_context = bool(use_set_context)
         self.use_action_type_gate = bool(use_action_type_gate)
         self.idle_valid_penalty = max(0.0, float(idle_valid_penalty))
+        self.dynamic_task_logit_bonus = max(0.0, float(dynamic_task_logit_bonus))
+        self.dynamic_current_logit_bonus = max(0.0, float(dynamic_current_logit_bonus))
+        self.routine_task_logit_penalty = max(0.0, float(routine_task_logit_penalty))
         self.temporal_state_encoder = str(temporal_state_encoder)
         self.temporal_state_history_len = max(int(temporal_state_history_len), 1)
         if self.temporal_state_encoder not in {"mlp", "gru"}:
@@ -166,6 +172,7 @@ class ActionSetActor(nn.Module):
 
         if self.use_action_type_gate:
             logits = logits + self._action_type_gate(gate_context, action_features)
+        logits = logits + self._configured_action_bias(action_features)
         if self.idle_valid_penalty > 0:
             logits = logits - self._idle_valid_penalty(action_features, action_mask)
         logits = logits + (1.0 - action_mask) * (-1e8)
@@ -202,6 +209,32 @@ class ActionSetActor(nn.Module):
         weights = torch.stack([routine, dynamic, flex, transfer, idle], dim=-1)
         weights = weights / torch.clamp(weights.sum(dim=-1, keepdim=True), min=1.0)
         return torch.sum(weights * gate_logits.unsqueeze(1), dim=-1)
+
+    def _configured_action_bias(self, action_features: torch.Tensor) -> torch.Tensor:
+        if (
+            self.dynamic_task_logit_bonus <= 0
+            and self.dynamic_current_logit_bonus <= 0
+            and self.routine_task_logit_penalty <= 0
+        ):
+            return torch.zeros(action_features.shape[:2], device=action_features.device)
+
+        def feat(idx: int) -> torch.Tensor:
+            if action_features.shape[-1] <= idx:
+                return torch.zeros(action_features.shape[:2], device=action_features.device)
+            return torch.clamp(action_features[..., idx], 0.0, 1.0)
+
+        task = feat(0)
+        slot_dynamic = feat(6)
+        slot_routine = feat(5)
+        mission_dynamic = feat(19)
+        current_executable = feat(22)
+        dynamic = task * torch.clamp(slot_dynamic + mission_dynamic, 0.0, 1.0)
+        routine = task * slot_routine * (1.0 - mission_dynamic)
+        return (
+            dynamic * self.dynamic_task_logit_bonus
+            + dynamic * current_executable * self.dynamic_current_logit_bonus
+            - routine * self.routine_task_logit_penalty
+        )
 
     def _idle_valid_penalty(self, action_features: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         """Penalize idle only when a valid non-idle action is available."""
@@ -251,6 +284,9 @@ class ActionSetActorCritic(nn.Module):
         use_set_context: bool = True,
         use_action_type_gate: bool = True,
         idle_valid_penalty: float = 2.0,
+        dynamic_task_logit_bonus: float = 0.0,
+        dynamic_current_logit_bonus: float = 0.0,
+        routine_task_logit_penalty: float = 0.0,
         temporal_state_encoder: str = "mlp",
         temporal_state_history_len: int = 1,
     ):
@@ -264,6 +300,9 @@ class ActionSetActorCritic(nn.Module):
             use_set_context=use_set_context,
             use_action_type_gate=use_action_type_gate,
             idle_valid_penalty=idle_valid_penalty,
+            dynamic_task_logit_bonus=dynamic_task_logit_bonus,
+            dynamic_current_logit_bonus=dynamic_current_logit_bonus,
+            routine_task_logit_penalty=routine_task_logit_penalty,
             temporal_state_encoder=temporal_state_encoder,
             temporal_state_history_len=temporal_state_history_len,
         )

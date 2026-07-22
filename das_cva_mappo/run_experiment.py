@@ -173,6 +173,9 @@ def _build_das_config(args) -> DASConfig:
         temporal_state_history_len=args.temporal_state_history_len,
         idle_valid_penalty=args.idle_valid_penalty,
         idle_aux_coeff=args.idle_aux_coeff,
+        dynamic_task_logit_bonus=args.dynamic_task_logit_bonus,
+        dynamic_current_logit_bonus=args.dynamic_current_logit_bonus,
+        routine_task_logit_penalty=args.routine_task_logit_penalty,
         candidate_dropout_prob=args.candidate_dropout_prob,
         candidate_scorer_mode=args.candidate_scorer_mode,
         candidate_scorer_mix=args.candidate_scorer_mix,
@@ -294,6 +297,9 @@ def _build_action_model(das_cfg: DASConfig, env) -> ActionSetActorCritic:
         use_set_context=das_cfg.use_set_context,
         use_action_type_gate=das_cfg.use_action_type_gate,
         idle_valid_penalty=das_cfg.idle_valid_penalty,
+        dynamic_task_logit_bonus=das_cfg.dynamic_task_logit_bonus,
+        dynamic_current_logit_bonus=das_cfg.dynamic_current_logit_bonus,
+        routine_task_logit_penalty=das_cfg.routine_task_logit_penalty,
         temporal_state_encoder=das_cfg.temporal_state_encoder,
         temporal_state_history_len=das_cfg.temporal_state_history_len,
     )
@@ -1625,6 +1631,9 @@ def main() -> None:
     parser.add_argument("--temporal_state_history_len", type=int, default=1)
     parser.add_argument("--idle_valid_penalty", type=float, default=0.0)
     parser.add_argument("--idle_aux_coeff", type=float, default=0.05)
+    parser.add_argument("--dynamic_task_logit_bonus", type=float, default=0.0)
+    parser.add_argument("--dynamic_current_logit_bonus", type=float, default=0.0)
+    parser.add_argument("--routine_task_logit_penalty", type=float, default=0.0)
     parser.add_argument("--candidate_dropout_prob", type=float, default=0.0)
     parser.add_argument("--candidate_scorer_mode", choices=["v2_heuristic", "learned", "hybrid"], default="hybrid")
     parser.add_argument("--candidate_scorer_mix", type=float, default=0.35)
@@ -1748,6 +1757,9 @@ def main() -> None:
             "temporal_state_history_len": das_cfg.temporal_state_history_len,
             "idle_valid_penalty": das_cfg.idle_valid_penalty,
             "idle_aux_coeff": das_cfg.idle_aux_coeff,
+            "dynamic_task_logit_bonus": das_cfg.dynamic_task_logit_bonus,
+            "dynamic_current_logit_bonus": das_cfg.dynamic_current_logit_bonus,
+            "routine_task_logit_penalty": das_cfg.routine_task_logit_penalty,
             "candidate_dropout_prob": das_cfg.candidate_dropout_prob,
             "candidate_scorer_mode": das_cfg.candidate_scorer_mode,
             "candidate_scorer_mix": das_cfg.candidate_scorer_mix,

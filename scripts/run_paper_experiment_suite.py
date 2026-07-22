@@ -103,6 +103,16 @@ V035_IDLE_SWEEP_EXPERIMENTS = [
     "cmp_v035_gru_weak_storage_no_aux_idle_0p05",
 ]
 
+V037_DYNAMIC_RECOVERY_EXPERIMENTS = [
+    "stage4_storage_pressure",
+    "cmp_v034_gru_weak_storage_no_aux_no_idle",
+    "cmp_v035_gru_weak_storage_no_aux_idle_0p05",
+    "cmp_v037_dynamic_bias_0p25_current_0p25",
+    "cmp_v037_dynamic_bias_0p50_current_0p25",
+    "cmp_v037_dynamic_bias_0p50_current_0p50",
+    "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10",
+]
+
 
 PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
     "quick_temporal": {
@@ -159,6 +169,10 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
         "description": "Idle auxiliary coefficient sweep around the best V0.34 weak-storage GRU candidate.",
         "experiments": V035_IDLE_SWEEP_EXPERIMENTS,
     },
+    "v037_dynamic_recovery": {
+        "description": "Recover DAS dynamic-task selection against the fixed-slot MAPPO stage-2 baseline.",
+        "experiments": V037_DYNAMIC_RECOVERY_EXPERIMENTS,
+    },
 }
 
 
@@ -204,6 +218,10 @@ EXPERIMENT_NOTES = {
     "cmp_v035_gru_weak_storage_no_aux_idle_0p01": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.01.",
     "cmp_v035_gru_weak_storage_no_aux_idle_0p02": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.02.",
     "cmp_v035_gru_weak_storage_no_aux_idle_0p05": "V0.35 idle sweep: weak-storage GRU candidate with idle_aux_coeff=0.05.",
+    "cmp_v037_dynamic_bias_0p25_current_0p25": "V0.37 dynamic-selection recovery: dynamic logit +0.25 and current-dynamic +0.25.",
+    "cmp_v037_dynamic_bias_0p50_current_0p25": "V0.37 dynamic-selection recovery: dynamic logit +0.50 and current-dynamic +0.25.",
+    "cmp_v037_dynamic_bias_0p50_current_0p50": "V0.37 dynamic-selection recovery: dynamic logit +0.50 and current-dynamic +0.50.",
+    "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10": "V0.37 dynamic-selection recovery: dynamic/current logit +0.50 with routine penalty 0.10.",
 }
 
 

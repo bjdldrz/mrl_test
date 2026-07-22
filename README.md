@@ -152,6 +152,9 @@ Primary DAS ablation knobs:
 - `--temporal_state_history_len`
 - `--idle_valid_penalty`
 - `--idle_aux_coeff`
+- `--dynamic_task_logit_bonus`
+- `--dynamic_current_logit_bonus`
+- `--routine_task_logit_penalty`
 - `--candidate_dropout_prob`
 - `--candidate_scorer_mode v2_heuristic|learned|hybrid`
 - `--candidate_scorer_mix`
@@ -669,6 +672,24 @@ python3 scripts/run_paper_baseline_suite.py \
 This runs the existing `cva_mappo_v2` fixed-slot MAPPO actor under v2,
 Stage-2-like, and Stage-4-like heuristic candidate settings, then writes
 `summary.csv`, `summary.md`, and `paper_baseline_plan.md`.
+
+V0.37 dynamic-selection recovery. Run this after the fixed-slot MAPPO baselines;
+it adds explicit dynamic-task logit priors to the DAS action-set actor to recover
+the dynamic selection rate gap against `fixed_slot_mappo_v2_stage2`:
+
+```bash
+python3 scripts/run_paper_experiment_suite.py \
+  --plan v037_dynamic_recovery \
+  --suite_name das_v037_dynamic_selection_recovery \
+  --train_iters 50 \
+  --val_episodes 10 \
+  --eval_workers 10 \
+  --eval_device cpu \
+  --train_env_workers 16 \
+  --device cuda:0 \
+  --continue_on_error \
+  --no_progress
+```
 
 Focused V0.34 candidate search after the paper-core ablation results. This
 checks whether combining GRU temporal state with disabled candidate auxiliary
