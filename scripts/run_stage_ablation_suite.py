@@ -201,6 +201,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--dynamic_task_logit_bonus", args.dynamic_task_logit_bonus),
         *kv("--dynamic_current_logit_bonus", args.dynamic_current_logit_bonus),
         *kv("--routine_task_logit_penalty", args.routine_task_logit_penalty),
+        *kv("--dynamic_select_aux_coeff", args.dynamic_select_aux_coeff),
         *kv("--idle_aux_coeff", "0.05"),
         *kv("--action_feature_mode", "full"),
         *kv("--candidate_adapter_mode", "v2_compat"),
@@ -405,6 +406,21 @@ def v037_dynamic_recovery_args(
         *kv("--dynamic_task_logit_bonus", dynamic_bonus),
         *kv("--dynamic_current_logit_bonus", current_bonus),
         *kv("--routine_task_logit_penalty", routine_penalty),
+    ]
+
+
+def v038_dynamic_select_aux_args(
+    aux_coeff: str,
+    use_bias: bool = True,
+) -> list[str]:
+    args = (
+        v037_dynamic_recovery_args("0.50", "0.50", "0.10")
+        if use_bias
+        else v037_dynamic_recovery_args("0.00", "0.00", "0.10")
+    )
+    return [
+        *args,
+        *kv("--dynamic_select_aux_coeff", aux_coeff),
     ]
 
 
@@ -803,6 +819,38 @@ def ablation_specs() -> list[dict[str, Any]]:
                 *v037_dynamic_recovery_args("0.50", "0.50", "0.10"),
             ],
         },
+        {
+            "name": "cmp_v038_dyn_select_aux_0p02",
+            "group": "v038_dynamic_select_aux",
+            "base_stage": "stage4",
+            "args": [
+                *v038_dynamic_select_aux_args("0.02"),
+            ],
+        },
+        {
+            "name": "cmp_v038_dyn_select_aux_0p05",
+            "group": "v038_dynamic_select_aux",
+            "base_stage": "stage4",
+            "args": [
+                *v038_dynamic_select_aux_args("0.05"),
+            ],
+        },
+        {
+            "name": "cmp_v038_dyn_select_aux_0p10",
+            "group": "v038_dynamic_select_aux",
+            "base_stage": "stage4",
+            "args": [
+                *v038_dynamic_select_aux_args("0.10"),
+            ],
+        },
+        {
+            "name": "cmp_v038_dyn_select_aux_0p05_no_bias",
+            "group": "v038_dynamic_select_aux",
+            "base_stage": "stage4",
+            "args": [
+                *v038_dynamic_select_aux_args("0.05", use_bias=False),
+            ],
+        },
     ]
 
 
@@ -1011,6 +1059,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamic_task_logit_bonus", type=float, default=0.0)
     parser.add_argument("--dynamic_current_logit_bonus", type=float, default=0.0)
     parser.add_argument("--routine_task_logit_penalty", type=float, default=0.0)
+    parser.add_argument("--dynamic_select_aux_coeff", type=float, default=0.0)
     parser.add_argument("--stages_only", action="store_true")
     parser.add_argument("--continue_on_error", action="store_true")
     parser.add_argument("--no_progress", action="store_true")

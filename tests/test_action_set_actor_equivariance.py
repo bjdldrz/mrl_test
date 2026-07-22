@@ -4,9 +4,11 @@ try:
     import torch
 
     from das_cva_mappo.action_set_actor import ActionSetActor
+    from das_cva_mappo.trainer import ActionSetMAPPOTrainer
 except ModuleNotFoundError:  # Local lightweight checks may not install torch.
     torch = None
     ActionSetActor = None
+    ActionSetMAPPOTrainer = None
 
 
 def test_action_set_actor_permutation_equivariance() -> None:
@@ -45,5 +47,23 @@ def test_action_set_actor_permutation_equivariance() -> None:
         assert torch.allclose(permuted_probs, probs[:, perm], atol=1e-5)
 
 
+def test_dynamic_select_aux_loss_prefers_dynamic_mass() -> None:
+    if torch is None or ActionSetMAPPOTrainer is None:
+        return
+
+    features = torch.zeros(1, 3, 28)
+    features[0, :, 0] = 1.0
+    features[0, 1, 6] = 1.0
+    features[0, 2, 19] = 1.0
+    mask = torch.ones(1, 3)
+    low_dynamic = torch.distributions.Categorical(probs=torch.tensor([[0.8, 0.1, 0.1]]))
+    high_dynamic = torch.distributions.Categorical(probs=torch.tensor([[0.1, 0.45, 0.45]]))
+
+    low_loss = ActionSetMAPPOTrainer._dynamic_select_aux_loss(low_dynamic, features, mask)
+    high_loss = ActionSetMAPPOTrainer._dynamic_select_aux_loss(high_dynamic, features, mask)
+    assert high_loss < low_loss
+
+
 if __name__ == "__main__":
     test_action_set_actor_permutation_equivariance()
+    test_dynamic_select_aux_loss_prefers_dynamic_mass()

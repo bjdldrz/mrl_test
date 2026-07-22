@@ -39,6 +39,7 @@ class DASConfig:
     temporal_state_history_len: int = 1
     idle_valid_penalty: float = 0.0
     idle_aux_coeff: float = 0.05
+    dynamic_select_aux_coeff: float = 0.0
     dynamic_task_logit_bonus: float = 0.0
     dynamic_current_logit_bonus: float = 0.0
     routine_task_logit_penalty: float = 0.0
@@ -102,6 +103,8 @@ class DASConfig:
             raise ValueError("idle_valid_penalty must be non-negative")
         if float(self.idle_aux_coeff) < 0:
             raise ValueError("idle_aux_coeff must be non-negative")
+        if float(self.dynamic_select_aux_coeff) < 0:
+            raise ValueError("dynamic_select_aux_coeff must be non-negative")
         if float(self.dynamic_task_logit_bonus) < 0:
             raise ValueError("dynamic_task_logit_bonus must be non-negative")
         if float(self.dynamic_current_logit_bonus) < 0:

@@ -108,6 +108,7 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--dynamic_task_logit_bonus" in runner
     assert "--dynamic_current_logit_bonus" in runner
     assert "--routine_task_logit_penalty" in runner
+    assert "--dynamic_select_aux_coeff" in runner
     compat_runner = (ROOT / "cva_mappo_v2" / "run_experiment.py").read_text(encoding="utf-8")
     assert "--candidate_storage_penalty" in compat_runner
     assert "--candidate_dynamic_response_bonus" in compat_runner
@@ -124,6 +125,7 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "--dynamic_task_logit_bonus" in suite
     assert "--dynamic_current_logit_bonus" in suite
     assert "--routine_task_logit_penalty" in suite
+    assert "--dynamic_select_aux_coeff" in suite
     assert "avg_dynamic_downlink_replan_gain_s" in suite
     assert "abl_stage2_no_response_budget_features" in suite
     assert "abl_stage2_no_temporal_window_features" in suite
@@ -144,6 +146,7 @@ def test_dynamic_iteration_controls_are_exposed() -> None:
     assert "cmp_v035_gru_weak_storage_no_aux_idle_0p05" in suite
     assert "cmp_v037_dynamic_bias_0p25_current_0p25" in suite
     assert "cmp_v037_dynamic_bias_0p50_current_0p50" in suite
+    assert "cmp_v038_dyn_select_aux_0p05" in suite
     assert "dynamic_downlink_priority: bool = False" in config
     assert "downlink_aware_candidate_score: bool = True" in config
     assert "_rebatch_all_downlinks_priority" in env
@@ -170,6 +173,7 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert '"v034_candidate"' in text
     assert '"v035_idle_sweep"' in text
     assert '"v037_dynamic_recovery"' in text
+    assert '"v038_dynamic_select_aux"' in text
     assert '"stress_12sat_double_tasks"' in text
     assert '"n_satellites": 12' in text
     assert '"n_routine": 1200' in text
@@ -187,6 +191,7 @@ def test_paper_experiment_suite_wraps_stage_suite() -> None:
     assert "cmp_v034_gru_no_storage_no_aux_no_idle" in text
     assert "cmp_v035_gru_weak_storage_no_aux_idle_0p01" in text
     assert "cmp_v037_dynamic_bias_0p50_current_0p50" in text
+    assert "cmp_v038_dyn_select_aux_0p05" in text
 
 
 def test_paper_baseline_suite_runs_fixed_slot_mappo() -> None:

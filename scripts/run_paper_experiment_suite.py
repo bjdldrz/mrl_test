@@ -113,6 +113,14 @@ V037_DYNAMIC_RECOVERY_EXPERIMENTS = [
     "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10",
 ]
 
+V038_DYNAMIC_SELECT_AUX_EXPERIMENTS = [
+    "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10",
+    "cmp_v038_dyn_select_aux_0p02",
+    "cmp_v038_dyn_select_aux_0p05",
+    "cmp_v038_dyn_select_aux_0p10",
+    "cmp_v038_dyn_select_aux_0p05_no_bias",
+]
+
 
 PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
     "quick_temporal": {
@@ -173,6 +181,10 @@ PLAN_DEFINITIONS: dict[str, dict[str, Any]] = {
         "description": "Recover DAS dynamic-task selection against the fixed-slot MAPPO stage-2 baseline.",
         "experiments": V037_DYNAMIC_RECOVERY_EXPERIMENTS,
     },
+    "v038_dynamic_select_aux": {
+        "description": "Dynamic-selection auxiliary-loss sweep on top of the best V0.37 routine-penalty setting.",
+        "experiments": V038_DYNAMIC_SELECT_AUX_EXPERIMENTS,
+    },
 }
 
 
@@ -222,6 +234,10 @@ EXPERIMENT_NOTES = {
     "cmp_v037_dynamic_bias_0p50_current_0p25": "V0.37 dynamic-selection recovery: dynamic logit +0.50 and current-dynamic +0.25.",
     "cmp_v037_dynamic_bias_0p50_current_0p50": "V0.37 dynamic-selection recovery: dynamic logit +0.50 and current-dynamic +0.50.",
     "cmp_v037_dynamic_bias_0p50_current_0p50_routine_penalty_0p10": "V0.37 dynamic-selection recovery: dynamic/current logit +0.50 with routine penalty 0.10.",
+    "cmp_v038_dyn_select_aux_0p02": "V0.38: add dynamic-selection auxiliary loss coeff=0.02 on top of the V0.37 routine-penalty setting.",
+    "cmp_v038_dyn_select_aux_0p05": "V0.38: add dynamic-selection auxiliary loss coeff=0.05 on top of the V0.37 routine-penalty setting.",
+    "cmp_v038_dyn_select_aux_0p10": "V0.38: add dynamic-selection auxiliary loss coeff=0.10 on top of the V0.37 routine-penalty setting.",
+    "cmp_v038_dyn_select_aux_0p05_no_bias": "V0.38: dynamic-selection auxiliary loss coeff=0.05 with no dynamic/current logit bias.",
 }
 
 

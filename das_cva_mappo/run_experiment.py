@@ -173,6 +173,7 @@ def _build_das_config(args) -> DASConfig:
         temporal_state_history_len=args.temporal_state_history_len,
         idle_valid_penalty=args.idle_valid_penalty,
         idle_aux_coeff=args.idle_aux_coeff,
+        dynamic_select_aux_coeff=args.dynamic_select_aux_coeff,
         dynamic_task_logit_bonus=args.dynamic_task_logit_bonus,
         dynamic_current_logit_bonus=args.dynamic_current_logit_bonus,
         routine_task_logit_penalty=args.routine_task_logit_penalty,
@@ -645,6 +646,7 @@ def _eval_worker(payload):
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=0.0,
         idle_aux_coeff=0.0,
+        dynamic_select_aux_coeff=0.0,
         device=str(eval_device),
     )
     _profile_stop(profile, "setup", setup_started)
@@ -1113,6 +1115,7 @@ def _collect_rollout_worker(payload):
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=das_cfg.candidate_dropout_prob,
         idle_aux_coeff=das_cfg.idle_aux_coeff,
+        dynamic_select_aux_coeff=das_cfg.dynamic_select_aux_coeff,
         device="cpu",
     )
     infos = _reset_infos(env, routine, dynamic)
@@ -1171,6 +1174,7 @@ def train_and_eval(
         batch_size=cfg.ppo.batch_size,
         candidate_dropout_prob=das_cfg.candidate_dropout_prob,
         idle_aux_coeff=das_cfg.idle_aux_coeff,
+        dynamic_select_aux_coeff=das_cfg.dynamic_select_aux_coeff,
         device=str(device),
     )
 
@@ -1631,6 +1635,7 @@ def main() -> None:
     parser.add_argument("--temporal_state_history_len", type=int, default=1)
     parser.add_argument("--idle_valid_penalty", type=float, default=0.0)
     parser.add_argument("--idle_aux_coeff", type=float, default=0.05)
+    parser.add_argument("--dynamic_select_aux_coeff", type=float, default=0.0)
     parser.add_argument("--dynamic_task_logit_bonus", type=float, default=0.0)
     parser.add_argument("--dynamic_current_logit_bonus", type=float, default=0.0)
     parser.add_argument("--routine_task_logit_penalty", type=float, default=0.0)
@@ -1757,6 +1762,7 @@ def main() -> None:
             "temporal_state_history_len": das_cfg.temporal_state_history_len,
             "idle_valid_penalty": das_cfg.idle_valid_penalty,
             "idle_aux_coeff": das_cfg.idle_aux_coeff,
+            "dynamic_select_aux_coeff": das_cfg.dynamic_select_aux_coeff,
             "dynamic_task_logit_bonus": das_cfg.dynamic_task_logit_bonus,
             "dynamic_current_logit_bonus": das_cfg.dynamic_current_logit_bonus,
             "routine_task_logit_penalty": das_cfg.routine_task_logit_penalty,
