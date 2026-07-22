@@ -299,6 +299,8 @@ def build_stage_command(args: argparse.Namespace, experiments: list[str], unknow
         args.scenario_cache_dir,
         "--vtw_cache_dir",
         args.vtw_cache_dir,
+        "--seed",
+        str(args.seed),
         "--n_satellites",
         str(args.n_satellites),
         "--train_iters",
@@ -439,6 +441,7 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--acled_path", default="./DynamicMission/DynamicMission.shp")
     parser.add_argument("--scenario_cache_dir", default="runs/scenario_cache/das_cva_stress_seed42")
     parser.add_argument("--vtw_cache_dir", default="runs/scenario_cache/das_cva_stress_seed42/vtw_cache")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n_satellites", type=int, default=6)
     parser.add_argument("--train_iters", type=int, default=50)
     parser.add_argument(

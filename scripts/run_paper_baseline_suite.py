@@ -188,6 +188,7 @@ def base_args(args: argparse.Namespace, suite_dir: Path) -> list[str]:
         *kv("--acled_path", args.acled_path),
         *kv("--scenario_cache_dir", args.scenario_cache_dir),
         *kv("--vtw_cache_dir", args.vtw_cache_dir),
+        *kv("--seed", args.seed),
         *kv("--n_satellites", args.n_satellites),
         *kv("--train_iters", args.train_iters),
         *kv("--eval_episodes", args.eval_episodes),
@@ -396,6 +397,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--acled_path", default="./DynamicMission/DynamicMission.shp")
     parser.add_argument("--scenario_cache_dir", default="runs/scenario_cache/das_cva_stress_seed42")
     parser.add_argument("--vtw_cache_dir", default="runs/scenario_cache/das_cva_stress_seed42/vtw_cache")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_dir", default="runs/paper_baseline_suites")
     parser.add_argument("--suite_name", default="")
     parser.add_argument("--n_satellites", type=int, default=6)
